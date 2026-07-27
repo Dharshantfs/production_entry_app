@@ -121,6 +121,7 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 			ps.sales_order,
 			ps.planning_status,
 			pt.item_code,
+			ifnull(pt.qty, 0) as qty,
 			ifnull(pt.no_of_rolls, 0) as no_of_rolls,
 			ifnull(pt.total_weight, 0) as total_weight,
 			ifnull(pt.custom_movement_type, '') as movement_type,
@@ -189,7 +190,10 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 				if row_pd[:10] != pd_filter[:10]:
 					continue
 
-		weight = flt(r.total_weight)
+		# Board row Qty (KG) from Planned items — not sheet-level total_weight
+		weight = flt(r.get("qty"))
+		if weight <= 0:
+			weight = flt(r.total_weight)
 		width_inch = flt(r.get("width_inch"))
 		# Data fields may store "16" or "16\"" — coerce
 		if width_inch <= 0:

@@ -1,21 +1,19 @@
-﻿/**
+/**
  * SITE CLIENT SCRIPT — Clubbing Sheet (paste entire file)
- * Version: v20260727e
+ * Version: v20260727f
  *
- * SETUP (fixes "Could not add items — reload the page"):
- * 1. Desk → search "Client Script" → open EVERY script for DocType "Clubbing Sheet"
- * 2. DISABLE all old ones (especially any with "reload the page" in the script)
- * 3. Create ONE new Client Script:
- *    - DocType: Clubbing Sheet
- *    - Enabled: Yes
- *    - Script: paste this ENTIRE file → Save
- * 4. Hard refresh Clubbing Sheet (Ctrl+Shift+R)
- * 5. Dialog title must show: "Select Planning Despatch Rows · v20260727e"
- * 6. Get Items adds rows directly — no frm.events fallback
+ * SETUP:
+ * 1. Disable ALL other Clubbing Sheet Client Scripts
+ * 2. Paste this file → Enabled Yes → Save
+ * 3. Add Custom Field on Clubbing Sheet (if not migrated):
+ *    fieldname: custom_lock_loading_sequence | type: Check | hidden | default 0
+ * 4. Update Before Save Server Script from PASTE_clubbing_before_save_server_script.py
+ * 5. Hard refresh (Ctrl+Shift+R)
  *
- * Before Save: use docs/PASTE_clubbing_before_save_server_script.py (separate Server Script)
+ * Loading sequence: auto on Get Items; manual edit locks until "Recalculate Loading Sequence"
  */
 
+/* jsb-club-bootstrap — wires legacy frm.events.process_selections for old cached pickers */
 (function () {
 	if (window.__JSB_CLUB_BOOTSTRAP__) return;
 	window.__JSB_CLUB_BOOTSTRAP__ = true;
@@ -204,7 +202,7 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260727e';
+window.JSB_CLUB_PICKER_VER = 'v20260727f';
 // Always refresh helpers even if form.on already registered (old Client Script may open picker)
 window.__JSB_CLUB_SHEET_JS__ = window.JSB_CLUB_PICKER_VER;
 
@@ -278,11 +276,13 @@ window.jsb_club_add_selected_items = function (frm, selections, orders_cache) {
 				let dist = distanceMap[row.party_location];
 				row.distance_from_madurai = dist !== undefined ? dist : get_distance_from_madurai(row.party_location);
 			});
+			jsb_club_clear_loading_sequence_lock(frm);
 			frm.trigger('recalculate_load_type');
 			frm.refresh_field('items');
 		}
 
 		if (!cities.length) {
+			jsb_club_clear_loading_sequence_lock(frm);
 			frm.trigger('recalculate_load_type');
 			return;
 		}
@@ -331,6 +331,43 @@ function jsb_club_wire_process_selections(frm) {
 	}
 	// Also keep a global pointer old Client Scripts can call
 	window._jsb_club_frm = frm;
+}
+
+function jsb_club_has_loading_lock_field(frm) {
+	return !!(frm && frm.meta && (frm.meta.fields || []).some(f => f.fieldname === 'custom_lock_loading_sequence'));
+}
+
+function jsb_club_set_loading_sequence_lock(frm) {
+	if (!frm) return;
+	if (jsb_club_has_loading_lock_field(frm)) {
+		frm.set_value('custom_lock_loading_sequence', 1);
+	} else {
+		frm.doc.custom_lock_loading_sequence = 1;
+	}
+}
+
+function jsb_club_clear_loading_sequence_lock(frm) {
+	if (!frm) return;
+	if (jsb_club_has_loading_lock_field(frm)) {
+		frm.set_value('custom_lock_loading_sequence', 0);
+	} else {
+		frm.doc.custom_lock_loading_sequence = 0;
+	}
+}
+
+function jsb_club_loading_sequence_locked(frm) {
+	return cint(frm.doc.custom_lock_loading_sequence) === 1;
+}
+
+function jsb_club_bind_loading_sequence_lock_ui(frm) {
+	try {
+		frm.remove_custom_button(__('Recalculate Loading Sequence'));
+	} catch (e) { /* ignore */ }
+	if (!jsb_club_loading_sequence_locked(frm)) return;
+	frm.add_custom_button(__('Recalculate Loading Sequence'), function () {
+		jsb_club_clear_loading_sequence_lock(frm);
+		frm.trigger('calculate_loading_sequence');
+	});
 }
 
 function jsb_club_bind_picker_button(frm) {
@@ -446,6 +483,7 @@ frappe.ui.form.on('Clubbing Sheet', {
         frm.trigger('show_load_type_indicator');
         frm.trigger('toggle_loading_sequence_visibility');
         frm.trigger('set_vehicle_no_options');
+        jsb_club_bind_loading_sequence_lock_ui(frm);
     },
 
     vehicle_feet: function (frm) {
@@ -559,6 +597,7 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     load_type: function (frm) {
+        jsb_club_clear_loading_sequence_lock(frm);
         frm.trigger('show_load_type_indicator');
         frm.trigger('toggle_loading_sequence_visibility');
         frm.trigger('calculate_loading_sequence');
@@ -819,6 +858,10 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     calculate_loading_sequence: function (frm) {
+        if (jsb_club_loading_sequence_locked(frm)) {
+            frm.refresh_field('items');
+            return;
+        }
         let items = frm.doc.items || [];
         if (!items.length) {
             frm.refresh_field('items');
@@ -935,6 +978,11 @@ frappe.ui.form.on('Clubbing Sheet Item', {
     custom_despatch_customer(frm, cdt, cdn) {
         // Clear override SO when despatch customer changes
         frappe.model.set_value(cdt, cdn, 'custom_despatch_sales_order', '');
+    },
+
+    loading_sequence(frm, cdt, cdn) {
+        jsb_club_set_loading_sequence_lock(frm);
+        jsb_club_bind_loading_sequence_lock_ui(frm);
     },
 
     view_rolls: function (frm, cdt, cdn) {

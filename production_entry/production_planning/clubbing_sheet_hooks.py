@@ -238,6 +238,10 @@ def _pick_active_belt(selected_cities):
 	return best
 
 
+def _loading_sequence_locked(doc):
+	return cint(doc.get("custom_lock_loading_sequence")) > 0
+
+
 def _set_distances_and_loading_sequence(doc):
 	items = doc.get("items") or []
 	if not items:
@@ -246,6 +250,9 @@ def _set_distances_and_loading_sequence(doc):
 	for item in items:
 		if not flt(item.get("distance_from_madurai")):
 			item.distance_from_madurai = _lookup_distance(item.get("party_location"))
+
+	if _loading_sequence_locked(doc):
+		return
 
 	active_belt = _pick_active_belt(_selected_cities(doc))
 

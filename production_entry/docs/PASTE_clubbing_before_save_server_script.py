@@ -5,6 +5,9 @@
 #   production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_save
 #
 # Uses only: doc, frappe
+#
+# Loading sequence: skipped when custom_lock_loading_sequence = 1 (Client Script sets on manual edit)
+# Loading sequence: skipped when custom_lock_loading_sequence = 1 (set by Client Script on manual edit)
 
 # ---------- 1) Fix customer from Sales Order ----------
 for item in doc.items:
@@ -168,143 +171,148 @@ if doc.items:
 							break
 			item.distance_from_madurai = dist
 
-	ROUTE_BELTS2 = [
-		["madurai", "virudhunagar", "sivakasi", "tuticorin", "thoothukudi"],
-		["madurai", "karur", "coimbatore"],
-		["madurai", "karur", "erode", "salem"],
-		["madurai", "dindigul", "karur", "salem"],
-		["madurai", "pondicherry", "puducherry", "vellore", "kanchipuram", "chennai"],
-		["madurai", "trivandrum", "thiruvananthapuram", "changanacherry"],
-		["madurai", "kollam", "kayankulam", "pathanamthitta", "kottayam"],
-		["madurai", "coimbatore", "palakkad", "trissur", "thrissur", "ernakulam"],
-		["madurai", "coimbatore", "pallakad", "trissur", "thrissur", "malappuram", "kozhikode", "calicut", "mahe", "kannur", "kasargod", "mangaluru", "mangalore", "uduppi", "udupi"],
-		["madurai", "mysore", "mysuru", "hassan", "shimoga", "dawangeree", "davangere"],
-		["madurai", "salem", "hosur", "bangalore", "bengaluru", "dawangeree", "davangere"],
-		["madurai", "mysore", "mysuru", "bangalore", "bengaluru"],
-		["madurai", "bangalore", "bengaluru", "tumkur", "hospet", "hospete", "koppal"],
-		["madurai", "ananthapur", "kurnool", "hyderabad", "karimnagar"],
-		["madurai", "ananthapur", "kurnool", "hyderabad", "nizambad"],
-		["madurai", "kurnool", "hyderabad", "warangal"],
-		["madurai", "vizag", "bhuvaneswar", "bhubaneswar", "cuttack"],
-		["madurai", "brahmbur", "berhampur", "bhubaneswar", "cuttack"],
-		["madurai", "guntur", "vijayawada", "kakinada"],
-		["madurai", "kakinada", "vizag"],
-		["madurai", "kuppam", "palamaner", "bangalore", "bengaluru"],
-		["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura"],
-		["madurai", "bangalore", "bengaluru", "belgaum", "goa"],
-		["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura", "satara", "pune", "mumbai"],
-	]
+	skip_auto_loading = 0
+	if frappe.db.has_column("Clubbing Sheet", "custom_lock_loading_sequence"):
+		skip_auto_loading = int(doc.get("custom_lock_loading_sequence") or 0)
 
-	all_belt_cities = []
-	for belt in ROUTE_BELTS2:
-		for bc in belt:
-			if bc not in all_belt_cities:
-				all_belt_cities.append(bc)
+	if not skip_auto_loading:
+		ROUTE_BELTS2 = [
+			["madurai", "virudhunagar", "sivakasi", "tuticorin", "thoothukudi"],
+			["madurai", "karur", "coimbatore"],
+			["madurai", "karur", "erode", "salem"],
+			["madurai", "dindigul", "karur", "salem"],
+			["madurai", "pondicherry", "puducherry", "vellore", "kanchipuram", "chennai"],
+			["madurai", "trivandrum", "thiruvananthapuram", "changanacherry"],
+			["madurai", "kollam", "kayankulam", "pathanamthitta", "kottayam"],
+			["madurai", "coimbatore", "palakkad", "trissur", "thrissur", "ernakulam"],
+			["madurai", "coimbatore", "pallakad", "trissur", "thrissur", "malappuram", "kozhikode", "calicut", "mahe", "kannur", "kasargod", "mangaluru", "mangalore", "uduppi", "udupi"],
+			["madurai", "mysore", "mysuru", "hassan", "shimoga", "dawangeree", "davangere"],
+			["madurai", "salem", "hosur", "bangalore", "bengaluru", "dawangeree", "davangere"],
+			["madurai", "mysore", "mysuru", "bangalore", "bengaluru"],
+			["madurai", "bangalore", "bengaluru", "tumkur", "hospet", "hospete", "koppal"],
+			["madurai", "ananthapur", "kurnool", "hyderabad", "karimnagar"],
+			["madurai", "ananthapur", "kurnool", "hyderabad", "nizambad"],
+			["madurai", "kurnool", "hyderabad", "warangal"],
+			["madurai", "vizag", "bhuvaneswar", "bhubaneswar", "cuttack"],
+			["madurai", "brahmbur", "berhampur", "bhubaneswar", "cuttack"],
+			["madurai", "guntur", "vijayawada", "kakinada"],
+			["madurai", "kakinada", "vizag"],
+			["madurai", "kuppam", "palamaner", "bangalore", "bengaluru"],
+			["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura"],
+			["madurai", "bangalore", "bengaluru", "belgaum", "goa"],
+			["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura", "satara", "pune", "mumbai"],
+		]
 
-	selected_cities2 = []
-	for item in doc.items:
-		if item.party_location:
-			c = item.party_location.strip().lower()
-			if c not in selected_cities2:
-				selected_cities2.append(c)
-
-	known_selected = []
-	for city in selected_cities2:
-		found = False
-		for bc in all_belt_cities:
-			if city == bc or city in bc or bc in city:
-				found = True
-				break
-		if found and city not in known_selected:
-			known_selected.append(city)
-
-	active_belt = []
-	for belt in ROUTE_BELTS2:
-		all_match = True
-		if not known_selected:
-			all_match = False
-		for city in known_selected:
-			city_ok = False
-			for bc in belt:
-				if city == bc or city in bc or bc in city:
-					city_ok = True
-					break
-			if not city_ok:
-				all_match = False
-				break
-		if all_match:
-			active_belt = list(belt)
-			break
-
-	if not active_belt:
-		max_matches = 0
+		all_belt_cities = []
 		for belt in ROUTE_BELTS2:
-			matches = 0
+			for bc in belt:
+				if bc not in all_belt_cities:
+					all_belt_cities.append(bc)
+
+		selected_cities2 = []
+		for item in doc.items:
+			if item.party_location:
+				c = item.party_location.strip().lower()
+				if c not in selected_cities2:
+					selected_cities2.append(c)
+
+		known_selected = []
+		for city in selected_cities2:
+			found = False
+			for bc in all_belt_cities:
+				if city == bc or city in bc or bc in city:
+					found = True
+					break
+			if found and city not in known_selected:
+				known_selected.append(city)
+
+		active_belt = []
+		for belt in ROUTE_BELTS2:
+			all_match = True
+			if not known_selected:
+				all_match = False
 			for city in known_selected:
+				city_ok = False
 				for bc in belt:
 					if city == bc or city in bc or bc in city:
-						matches = matches + 1
+						city_ok = True
 						break
-			if matches > max_matches:
-				max_matches = matches
-				active_belt = list(belt)
-
-	sortable = []
-	for item in doc.items:
-		city_lower = frappe.utils.cstr(item.party_location or "").lower()
-		priority = 0
-		sort_val = frappe.utils.flt(item.distance_from_madurai)
-		if active_belt:
-			idx = 0
-			while idx < len(active_belt):
-				bc = active_belt[idx]
-				if city_lower == bc or city_lower in bc or bc in city_lower:
-					priority = 1
-					sort_val = idx
+				if not city_ok:
+					all_match = False
 					break
-				idx = idx + 1
-		sortable.append([priority, sort_val, item])
+			if all_match:
+				active_belt = list(belt)
+				break
 
-	n = len(sortable)
-	i = 0
-	while i < n:
-		j = i + 1
-		while j < n:
-			swap = False
-			if sortable[j][0] > sortable[i][0]:
-				swap = True
-			elif sortable[j][0] == sortable[i][0] and sortable[j][1] > sortable[i][1]:
-				swap = True
-			if swap:
-				tmp = sortable[i]
-				sortable[i] = sortable[j]
-				sortable[j] = tmp
-			j = j + 1
-		i = i + 1
+		if not active_belt:
+			max_matches = 0
+			for belt in ROUTE_BELTS2:
+				matches = 0
+				for city in known_selected:
+					for bc in belt:
+						if city == bc or city in bc or bc in city:
+							matches = matches + 1
+							break
+				if matches > max_matches:
+					max_matches = matches
+					active_belt = list(belt)
 
-	if doc.load_type == "Full Load":
+		sortable = []
 		for item in doc.items:
-			item.loading_sequence = "Full Load"
-	else:
+			city_lower = frappe.utils.cstr(item.party_location or "").lower()
+			priority = 0
+			sort_val = frappe.utils.flt(item.distance_from_madurai)
+			if active_belt:
+				idx = 0
+				while idx < len(active_belt):
+					bc = active_belt[idx]
+					if city_lower == bc or city_lower in bc or bc in city_lower:
+						priority = 1
+						sort_val = idx
+						break
+					idx = idx + 1
+			sortable.append([priority, sort_val, item])
+
 		n = len(sortable)
-		if n == 1:
-			sortable[0][2].loading_sequence = "Full Load"
-		elif n == 2:
-			sortable[0][2].loading_sequence = "Inside"
-			sortable[1][2].loading_sequence = "Outside"
-		elif n > 2:
-			sortable[0][2].loading_sequence = "Inside"
-			sortable[n - 1][2].loading_sequence = "Outside"
-			# DocType allows only Center 1 and Center 2 (not Center 3+)
-			middle_count = n - 2
-			center1_count = int((middle_count + 1) / 2)
-			k = 1
-			while k < n - 1:
-				if (k - 1) < center1_count:
-					sortable[k][2].loading_sequence = "Center 1"
-				else:
-					sortable[k][2].loading_sequence = "Center 2"
-				k = k + 1
+		i = 0
+		while i < n:
+			j = i + 1
+			while j < n:
+				swap = False
+				if sortable[j][0] > sortable[i][0]:
+					swap = True
+				elif sortable[j][0] == sortable[i][0] and sortable[j][1] > sortable[i][1]:
+					swap = True
+				if swap:
+					tmp = sortable[i]
+					sortable[i] = sortable[j]
+					sortable[j] = tmp
+				j = j + 1
+			i = i + 1
+
+		if doc.load_type == "Full Load":
+			for item in doc.items:
+				item.loading_sequence = "Full Load"
+		else:
+			n = len(sortable)
+			if n == 1:
+				sortable[0][2].loading_sequence = "Full Load"
+			elif n == 2:
+				sortable[0][2].loading_sequence = "Inside"
+				sortable[1][2].loading_sequence = "Outside"
+			elif n > 2:
+				sortable[0][2].loading_sequence = "Inside"
+				sortable[n - 1][2].loading_sequence = "Outside"
+				# DocType allows only Center 1 and Center 2 (not Center 3+)
+				middle_count = n - 2
+				center1_count = int((middle_count + 1) / 2)
+				k = 1
+				while k < n - 1:
+					if (k - 1) < center1_count:
+						sortable[k][2].loading_sequence = "Center 1"
+					else:
+						sortable[k][2].loading_sequence = "Center 2"
+					k = k + 1
 
 # ---------- 6) Bypass bad customer link display names ----------
 doc.flags.ignore_links = True
