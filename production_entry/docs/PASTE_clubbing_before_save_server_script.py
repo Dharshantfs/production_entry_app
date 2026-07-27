@@ -295,11 +295,15 @@ if doc.items:
 		elif n > 2:
 			sortable[0][2].loading_sequence = "Inside"
 			sortable[n - 1][2].loading_sequence = "Outside"
-			center_num = 1
+			# DocType allows only Center 1 and Center 2 (not Center 3+)
+			middle_count = n - 2
+			center1_count = int((middle_count + 1) / 2)
 			k = 1
 			while k < n - 1:
-				sortable[k][2].loading_sequence = "Center " + str(center_num)
-				center_num = center_num + 1
+				if (k - 1) < center1_count:
+					sortable[k][2].loading_sequence = "Center 1"
+				else:
+					sortable[k][2].loading_sequence = "Center 2"
 				k = k + 1
 
 # ---------- 6) Bypass bad customer link display names ----------

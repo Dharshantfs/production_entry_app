@@ -1,3 +1,28 @@
+/* jsb-club-bootstrap — wires legacy frm.events.process_selections for old cached pickers */
+(function () {
+	if (window.__JSB_CLUB_BOOTSTRAP__) return;
+	window.__JSB_CLUB_BOOTSTRAP__ = true;
+
+	function wireFrm(frm) {
+		if (!frm) return;
+		const handler = function (f2, selections) {
+			const orders = window._jsb_club_picker_orders || null;
+			if (typeof window._jsb_club_process_selections === 'function') {
+				window._jsb_club_process_selections(f2 || frm, selections, orders);
+				return;
+			}
+			frappe.msgprint(__('Clubbing JS not loaded — hard refresh (Ctrl+Shift+R) and retry.'));
+		};
+		if (!frm.events) frm.events = {};
+		frm.events.process_selections = handler;
+		if (frm.cscript) frm.cscript.process_selections = handler;
+	}
+
+	frappe.ui.form.on('Clubbing Sheet', {
+		refresh(frm) { wireFrm(frm); }
+	});
+})();
+
 function show_rolls_dialog_JSB(frm, args) {
     let rolls = args.rolls;
     let so_name = args.sales_order;
@@ -162,7 +187,7 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260727c';
+window.JSB_CLUB_PICKER_VER = 'v20260727d';
 // Always refresh helpers even if form.on already registered (old Client Script may open picker)
 window.__JSB_CLUB_SHEET_JS__ = window.JSB_CLUB_PICKER_VER;
 
@@ -605,6 +630,7 @@ window._jsb_club_picker_impl = function (frm) {
                 }
                 d.hide();
                 window._jsb_club_dialog = null;
+                window._jsb_club_picker_orders = orders;
                 // Always prefer direct helper — never depend on frm.events (old Client Scripts break that)
                 try {
                     if (typeof window._jsb_club_process_selections === 'function') {
@@ -744,6 +770,7 @@ window._jsb_club_picker_impl = function (frm) {
                 freeze_message: __('Loading Despatch planning rows...'),
                 callback: (r) => {
                     orders = r.message || [];
+                    window._jsb_club_picker_orders = orders;
                     refresh_list();
                 }
             });

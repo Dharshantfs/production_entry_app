@@ -279,8 +279,11 @@ def _set_distances_and_loading_sequence(doc):
 	elif n > 2:
 		sortable[0][2].loading_sequence = "Inside"
 		sortable[n - 1][2].loading_sequence = "Outside"
+		# DocType allows only Center 1 and Center 2 (not Center 3+)
+		middle_count = n - 2
+		center1_count = (middle_count + 1) // 2
 		for k in range(1, n - 1):
-			sortable[k][2].loading_sequence = "Center {0}".format(k)
+			sortable[k][2].loading_sequence = "Center 1" if (k - 1) < center1_count else "Center 2"
 
 
 def clubbing_sheet_before_submit(doc, method=None):
