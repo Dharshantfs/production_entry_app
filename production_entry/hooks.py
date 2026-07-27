@@ -22,7 +22,6 @@ app_include_css = [
 ]
 app_include_js = [
 	"scheduler.bundle.js",
-	"/assets/production_entry/js/clubbing_sheet_form.js",
 ]
 
 # include js, css files in header of web template
