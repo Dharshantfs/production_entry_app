@@ -7,8 +7,8 @@
 		if (!frm) return;
 		const handler = function (f2, selections) {
 			const orders = window._jsb_club_picker_orders || null;
-			if (typeof window._jsb_club_process_selections === 'function') {
-				window._jsb_club_process_selections(f2 || frm, selections, orders);
+			if (typeof window.jsb_club_add_selected_items === 'function') {
+				window.jsb_club_add_selected_items(f2 || frm, selections, orders);
 				return;
 			}
 			frappe.msgprint(__('Clubbing JS not loaded — hard refresh (Ctrl+Shift+R) and retry.'));
@@ -187,12 +187,12 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260727d';
+window.JSB_CLUB_PICKER_VER = 'v20260727e';
 // Always refresh helpers even if form.on already registered (old Client Script may open picker)
 window.__JSB_CLUB_SHEET_JS__ = window.JSB_CLUB_PICKER_VER;
 
-/** Add selected Planning rows into Clubbing Sheet items. Defined early so old Client Scripts can call it. */
-window._jsb_club_process_selections = function (frm, selections, orders_cache) {
+/** Add selected Planning rows — direct call; never depends on frm.events.process_selections. */
+window.jsb_club_add_selected_items = function (frm, selections, orders_cache) {
 	const apply_picked = function (all) {
 		let picked = (all || []).filter(o =>
 			selections.includes(o.name) ||
@@ -296,9 +296,12 @@ window._jsb_club_process_selections = function (frm, selections, orders_cache) {
 	});
 };
 
+window._jsb_club_process_selections = window.jsb_club_add_selected_items;
+
 function jsb_club_wire_process_selections(frm) {
-	const handler = function (frm2, selections, planned_date) {
-		window._jsb_club_process_selections(frm2 || frm, selections, null);
+	const handler = function (frm2, selections) {
+		const orders = window._jsb_club_picker_orders || null;
+		window.jsb_club_add_selected_items(frm2 || frm, selections, orders);
 	};
 	if (!frm) return;
 	if (frm.script_manager && frm.script_manager.events) {
@@ -333,7 +336,7 @@ function jsb_club_bind_picker_button(frm) {
 	};
 	jsb_club_wire_process_selections(frm);
 
-	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
+	['get_planning_items', 'get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
 		if (frm.fields_dict && frm.fields_dict[fn]) {
 			frm.set_df_property(fn, 'hidden', 0);
 		}
@@ -344,22 +347,28 @@ function jsb_club_bind_picker_button(frm) {
 	try {
 		frm.remove_custom_button(__('Get Sales Orders'));
 	} catch (e3) { /* ignore */ }
-	// Reliable toolbar button (Custom DocType form Button can fail to trigger)
+	frm.add_custom_button(__('Get Planning Items'), openOnce);
 	frm.add_custom_button(__('Get Sales Orders'), openOnce);
 
 	if (frm.script_manager && frm.script_manager.events) {
+		frm.script_manager.events.get_planning_items = [openOnce];
 		frm.script_manager.events.get_sales_orders = [openOnce];
 		frm.script_manager.events.get_sales_orders_dialog = [openOnce];
+		frm.script_manager.events.process_selections = [function (f2, sels) {
+			window.jsb_club_add_selected_items(f2 || frm, sels, window._jsb_club_picker_orders || null);
+		}];
 	}
 	if (!frm.events) frm.events = {};
+	frm.events.get_planning_items = openOnce;
 	frm.events.get_sales_orders = openOnce;
 	frm.events.get_sales_orders_dialog = openOnce;
 	if (frm.cscript) {
+		frm.cscript.get_planning_items = openOnce;
 		frm.cscript.get_sales_orders = openOnce;
 		frm.cscript.get_sales_orders_dialog = openOnce;
 	}
 
-	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fname) {
+	['get_planning_items', 'get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fname) {
 		try {
 			const fld = frm.get_field(fname);
 			if (!fld || !fld.$wrapper) return;
@@ -475,6 +484,10 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     get_sales_orders: function (frm) {
+        jsb_club_open_despatch_picker(frm);
+    },
+
+    get_planning_items: function (frm) {
         jsb_club_open_despatch_picker(frm);
     },
 
@@ -631,18 +644,8 @@ window._jsb_club_picker_impl = function (frm) {
                 d.hide();
                 window._jsb_club_dialog = null;
                 window._jsb_club_picker_orders = orders;
-                // Always prefer direct helper — never depend on frm.events (old Client Scripts break that)
                 try {
-                    if (typeof window._jsb_club_process_selections === 'function') {
-                        window._jsb_club_process_selections(frm, selected, orders);
-                    } else {
-                        jsb_club_wire_process_selections(frm);
-                        if (frm.events && typeof frm.events.process_selections === 'function') {
-                            frm.events.process_selections(frm, selected, d.get_value('planned_date'));
-                        } else {
-                            frappe.msgprint(__('Add-items helper missing. Disable Clubbing Sheet Client Script, hard refresh, retry.'));
-                        }
-                    }
+                    window.jsb_club_add_selected_items(frm, selected, orders);
                 } catch (err) {
                     console.error('[Clubbing] Get Items failed', err);
                     frappe.msgprint(__('Could not add items: {0}', [err.message || String(err)]));
@@ -791,7 +794,7 @@ window._jsb_club_picker_impl = function (frm) {
 
 frappe.ui.form.on('Clubbing Sheet', {
     process_selections: function (frm, selections, planned_date) {
-        window._jsb_club_process_selections(frm, selections, null);
+        window.jsb_club_add_selected_items(frm, selections, window._jsb_club_picker_orders || null);
     },
 
     total_weight: function (frm) {
