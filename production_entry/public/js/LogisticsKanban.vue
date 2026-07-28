@@ -340,7 +340,7 @@
                           v-if="da.dn_docstatus < 1"
                           type="button"
                           class="lk-club-dn-del"
-                          :title="__('Delete draft DN')"
+                          title="Delete draft DN"
                           @click.stop="deleteClubDraftDn(da, dn)"
                         >×</button>
                       </span>
