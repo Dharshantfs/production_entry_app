@@ -8,6 +8,11 @@ frappe.ui.form.on("Delivery Note", {
 			() => jsb_dn_accounts_address_dialog(frm),
 			__("Accounts")
 		);
+		frm.add_custom_button(
+			__("Delete Draft DN"),
+			() => jsb_delete_draft_delivery_note(frm),
+			__("Delivery")
+		);
 	},
 
 	after_save(frm) {
@@ -30,6 +35,70 @@ frappe.ui.form.on("Delivery Note", {
 		});
 	},
 });
+
+function jsb_delete_draft_delivery_note(frm) {
+	const da =
+		(frappe.route_options && frappe.route_options.despatch_approval) ||
+		frm.doc.__jsb_despatch_approval ||
+		"";
+
+	const runDelete = (despatchApproval) => {
+		frappe.confirm(
+			__(
+				"Unlink and delete this draft Delivery Note from Despatch Approval {0}? Other DNs for this club stay untouched.",
+				[despatchApproval]
+			),
+			() => {
+				frappe.call({
+					method:
+						"production_entry.production_planning.despatch_logistics.delete_draft_delivery_note",
+					args: {
+						delivery_note: frm.doc.name,
+						despatch_approval: despatchApproval,
+					},
+					freeze: true,
+					freeze_message: __("Deleting Delivery Note…"),
+					callback() {
+						frappe.show_alert({
+							message: __("Delivery Note deleted"),
+							indicator: "green",
+						});
+						frappe.set_route("List", "Delivery Note");
+					},
+				});
+			}
+		);
+	};
+
+	if (da) {
+		runDelete(da);
+		return;
+	}
+
+	frappe.call({
+		method:
+			"production_entry.production_planning.despatch_logistics.get_despatch_approvals_for_delivery_note",
+		args: { delivery_note: frm.doc.name },
+		callback(r) {
+			const linked = (r.message && r.message.approvals) || [];
+			if (linked.length === 1) {
+				runDelete(linked[0]);
+			} else if (linked.length > 1) {
+				frappe.msgprint(
+					__(
+						"This Delivery Note is linked to multiple Despatch Approvals. Delete it from Logistics Kanban (× on the club card) for the correct approval."
+					)
+				);
+			} else {
+				frappe.msgprint(
+					__(
+						"This Delivery Note is not linked to a Despatch Approval. Use the standard Delete action for normal draft DNs."
+					)
+				);
+			}
+		},
+	});
+}
 
 function jsb_dn_accounts_address_dialog(frm) {
 	const d = new frappe.ui.Dialog({

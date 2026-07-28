@@ -326,13 +326,24 @@
                       Despatched — Open DN
                     </button>
                     <div v-if="da.delivery_notes?.length" class="lk-club-dn-list">
-                      <a
+                      <span
                         v-for="dn in da.delivery_notes"
                         :key="dn"
-                        href="#"
-                        class="lk-club-dn-link"
-                        @click.prevent="openDnForm(dn)"
-                      >{{ dn }}</a>
+                        class="lk-club-dn-item"
+                      >
+                        <a
+                          href="#"
+                          class="lk-club-dn-link"
+                          @click.prevent="openDnForm(dn)"
+                        >{{ dn }}</a>
+                        <button
+                          v-if="da.dn_docstatus < 1"
+                          type="button"
+                          class="lk-club-dn-del"
+                          :title="__('Delete draft DN')"
+                          @click.stop="deleteClubDraftDn(da, dn)"
+                        >×</button>
+                      </span>
                     </div>
                   </div>
                 </template>
@@ -1031,6 +1042,27 @@ async function submitClubDns(da) {
 
 function openDnForm(dn) {
   if (dn) frappe.set_route("Form", "Delivery Note", dn);
+}
+
+async function deleteClubDraftDn(da, dn) {
+  if (!dn || !da?.name) return;
+  frappe.confirm(
+    __("Delete draft DN {0} only for this Despatch Approval? Other DNs for this club are not affected.", [dn]),
+    async () => {
+      try {
+        await frappe.call({
+          method: `${DESPATCH_API}.delete_draft_delivery_note`,
+          args: { delivery_note: dn, despatch_approval: da.name },
+          freeze: true,
+          freeze_message: __("Deleting Delivery Note…"),
+        });
+        frappe.show_alert({ message: __("Deleted {0}", [dn]), indicator: "green" });
+        await loadDespatchCards();
+      } catch (e) {
+        frappe.msgprint(formatClubScanError(e));
+      }
+    }
+  );
 }
 
 async function openDeliveryNote(da) {
@@ -1756,10 +1788,31 @@ watch([despatchArrangementLocked, approvedArrangementLocked, mode], () => {
   flex-wrap: wrap;
   gap: 6px;
 }
+.lk-club-dn-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: #f0f9ff;
+  border-radius: 4px;
+  padding: 0 4px;
+}
 .lk-club-dn-link {
   font-size: 11px;
   font-weight: 600;
   color: #0369a1;
+}
+.lk-club-dn-del {
+  border: none;
+  background: transparent;
+  color: #b91c1c;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.lk-club-dn-del:hover {
+  color: #7f1d1d;
 }
 .lk-history-go {
   font-size: 12px;

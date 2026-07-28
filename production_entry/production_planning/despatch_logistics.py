@@ -277,6 +277,78 @@ def _sync_despatch_delivery_notes(despatch_approval, persist=False):
 	return active
 
 
+def _despatch_approvals_referencing_dn(dn_name):
+	"""Despatch Approvals that link to this Delivery Note (header or JSON list)."""
+	dn_name = _cstr(dn_name).strip()
+	if not dn_name:
+		return []
+	found = set()
+	rows = frappe.db.sql(
+		"""
+		select name from `tabDespatch Approval`
+		where delivery_note = %s
+		""",
+		dn_name,
+		as_dict=True,
+	) or []
+	for r in rows:
+		found.add(r.name)
+	if frappe.db.has_column("Despatch Approval", "custom_delivery_notes"):
+		extra = frappe.db.sql(
+			"""
+			select name from `tabDespatch Approval`
+			where ifnull(custom_delivery_notes, '') like %s
+			""",
+			f'%"{dn_name}"%',
+			as_dict=True,
+		) or []
+		for r in extra:
+			found.add(r.name)
+	return sorted(found)
+
+
+def _despatch_approval_has_submitted_dn(da_name):
+	"""True if any linked Delivery Note on this approval is submitted."""
+	if not da_name or not frappe.db.exists("Despatch Approval", da_name):
+		return False
+	row = frappe.db.get_value(
+		"Despatch Approval",
+		da_name,
+		["delivery_note", "custom_delivery_notes"],
+		as_dict=True,
+	)
+	if not row:
+		return False
+	names = _active_delivery_note_names(_collect_despatch_delivery_note_names(row))
+	for nm in names:
+		if cint(frappe.db.get_value("Delivery Note", nm, "docstatus") or 0) >= 1:
+			return True
+	return False
+
+
+def _remove_dn_from_despatch_approval(da_name, dn_name):
+	"""Unlink one Delivery Note from Despatch Approval and refresh planning status."""
+	dn_name = _cstr(dn_name).strip()
+	if not da_name or not dn_name or not frappe.db.exists("Despatch Approval", da_name):
+		return False
+	da = frappe.get_doc("Despatch Approval", da_name)
+	current = _sync_despatch_delivery_notes(da, persist=False)
+	if dn_name not in current:
+		return False
+	remaining = [n for n in current if n != dn_name]
+	_save_delivery_notes_json(da_name, remaining)
+	primary = remaining[0] if remaining else ""
+	if _cstr(da.delivery_note) != primary:
+		frappe.db.set_value(
+			"Despatch Approval", da_name, "delivery_note", primary, update_modified=True
+		)
+	for ln in da.lines or []:
+		ptr = _cstr(ln.planning_table_row)
+		if ptr:
+			update_planning_row_despatch_status(ptr)
+	return True
+
+
 def _sync_psi_despatch_fields(pt_name, updates):
 	if not updates or not frappe.db.table_exists("Planning sheet Item"):
 		return
@@ -334,11 +406,8 @@ def update_planning_row_despatch_status(ptr):
 			for r in rows:
 				if r.get("status") == "Approved":
 					approval = _cstr(r.get("name"))
-					dn = _cstr(r.get("delivery_note"))
-					if dn and frappe.db.exists("Delivery Note", dn):
-						ds = cint(frappe.db.get_value("Delivery Note", dn, "docstatus") or 0)
-						if ds >= 1:
-							final_status = "Despatched"
+					if _despatch_approval_has_submitted_dn(approval):
+						final_status = "Despatched"
 					break
 		else:
 			final_status = statuses[0] or ""
@@ -1400,6 +1469,63 @@ def link_delivery_note_to_despatch(despatch_approval=None, delivery_note=None):
 	frappe.db.set_value("Despatch Approval", da_name, "delivery_note", dn_name, update_modified=True)
 	frappe.db.commit()
 	return {"ok": True, "despatch_approval": da_name, "delivery_note": dn_name}
+
+
+@frappe.whitelist()
+def get_despatch_approvals_for_delivery_note(delivery_note=None):
+	"""List Despatch Approvals linked to this Delivery Note (read-only)."""
+	dn_name = _cstr(delivery_note).strip()
+	if not dn_name:
+		return {"approvals": []}
+	return {"approvals": _despatch_approvals_referencing_dn(dn_name)}
+
+
+@frappe.whitelist()
+def unlink_delivery_note_from_despatch(delivery_note=None, despatch_approval=None):
+	"""Unlink Delivery Note from one Despatch Approval without deleting the DN."""
+	dn_name = _cstr(delivery_note).strip()
+	da_name = _cstr(despatch_approval).strip()
+	if not dn_name:
+		frappe.throw(_("Delivery Note is required."))
+	if not da_name:
+		frappe.throw(_("Despatch Approval is required."))
+	if not _remove_dn_from_despatch_approval(da_name, dn_name):
+		frappe.throw(
+			_("Delivery Note {0} is not linked to Despatch Approval {1}.").format(dn_name, da_name)
+		)
+	frappe.db.commit()
+	return {"ok": True, "unlinked": [da_name], "delivery_note": dn_name}
+
+
+@frappe.whitelist()
+def delete_draft_delivery_note(delivery_note=None, despatch_approval=None):
+	"""Unlink then delete one draft DN that belongs to this Despatch Approval only."""
+	dn_name = _cstr(delivery_note).strip()
+	da_name = _cstr(despatch_approval).strip()
+	if not dn_name or not frappe.db.exists("Delivery Note", dn_name):
+		frappe.throw(_("Delivery Note not found."))
+	if not da_name or not frappe.db.exists("Despatch Approval", da_name):
+		frappe.throw(_("Despatch Approval is required."))
+	ds = cint(frappe.db.get_value("Delivery Note", dn_name, "docstatus") or 0)
+	if ds != 0:
+		frappe.throw(_("Only draft Delivery Notes can be deleted. Cancel submitted notes instead."))
+
+	da = frappe.get_doc("Despatch Approval", da_name)
+	linked = _sync_despatch_delivery_notes(da, persist=False)
+	if dn_name not in linked:
+		frappe.throw(
+			_("Delivery Note {0} is not linked to Despatch Approval {1}.").format(dn_name, da_name)
+		)
+
+	_remove_dn_from_despatch_approval(da_name, dn_name)
+	frappe.delete_doc("Delivery Note", dn_name, ignore_permissions=True)
+	frappe.db.commit()
+	return {
+		"ok": True,
+		"deleted": dn_name,
+		"despatch_approval": da_name,
+		"clubbing_sheet": _cstr(getattr(da, "custom_clubbing_sheet", None) or ""),
+	}
 
 
 @frappe.whitelist()
