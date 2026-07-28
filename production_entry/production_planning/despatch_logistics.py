@@ -162,6 +162,37 @@ def _has_dal_scan_field():
 	return frappe.db.has_column("Despatch Approval Line", "custom_scanned")
 
 
+def _has_da_lane_date_field():
+	return frappe.db.has_column("Despatch Approval", "custom_despatch_lane_date")
+
+
+def _despatch_lane_date(da):
+	"""Stable logistics lane date — not bumped when DN links change."""
+	if isinstance(da, dict):
+		if _has_da_lane_date_field():
+			ld = _cstr(da.get("custom_despatch_lane_date"))[:10]
+			if ld:
+				return ld
+		return _cstr(da.get("creation"))[:10]
+	if _has_da_lane_date_field():
+		ld = _cstr(getattr(da, "custom_despatch_lane_date", None) or "")[:10]
+		if ld:
+			return ld
+	return _cstr(getattr(da, "creation", None) or "")[:10]
+
+
+def _set_despatch_lane_date(da_name, lane_date, update_modified=False):
+	if not _has_da_lane_date_field() or not da_name:
+		return
+	frappe.db.set_value(
+		"Despatch Approval",
+		da_name,
+		"custom_despatch_lane_date",
+		getdate(lane_date),
+		update_modified=update_modified,
+	)
+
+
 def _club_fields_for_ptrs(ptrs):
 	"""Map Planning Table name → clubbing_sheet / loading_sequence / load_order / despatch_customer."""
 	names = [_cstr(p) for p in (ptrs or []) if _cstr(p) and not _cstr(p).startswith("sprgrp:")]
@@ -340,7 +371,7 @@ def _remove_dn_from_despatch_approval(da_name, dn_name):
 	primary = remaining[0] if remaining else ""
 	if _cstr(da.delivery_note) != primary:
 		frappe.db.set_value(
-			"Despatch Approval", da_name, "delivery_note", primary, update_modified=True
+			"Despatch Approval", da_name, "delivery_note", primary, update_modified=False
 		)
 	for ln in da.lines or []:
 		ptr = _cstr(ln.planning_table_row)
@@ -591,6 +622,8 @@ def get_despatch_company_cards(
 			approval_fields.append("custom_clubbing_sheet")
 		if frappe.db.has_column("Despatch Approval", "custom_delivery_notes"):
 			approval_fields.append("custom_delivery_notes")
+		if _has_da_lane_date_field():
+			approval_fields.append("custom_despatch_lane_date")
 		approvals = frappe.get_all(
 			"Despatch Approval",
 			filters=filters,
@@ -600,7 +633,7 @@ def get_despatch_company_cards(
 		)
 		enriched = []
 		for da in approvals or []:
-			despatch_date = _cstr(da.get("modified") or da.get("creation"))[:10]
+			despatch_date = _despatch_lane_date(da)
 			if not _transfer_date_in_scope(despatch_date, view_scope, date, week, month):
 				continue
 			line_fields = ["party_code", "customer_name", "item_code", "qty", "batch_no", "name"]
@@ -1051,6 +1084,8 @@ def create_despatch_approval_request(from_company=None, lines=None):
 	doc.from_company = fc
 	doc.status = "Pending Approval"
 	doc.requested_by = frappe.session.user
+	if _has_da_lane_date_field():
+		doc.custom_despatch_lane_date = getdate()
 
 	club_ids = set()
 	for line in parsed:
@@ -1196,7 +1231,7 @@ def get_despatch_approvals(status_filter=None, limit=200, from_date=None, to_dat
 		row["order_codes"] = codes
 		row["order_codes_label"] = ", ".join(codes)
 		row["customers_label"] = ", ".join(customers_by_parent.get(row.name, []))
-		row["despatch_date"] = str(row.get("creation") or "")[:10]
+		row["despatch_date"] = _despatch_lane_date(row)
 		dn_name = _cstr(row.get("delivery_note"))
 		row["dn_docstatus"] = 0
 		if dn_name and frappe.db.exists("Delivery Note", dn_name):
@@ -1258,6 +1293,8 @@ def approve_despatch_approval(name=None):
 		return {"ok": True, "name": name, "delivery_note": da.delivery_note}
 	if da.status == "Rejected":
 		frappe.throw(_("This despatch was rejected."))
+	if _has_da_lane_date_field() and not _cstr(getattr(da, "custom_despatch_lane_date", None)):
+		da.custom_despatch_lane_date = getdate()
 	da.status = "Approved"
 	da.approved_by = frappe.session.user
 	da.save(ignore_permissions=True)
@@ -1466,9 +1503,24 @@ def link_delivery_note_to_despatch(despatch_approval=None, delivery_note=None):
 	cur = _cstr(frappe.db.get_value("Despatch Approval", da_name, "delivery_note"))
 	if cur and cur != dn_name and frappe.db.exists("Delivery Note", cur):
 		frappe.throw(_("Despatch Approval already linked to {0}.").format(cur))
-	frappe.db.set_value("Despatch Approval", da_name, "delivery_note", dn_name, update_modified=True)
+	frappe.db.set_value("Despatch Approval", da_name, "delivery_note", dn_name, update_modified=False)
 	frappe.db.commit()
 	return {"ok": True, "despatch_approval": da_name, "delivery_note": dn_name}
+
+
+@frappe.whitelist()
+def move_despatch_approval_to_date(name=None, lane_date=None):
+	"""Move approved despatch to another logistics lane date (like Production Table pull)."""
+	da_name = _cstr(name).strip()
+	if not da_name or not frappe.db.exists("Despatch Approval", da_name):
+		frappe.throw(_("Despatch Approval not found."))
+	if not lane_date:
+		frappe.throw(_("Despatch date is required."))
+	if not _has_da_lane_date_field():
+		frappe.throw(_("Despatch lane date field missing — run bench migrate."))
+	_set_despatch_lane_date(da_name, lane_date, update_modified=False)
+	frappe.db.commit()
+	return {"ok": True, "name": da_name, "lane_date": str(getdate(lane_date))}
 
 
 @frappe.whitelist()
@@ -1707,7 +1759,7 @@ def create_draft_delivery_notes_from_despatch(name=None):
 		frappe.throw(_("No Delivery Notes created."))
 
 	_save_delivery_notes_json(da.name, names)
-	frappe.db.set_value("Despatch Approval", da.name, "delivery_note", names[0], update_modified=True)
+	frappe.db.set_value("Despatch Approval", da.name, "delivery_note", names[0], update_modified=False)
 	frappe.db.commit()
 	return {"ok": True, "mode": "created", "delivery_notes": names}
 

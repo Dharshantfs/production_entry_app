@@ -243,6 +243,15 @@
                   <span class="lk-da-badge">{{ despatchCardBadge(da) }}</span>
                   <span class="lk-da-id">{{ da.clubbing_sheet || da.name }}</span>
                 </div>
+                <div class="lk-da-row lk-da-date-row" @click.stop>
+                  <span class="lk-da-label">Despatch date</span>
+                  <input
+                    type="date"
+                    class="lk-input-date lk-da-date-input"
+                    :value="da.despatch_date || ''"
+                    @change="moveDespatchToDate(da, $event.target.value)"
+                  />
+                </div>
 
                 <template v-if="da.clubbing_sheet">
                   <div class="lk-da-grid">
@@ -1065,6 +1074,22 @@ async function deleteClubDraftDn(da, dn) {
   );
 }
 
+async function moveDespatchToDate(da, laneDate) {
+  if (!da?.name || !laneDate || laneDate === da.despatch_date) return;
+  try {
+    await frappe.call({
+      method: `${DESPATCH_API}.move_despatch_approval_to_date`,
+      args: { name: da.name, lane_date: laneDate },
+      freeze: true,
+      freeze_message: __("Moving despatch date…"),
+    });
+    frappe.show_alert({ message: __("Moved to {0}", [laneDate]), indicator: "green" });
+    await loadDespatchCards();
+  } catch (e) {
+    frappe.msgprint(formatClubScanError(e));
+  }
+}
+
 async function openDeliveryNote(da) {
   if (!da?.name) return;
   const first = (da.delivery_notes && da.delivery_notes[0]) || da.delivery_note;
@@ -1813,6 +1838,15 @@ watch([despatchArrangementLocked, approvedArrangementLocked, mode], () => {
 }
 .lk-club-dn-del:hover {
   color: #7f1d1d;
+}
+.lk-da-date-row {
+  margin: 4px 0 8px;
+  padding: 0 2px;
+}
+.lk-da-date-input {
+  max-width: 140px;
+  font-size: 11px;
+  padding: 2px 6px;
 }
 .lk-history-go {
   font-size: 12px;
