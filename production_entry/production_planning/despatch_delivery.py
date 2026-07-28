@@ -351,8 +351,8 @@ def _rolls_json_for_batches(batch_entries):
 	return rolls
 
 
-def _make_outward_batch_bundle(item_code, warehouse, batch_entries):
-	"""Create Serial and Batch Bundle for multi-batch DN line."""
+def _make_outward_batch_bundle(item_code, warehouse, batch_entries, company=None):
+	"""Create Serial and Batch Bundle with all scanned batches for one DN line."""
 	if not batch_entries or not frappe.db.exists("DocType", "Serial and Batch Bundle"):
 		return ""
 	if not frappe.db.has_column("Delivery Note Item", "serial_and_batch_bundle"):
@@ -363,34 +363,68 @@ def _make_outward_batch_bundle(item_code, warehouse, batch_entries):
 	bundle.type_of_transaction = "Outward"
 	bundle.voucher_type = "Delivery Note"
 	bundle.has_batch_no = 1
+	if company and hasattr(bundle, "company"):
+		bundle.company = company
 	for bn, qty in batch_entries:
 		if not bn or flt(qty) <= 0:
 			continue
 		bundle.append(
 			"entries",
-			{"batch_no": bn, "qty": flt(qty), "warehouse": warehouse},
+			{"batch_no": bn, "qty": abs(flt(qty)), "warehouse": warehouse},
 		)
 	if not bundle.entries:
 		return ""
+	bundle.flags.ignore_permissions = True
 	bundle.insert(ignore_permissions=True)
 	return bundle.name
 
 
-def _apply_batch_fields_to_dn_row(row, item_code, warehouse, batch_entries):
-	"""Set batch_no or serial_and_batch_bundle on DN item row."""
+def _apply_batch_fields_to_dn_row(row, item_code, warehouse, batch_entries, company=None):
+	"""Attach all scanned batches via Serial and Batch Bundle (never single batch_no for multi).
+
+	Must set use_serial_batch_fields=0 so ERPNext uses the bundle instead of the
+	legacy Batch No field (which only supports one batch per row).
+	"""
 	if not batch_entries:
 		return
 	has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
 	if not has_batch:
 		return
-	if len(batch_entries) == 1:
+
+	# Always use Serial and Batch Bundle so all scanned rolls despatch on submit
+	bundle = _make_outward_batch_bundle(item_code, warehouse, batch_entries, company=company)
+	if bundle:
+		row["serial_and_batch_bundle"] = bundle
+		# Do not set batch_no when bundle has the batches — avoids overwrite
+		if frappe.db.has_column("Delivery Note Item", "use_serial_batch_fields"):
+			row["use_serial_batch_fields"] = 0
+	elif len(batch_entries) == 1:
+		# Fallback if bundle DocType/column missing
 		row["batch_no"] = batch_entries[0][0]
-	elif len(batch_entries) > 1:
-		bundle = _make_outward_batch_bundle(item_code, warehouse, batch_entries)
-		if bundle:
-			row["serial_and_batch_bundle"] = bundle
-	if frappe.db.has_column("Delivery Note Item", "use_serial_batch_fields"):
-		row["use_serial_batch_fields"] = 1
+		if frappe.db.has_column("Delivery Note Item", "use_serial_batch_fields"):
+			row["use_serial_batch_fields"] = 1
+
+
+def _link_dn_item_bundles(dn):
+	"""After insert, point each Serial and Batch Bundle at its DN row."""
+	if not dn or not dn.name:
+		return
+	for item in dn.items or []:
+		bundle = _cstr(getattr(item, "serial_and_batch_bundle", None) or "")
+		if not bundle or not frappe.db.exists("Serial and Batch Bundle", bundle):
+			continue
+		updates = {"voucher_no": dn.name, "voucher_detail_no": item.name}
+		if frappe.db.has_column("Serial and Batch Bundle", "voucher_type"):
+			updates["voucher_type"] = "Delivery Note"
+		frappe.db.set_value("Serial and Batch Bundle", bundle, updates, update_modified=False)
+
+
+def _order_code_from_lines(grp_lines, fallback_party_code=""):
+	for ln in grp_lines or []:
+		pc = _cstr(_line_get(ln, "party_code"))
+		if pc:
+			return pc
+	return _cstr(fallback_party_code)
 
 
 def build_delivery_note_from_despatch(despatch_approval, party_code=None, despatch_customer=None):
@@ -481,7 +515,16 @@ def build_delivery_note_from_despatch(despatch_approval, party_code=None, despat
 				row["against_sales_order_item"] = so_detail
 
 		batch_entries = grp.get("batches") or []
-		_apply_batch_fields_to_dn_row(row, item_code, wh, batch_entries)
+		_apply_batch_fields_to_dn_row(row, item_code, wh, batch_entries, company=fc)
+
+		order_code = _order_code_from_lines(grp_lines, pc_filter or "")
+		if order_code:
+			if _doc_has_field("Delivery Note Item", "custom_order_code"):
+				row["custom_order_code"] = order_code
+			elif _doc_has_field("Delivery Note Item", "order_code"):
+				row["order_code"] = order_code
+			elif _doc_has_field("Delivery Note Item", "party_code"):
+				row["party_code"] = order_code
 
 		rolls = _rolls_json_for_batches(batch_entries)
 		if rolls and _doc_has_field("Delivery Note Item", "custom_despatch_rolls_json"):
@@ -515,6 +558,7 @@ def create_draft_delivery_notes_by_order(despatch_approval):
 	for dc, pc in order_keys:
 		dn = build_delivery_note_from_despatch(da, party_code=pc, despatch_customer=dc)
 		dn.insert(ignore_permissions=True)
+		_link_dn_item_bundles(dn)
 		names.append(dn.name)
 	return names
 
@@ -523,4 +567,5 @@ def make_delivery_note_from_despatch(despatch_approval):
 	"""Insert draft Delivery Note (legacy auto-create path)."""
 	dn = build_delivery_note_from_despatch(despatch_approval)
 	dn.insert(ignore_permissions=True)
+	_link_dn_item_bundles(dn)
 	return dn.name

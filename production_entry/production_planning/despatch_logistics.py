@@ -1548,6 +1548,22 @@ def get_delivery_note_item_rolls(delivery_note=None, item_code=None, child_name=
 			except Exception:
 				rolls = []
 
+		# Fallback: rebuild rolls from Serial and Batch Bundle entries
+		if not rolls:
+			bundle = _cstr(getattr(dn_item, "serial_and_batch_bundle", None) or "")
+			if bundle and frappe.db.exists("Serial and Batch Bundle", bundle):
+				entries = frappe.get_all(
+					"Serial and Batch Entry",
+					filters={"parent": bundle},
+					fields=["batch_no", "qty"],
+					order_by="idx asc",
+				)
+				for e in entries:
+					bn = _cstr(e.get("batch_no"))
+					if not bn:
+						continue
+					rolls.append(_roll_detail_from_batch(bn, abs(flt(e.get("qty")))))
+
 	if not rolls:
 		da_name = _cstr(getattr(dn, "custom_despatch_approval", None) or "")
 		if not da_name:
