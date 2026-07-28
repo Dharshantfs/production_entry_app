@@ -216,6 +216,67 @@ def _save_delivery_notes_json(da_name, names):
 	)
 
 
+def _collect_despatch_delivery_note_names(da):
+	"""Merge custom_delivery_notes JSON + delivery_note header (dict or doc)."""
+	names = []
+	seen = set()
+	if isinstance(da, dict):
+		raw = da.get("custom_delivery_notes")
+		header = _cstr(da.get("delivery_note"))
+	else:
+		raw = getattr(da, "custom_delivery_notes", None)
+		header = _cstr(getattr(da, "delivery_note", None))
+	for nm in ([header] if header else []) + _parse_delivery_notes_json(raw or ""):
+		nm = _cstr(nm)
+		if nm and nm not in seen:
+			seen.add(nm)
+			names.append(nm)
+	return names
+
+
+def _active_delivery_note_names(names):
+	active = []
+	for nm in names or []:
+		if not frappe.db.exists("Delivery Note", nm):
+			continue
+		ds = cint(frappe.db.get_value("Delivery Note", nm, "docstatus") or 0)
+		if ds < 2:
+			active.append(nm)
+	return active
+
+
+def _sync_despatch_delivery_notes(despatch_approval, persist=False):
+	"""Drop deleted/cancelled DN refs so Create DN works again after delete."""
+	if isinstance(despatch_approval, dict):
+		da_dict = despatch_approval
+		da_name = da_dict.get("name")
+	elif isinstance(despatch_approval, str):
+		da_name = despatch_approval
+		da_dict = frappe.get_doc("Despatch Approval", da_name).as_dict()
+	else:
+		da_name = despatch_approval.name
+		da_dict = despatch_approval.as_dict()
+
+	stored = _parse_delivery_notes_json(da_dict.get("custom_delivery_notes") or "")
+	all_names = _collect_despatch_delivery_note_names(da_dict)
+	active = _active_delivery_note_names(all_names)
+
+	if persist and da_name:
+		primary = active[0] if active else ""
+		cur_primary = _cstr(da_dict.get("delivery_note"))
+		if active != stored or cur_primary != primary:
+			_save_delivery_notes_json(da_name, active)
+			if cur_primary != primary:
+				frappe.db.set_value(
+					"Despatch Approval",
+					da_name,
+					"delivery_note",
+					primary,
+					update_modified=False,
+				)
+	return active
+
+
 def _sync_psi_despatch_fields(pt_name, updates):
 	if not updates or not frappe.db.table_exists("Planning sheet Item"):
 		return
@@ -533,10 +594,8 @@ def get_despatch_company_cards(
 			if oc and not any(oc in _cstr(x).lower() for x in codes):
 				continue
 			total_qty = round(sum(flt(ln.get("qty")) for ln in lines), 3)
-			dn_name = _cstr(da.delivery_note)
-			dn_list = _parse_delivery_notes_json(da.get("custom_delivery_notes"))
-			if dn_name and dn_name not in dn_list:
-				dn_list = [dn_name] + dn_list
+			dn_list = _sync_despatch_delivery_notes(da, persist=True)
+			dn_name = dn_list[0] if dn_list else ""
 			dn_docstatus = 0
 			all_submitted = True
 			any_draft = False
@@ -584,7 +643,7 @@ def get_despatch_company_cards(
 					"delivery_notes": dn_list,
 					"dn_docstatus": dn_docstatus,
 					"all_dns_submitted": bool(dn_list and all_submitted),
-					"has_draft_dns": bool(any_draft or (dn_list and not all_submitted)),
+					"has_draft_dns": bool(any_draft),
 					"roll_count": roll_count,
 					"item_count": item_count,
 					"line_count": len(lines),
@@ -1310,12 +1369,14 @@ def prepare_delivery_note_from_despatch_approval(name=None):
 	da = frappe.get_doc("Despatch Approval", name)
 	if da.status != "Approved":
 		frappe.throw(_("Despatch must be approved before creating Delivery Note."))
-	if da.delivery_note and frappe.db.exists("Delivery Note", da.delivery_note):
-		ds = cint(frappe.db.get_value("Delivery Note", da.delivery_note, "docstatus") or 0)
+	active_dns = _sync_despatch_delivery_notes(da, persist=True)
+	if active_dns:
+		primary = active_dns[0]
+		ds = cint(frappe.db.get_value("Delivery Note", primary, "docstatus") or 0)
 		return {
 			"ok": True,
 			"mode": "existing",
-			"delivery_note": da.delivery_note,
+			"delivery_note": primary,
 			"docstatus": ds,
 		}
 	from production_entry.production_planning.despatch_delivery import build_delivery_note_from_despatch
@@ -1401,9 +1462,7 @@ def get_despatch_approval_club_detail(name=None):
 			active = o["party_code"]
 			break
 
-	dn_list = _parse_delivery_notes_json(getattr(da, "custom_delivery_notes", None) or "")
-	if da.delivery_note and da.delivery_note not in dn_list:
-		dn_list = [da.delivery_note] + dn_list
+	dn_list = _sync_despatch_delivery_notes(da, persist=True)
 
 	return {
 		"ok": True,
@@ -1416,7 +1475,7 @@ def get_despatch_approval_club_detail(name=None):
 		"scan_line_total": line_total,
 		"scan_complete": line_total > 0 and scanned_total >= line_total,
 		"delivery_notes": dn_list,
-		"delivery_note": da.delivery_note,
+		"delivery_note": dn_list[0] if dn_list else "",
 	}
 
 
@@ -1503,9 +1562,7 @@ def create_draft_delivery_notes_from_despatch(name=None):
 	if da.status != "Approved":
 		frappe.throw(_("Despatch must be approved before creating Delivery Notes."))
 
-	existing = _parse_delivery_notes_json(getattr(da, "custom_delivery_notes", None) or "")
-	if da.delivery_note and da.delivery_note not in existing:
-		existing = [da.delivery_note] + existing
+	existing = _sync_despatch_delivery_notes(da, persist=True)
 	if existing:
 		return {"ok": True, "mode": "existing", "delivery_notes": existing}
 
@@ -1535,9 +1592,7 @@ def submit_delivery_notes_from_despatch(name=None):
 	if not name or not frappe.db.exists("Despatch Approval", name):
 		frappe.throw(_("Despatch Approval not found."))
 	da = frappe.get_doc("Despatch Approval", name)
-	dn_list = _parse_delivery_notes_json(getattr(da, "custom_delivery_notes", None) or "")
-	if da.delivery_note and da.delivery_note not in dn_list:
-		dn_list = [da.delivery_note] + dn_list
+	dn_list = _sync_despatch_delivery_notes(da, persist=True)
 	if not dn_list:
 		frappe.throw(_("Create Delivery Notes first."))
 

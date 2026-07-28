@@ -121,6 +121,112 @@ def cint_safe(v):
 		return 0
 
 
+def _doc_has_field(doctype, fieldname):
+	if not doctype or not fieldname:
+		return False
+	try:
+		return bool(frappe.get_meta(doctype).has_field(fieldname))
+	except Exception:
+		return bool(frappe.db.has_column(doctype, fieldname))
+
+
+def _set_dn_field(dn, fieldname, value):
+	val = _cstr(value).strip() if value is not None else ""
+	if not val or not _doc_has_field("Delivery Note", fieldname):
+		return
+	dn.set(fieldname, val)
+
+
+def _club_field_value(club, *fieldnames):
+	for fn in fieldnames:
+		if not _doc_has_field("Clubbing Sheet", fn):
+			continue
+		val = _cstr(club.get(fn)).strip()
+		if val:
+			return fn, val
+	return None, ""
+
+
+def _driver_link_doctype():
+	try:
+		df = frappe.get_meta("Clubbing Sheet").get_field("driver")
+		if df and df.fieldtype == "Link" and _cstr(df.options):
+			return _cstr(df.options)
+	except Exception:
+		pass
+	return "Driver"
+
+
+def _resolve_transporter(value):
+	val = _cstr(value).strip()
+	if not val:
+		return ""
+	if frappe.db.exists("Supplier", val):
+		return val
+	found = frappe.db.get_value("Supplier", {"supplier_name": val}, "name")
+	if found:
+		return found
+	if frappe.db.has_column("Supplier", "is_transporter"):
+		found = frappe.db.get_value(
+			"Supplier", {"supplier_name": val, "is_transporter": 1}, "name"
+		)
+		if found:
+			return found
+	return val
+
+
+def _value_from_driver_master(driver, driver_dt, *fieldnames):
+	if not driver or not driver_dt or not frappe.db.exists(driver_dt, driver):
+		return ""
+	for fn in fieldnames:
+		if not frappe.db.has_column(driver_dt, fn):
+			continue
+		val = _cstr(frappe.db.get_value(driver_dt, driver, fn)).strip()
+		if val:
+			return val
+	return ""
+
+
+def _apply_clubbing_transporter_to_dn(dn, despatch_approval):
+	"""Copy transport fields from linked Clubbing Sheet onto Delivery Note."""
+	if not frappe.db.exists("DocType", "Clubbing Sheet"):
+		return
+	club_name = _cstr(getattr(despatch_approval, "custom_clubbing_sheet", None) or "")
+	if not club_name or not frappe.db.exists("Clubbing Sheet", club_name):
+		return
+
+	club = frappe.get_doc("Clubbing Sheet", club_name)
+
+	_, logistics = _club_field_value(club, "logistics_partner", "transporter")
+	if logistics:
+		_set_dn_field(dn, "transporter", _resolve_transporter(logistics))
+
+	_, driver = _club_field_value(club, "driver")
+	driver_dt = _driver_link_doctype()
+	if driver:
+		_set_dn_field(dn, "driver", driver)
+		driver_name = _value_from_driver_master(
+			driver, driver_dt, "driver_name", "full_name", "employee_name", "name1"
+		)
+		if driver_name:
+			_set_dn_field(dn, "driver_name", driver_name)
+
+	_, vehicle_no = _club_field_value(club, "vehicle_no")
+	if vehicle_no:
+		_set_dn_field(dn, "vehicle_no", vehicle_no)
+
+	_, driver_phone = _club_field_value(club, "driver_ph_no", "driver_phone", "driver_ph")
+	if not driver_phone and driver:
+		driver_phone = _value_from_driver_master(
+			driver, driver_dt, "cell_number", "mobile_no", "phone", "driver_ph_no", "contact_number"
+		)
+	if driver_phone:
+		for fn in ("driver_ph_no", "driver_phone", "driver_ph", "custom_driver_ph_no"):
+			if _doc_has_field("Delivery Note", fn):
+				_set_dn_field(dn, fn, driver_phone)
+				break
+
+
 def _match_so_detail(sales_order, item_code, qty):
 	"""Best-effort SO Item name for against_sales_order_item / so_detail."""
 	if not sales_order or not item_code:
@@ -205,6 +311,7 @@ def build_delivery_note_from_despatch(despatch_approval, party_code=None, despat
 	dn.posting_date = getdate()
 	dn.set_warehouse = wh
 	_apply_dn_addresses(dn, customer, against_so)
+	_apply_clubbing_transporter_to_dn(dn, da)
 
 	for ln in lines:
 		qty = flt(_line_get(ln, "qty")) or flt(_line_get(ln, "net_weight"))
