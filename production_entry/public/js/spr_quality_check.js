@@ -2,9 +2,21 @@
 
 const QC_DOCTYPE = "Quality Checking";
 const TESTING_TYPES = {
-	gsm: "GSM Testing",
+	// Legacy callers map to Round (same flow as before GSM testing)
+	gsm: "Round Cutting GSM Test",
+	round_gsm: "Round Cutting GSM Test",
+	patty_gsm: "Patty Cutting GSM Test",
 	tensile: "Tensile Testing",
 };
+
+const TEMPLATE_WIDTH_FIELDS = [
+	"cutting_template_width",
+	"custom_cutting_template_width",
+];
+const TEMPLATE_HEIGHT_FIELDS = [
+	"cutting_template_height",
+	"custom_cutting_template_height",
+];
 
 function cint(v) {
 	const n = parseInt(v, 10);
@@ -201,6 +213,52 @@ async function findExistingQcDraft(sprName, testingType, selectedRoll) {
 	return "";
 }
 
+function qcMetaHasField(fieldname) {
+	try {
+		const meta = frappe.get_meta(QC_DOCTYPE);
+		const fields = (meta && meta.fields) || [];
+		return !!fields.find((f) => f.fieldname === fieldname);
+	} catch {
+		return false;
+	}
+}
+
+function firstSprField(spr, candidates) {
+	for (const fn of candidates) {
+		const v = spr?.[fn];
+		if (v !== undefined && v !== null && String(v).trim() !== "") {
+			return { fieldname: fn, value: v };
+		}
+	}
+	return null;
+}
+
+function applyPattyTemplateDefaults(defaults, spr) {
+	const isPatty =
+		String(defaults.testing_type || "").toLowerCase().includes("patty");
+	if (!isPatty) {
+		return;
+	}
+	const w = firstSprField(spr, TEMPLATE_WIDTH_FIELDS);
+	if (w) {
+		for (const fn of TEMPLATE_WIDTH_FIELDS) {
+			if (qcMetaHasField(fn)) {
+				defaults[fn] = w.value;
+				break;
+			}
+		}
+	}
+	const h = firstSprField(spr, TEMPLATE_HEIGHT_FIELDS);
+	if (h) {
+		for (const fn of TEMPLATE_HEIGHT_FIELDS) {
+			if (qcMetaHasField(fn)) {
+				defaults[fn] = h.value;
+				break;
+			}
+		}
+	}
+}
+
 async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 	if (!(await frappe.db.exists("DocType", QC_DOCTYPE))) {
 		frappe.msgprint(
@@ -237,6 +295,7 @@ async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 		batch_no: selectedRoll?.batch_no || "",
 		roll_no: cint(selectedRoll?.roll_no) || rollSuffix(selectedRoll) || 0,
 	};
+	applyPattyTemplateDefaults(defaults, spr);
 
 	await new Promise((resolve, reject) => {
 		frappe.model.with_doctype(QC_DOCTYPE, () => {
@@ -278,6 +337,10 @@ async function openSprQualityCheck(sprName, testType, jobId) {
 frappe.provide("production_entry.spr_quality_check");
 
 production_entry.spr_quality_check.openSprGsmTesting = (sprName, jobId) =>
-	openSprQualityCheck(sprName, "gsm", jobId);
+	openSprQualityCheck(sprName, "round_gsm", jobId);
+production_entry.spr_quality_check.openSprRoundCuttingGsmTesting = (sprName, jobId) =>
+	openSprQualityCheck(sprName, "round_gsm", jobId);
+production_entry.spr_quality_check.openSprPattyCuttingGsmTesting = (sprName, jobId) =>
+	openSprQualityCheck(sprName, "patty_gsm", jobId);
 production_entry.spr_quality_check.openSprTensileTesting = (sprName, jobId) =>
 	openSprQualityCheck(sprName, "tensile", jobId);

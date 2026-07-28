@@ -214,16 +214,40 @@ export async function gsmPrintWastageLabel(sprName, childRowName, tableField, ro
 	await production_entry.spr_label.print_wastage(sprName, childRowName, tableField, rowData);
 }
 
-/** Start GSM Testing — same redirect as desk SPR Quality Check. */
+/** Start Round Cutting GSM Test — same redirect as desk SPR Quality Check. */
 export async function gsmOpenGsmTesting(ppId, jobId) {
+	return gsmOpenRoundCuttingGsmTesting(ppId, jobId);
+}
+
+/** Start Round Cutting GSM Test — same as SPR. */
+export async function gsmOpenRoundCuttingGsmTesting(ppId, jobId) {
 	const sprName = await findSprForGsm(ppId, true);
 	if (!sprName) {
 		noSprMessage();
 		return;
 	}
 	const qc = production_entry.spr_quality_check;
+	if (qc && typeof qc.openSprRoundCuttingGsmTesting === "function") {
+		await qc.openSprRoundCuttingGsmTesting(sprName, jobId);
+		return;
+	}
 	if (qc && typeof qc.openSprGsmTesting === "function") {
 		await qc.openSprGsmTesting(sprName, jobId);
+		return;
+	}
+	frappe.msgprint(__("Quality Check helper not loaded."));
+}
+
+/** Start Patty Cutting GSM Test — same as SPR. */
+export async function gsmOpenPattyCuttingGsmTesting(ppId, jobId) {
+	const sprName = await findSprForGsm(ppId, true);
+	if (!sprName) {
+		noSprMessage();
+		return;
+	}
+	const qc = production_entry.spr_quality_check;
+	if (qc && typeof qc.openSprPattyCuttingGsmTesting === "function") {
+		await qc.openSprPattyCuttingGsmTesting(sprName, jobId);
 		return;
 	}
 	frappe.msgprint(__("Quality Check helper not loaded."));

@@ -891,6 +891,46 @@ function focusClubScanInput(da) {
   });
 }
 
+function formatClubScanError(e) {
+  if (!e) return __("Unknown error");
+  if (typeof e === "string") return e;
+  if (e.message && typeof e.message === "string" && e.message !== "[object Object]") {
+    return e.message;
+  }
+  if (e._server_messages) {
+    try {
+      const msgs = JSON.parse(e._server_messages);
+      const parts = (msgs || []).map((m) => {
+        try {
+          return JSON.parse(m).message;
+        } catch {
+          return typeof m === "string" ? m : "";
+        }
+      }).filter(Boolean);
+      if (parts.length) return parts.join("; ");
+    } catch { /* ignore */ }
+  }
+  if (e.exc_type) return `${e.exc_type}: ${e.message || ""}`;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+/** USB gun finished barcode (avoid auto-submit mid-scan like JS-/105268/). */
+function looksLikeCompleteBatchBarcode(v) {
+  const s = String(v || "").trim();
+  if (!s || s.length < 10) return false;
+  // Ends with /rollNo — typical JS-…/…/N or JS-/105268//2
+  if (/\/\d+\s*$/.test(s)) return true;
+  // Long enough with slash and no trailing incomplete slash-only
+  if (s.includes("/") && !s.endsWith("/") && s.replace(/[^A-Za-z0-9]/g, "").length >= 8) {
+    return true;
+  }
+  return s.length >= 14 && !s.includes("/");
+}
+
 async function submitClubScan(da, forcedBarcode) {
   const bc = (forcedBarcode || clubScanInput.value[da.name] || "").trim();
   if (!bc) {
@@ -908,7 +948,7 @@ async function submitClubScan(da, forcedBarcode) {
     await loadDespatchCards();
     focusClubScanInput(da);
   } catch (e) {
-    frappe.msgprint(e?.message || String(e));
+    frappe.msgprint(formatClubScanError(e));
     focusClubScanInput(da);
   }
 }
@@ -916,16 +956,15 @@ async function submitClubScan(da, forcedBarcode) {
 function onClubScanTyped(da, ev) {
   const v = (ev?.target?.value || "").trim();
   clubScanInput.value = { ...clubScanInput.value, [da.name]: ev?.target?.value || "" };
-  // USB guns type fast then Enter; also auto-submit if value looks like a finished batch id
+  // USB guns type fast then Enter; auto-submit only when barcode looks complete
   if (!v) return;
   clearTimeout(clubScanTypedTimers[da.name]);
   clubScanTypedTimers[da.name] = setTimeout(() => {
     const cur = (clubScanInput.value[da.name] || "").trim();
-    // Only auto-fire if unchanged for 120ms and looks like a batch (has / or long enough)
-    if (cur && cur === v && (cur.includes("/") || cur.length >= 8)) {
+    if (cur && cur === v && looksLikeCompleteBatchBarcode(cur)) {
       submitClubScan(da, cur);
     }
-  }, 120);
+  }, 350);
 }
 
 function openClubBarcodeScanner(da) {
@@ -948,7 +987,7 @@ function openClubBarcodeScanner(da) {
       },
     });
   } catch (e) {
-    frappe.msgprint(e?.message || String(e) || __("Could not open camera scanner."));
+    frappe.msgprint(formatClubScanError(e) || __("Could not open camera scanner."));
     focusClubScanInput(da);
   }
 }
@@ -968,7 +1007,7 @@ async function createClubDraftDns(da) {
     });
     await loadDespatchCards();
   } catch (e) {
-    frappe.msgprint(e?.message || String(e));
+    frappe.msgprint(formatClubScanError(e));
   }
 }
 
@@ -986,7 +1025,7 @@ async function submitClubDns(da) {
     });
     await loadDespatchCards();
   } catch (e) {
-    frappe.msgprint(e?.message || String(e));
+    frappe.msgprint(formatClubScanError(e));
   }
 }
 
@@ -1017,7 +1056,7 @@ async function openDeliveryNote(da) {
     }
     frappe.set_route("List", "Delivery Note");
   } catch (e) {
-    frappe.msgprint(e?.message || String(e));
+    frappe.msgprint(formatClubScanError(e));
   }
 }
 

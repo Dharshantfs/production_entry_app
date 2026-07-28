@@ -327,8 +327,9 @@
                     @click.stop="toggleQualityMenu"
                   >Quality Check ▾</button>
                   <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-quality-menu">
-                    <button type="button" @click="runQualityCheck('gsm')">Start GSM Testing</button>
-                    <button type="button" @click="runQualityCheck('tensile')">Start Tensile Testing</button>
+                    <button type="button" @click="runQualityCheck('round_gsm')">Round Cutting GSM Test</button>
+                    <button type="button" @click="runQualityCheck('patty_gsm')">Patty Cutting GSM Test</button>
+                    <button type="button" @click="runQualityCheck('tensile')">Tensile Testing</button>
                   </div>
                 </div>
               </div>
@@ -1764,6 +1765,8 @@ import {
   gsmOpenRmBatches,
   gsmOpenTrailOrder,
   gsmOpenGsmTesting,
+  gsmOpenRoundCuttingGsmTesting,
+  gsmOpenPattyCuttingGsmTesting,
   gsmOpenTensileTesting,
   gsmBackfillShaftNumbers,
   gsmPrintRollLabel,
@@ -4789,8 +4792,10 @@ async function runQualityCheck(kind) {
   }
   const { ppId } = ctx;
   const jobId = await promptQualityCheckJobId(ppId);
-  if (kind === "gsm") {
-    await gsmOpenGsmTesting(ppId, jobId);
+  if (kind === "round_gsm" || kind === "gsm") {
+    await gsmOpenRoundCuttingGsmTesting(ppId, jobId);
+  } else if (kind === "patty_gsm") {
+    await gsmOpenPattyCuttingGsmTesting(ppId, jobId);
   } else if (kind === "tensile") {
     await gsmOpenTensileTesting(ppId, jobId);
   }

@@ -17,6 +17,7 @@ from production_entry.production_planning.scheduler_api import (
 from production_entry.production_planning.transfer_logistics import (
 	BOARD_KIND_TO_SCOPE,
 	TRANSFER_WAREHOUSE_BY_COMPANY,
+	_batch_fuzzy_equal,
 	_cstr,
 	_chart_fetch_kwargs,
 	_parse_chart_rows,
@@ -1458,13 +1459,15 @@ def record_despatch_club_scan(name=None, barcode=None):
 
 	match = None
 	for ln in orders[active_pc]["lines"]:
-		if _cstr(ln.batch_no) == bc:
+		bn = _cstr(ln.batch_no)
+		if bn == bc or _batch_fuzzy_equal(bn, bc):
 			match = ln
 			break
 	if not match:
 		# Wrong order / unknown batch
 		for ln in da.lines or []:
-			if _cstr(ln.batch_no) == bc:
+			bn = _cstr(ln.batch_no)
+			if bn == bc or _batch_fuzzy_equal(bn, bc):
 				frappe.throw(
 					_("Batch {0} belongs to order {1}. Finish order {2} first.").format(
 						bc, _cstr(ln.party_code), active_pc or "—"
