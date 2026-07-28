@@ -42,6 +42,10 @@ frappe.ui.form.on("Delivery Note Item", {
 	custom_despatch_rolls(frm, cdt, cdn) {
 		jsb_open_dn_item_rolls_dialog(frm, locals[cdt][cdn]);
 	},
+	// Legacy duplicate field — same handler if still present on old drafts
+	custom_rolls(frm, cdt, cdn) {
+		jsb_open_dn_item_rolls_dialog(frm, locals[cdt][cdn]);
+	},
 });
 
 function jsb_open_dn_item_rolls_dialog(frm, itemRow) {

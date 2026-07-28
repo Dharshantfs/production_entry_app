@@ -290,8 +290,14 @@ def _batch_row_as_dict(batch_no):
 		"width",
 		"meter_roll",
 		"meter_per_roll",
+		"custom_meter",
+		"custom_meter_roll",
+		"custom_length_mtrs",
+		"length_mtrs",
 		"net_weight",
+		"custom_net_weight",
 		"gross_weight",
+		"custom_gross_weight",
 	):
 		if frappe.db.has_column("Batch", fn):
 			fields.append(fn)
@@ -301,7 +307,13 @@ def _batch_row_as_dict(batch_no):
 def _roll_detail_from_batch(batch_no, qty):
 	meta = _batch_row_as_dict(batch_no)
 	item_code = _cstr(meta.get("item"))
-	net_weight = flt(qty) or flt(meta.get("net_weight")) or flt(meta.get("batch_qty")) or 0
+	net_weight = (
+		flt(qty)
+		or flt(meta.get("custom_net_weight"))
+		or flt(meta.get("net_weight"))
+		or flt(meta.get("batch_qty"))
+		or 0
+	)
 	quality = _cstr(meta.get("custom_quality") or meta.get("quality") or "")
 	color = _cstr(meta.get("custom_color") or meta.get("color") or "")
 	gsm = cint_safe(meta.get("custom_gsm") or meta.get("gsm") or 0)
@@ -327,8 +339,19 @@ def _roll_detail_from_batch(batch_no, qty):
 				width = flt(w)
 		except Exception:
 			pass
-	meter = flt(meta.get("meter_roll") or meta.get("meter_per_roll") or 0)
-	gross = flt(meta.get("gross_weight") or 0) or (net_weight + 2)
+	meter = flt(
+		meta.get("custom_meter")
+		or meta.get("custom_meter_roll")
+		or meta.get("meter_roll")
+		or meta.get("meter_per_roll")
+		or meta.get("custom_length_mtrs")
+		or meta.get("length_mtrs")
+		or 0
+	)
+	gross = (
+		flt(meta.get("custom_gross_weight") or meta.get("gross_weight") or 0)
+		or (net_weight + 2)
+	)
 	return {
 		"batch_no": _cstr(batch_no),
 		"quality": quality,
