@@ -1504,8 +1504,74 @@ def link_delivery_note_to_despatch(despatch_approval=None, delivery_note=None):
 	if cur and cur != dn_name and frappe.db.exists("Delivery Note", cur):
 		frappe.throw(_("Despatch Approval already linked to {0}.").format(cur))
 	frappe.db.set_value("Despatch Approval", da_name, "delivery_note", dn_name, update_modified=False)
+	if frappe.db.has_column("Delivery Note", "custom_despatch_approval"):
+		frappe.db.set_value("Delivery Note", dn_name, "custom_despatch_approval", da_name)
 	frappe.db.commit()
 	return {"ok": True, "despatch_approval": da_name, "delivery_note": dn_name}
+
+
+@frappe.whitelist()
+def get_delivery_note_item_rolls(delivery_note=None, item_code=None, child_name=None):
+	"""Roll detail list for one Delivery Note item row (JSON or Despatch Approval fallback)."""
+	dn_name = _cstr(delivery_note).strip()
+	if not dn_name or not frappe.db.exists("Delivery Note", dn_name):
+		frappe.throw(_("Delivery Note not found."))
+
+	from production_entry.production_planning.despatch_delivery import (
+		_line_get,
+		_roll_detail_from_batch,
+	)
+
+	dn = frappe.get_doc("Delivery Note", dn_name)
+	target_item = _cstr(item_code)
+	dn_item = None
+	if child_name:
+		for row in dn.items or []:
+			if row.name == child_name:
+				dn_item = row
+				break
+	if not dn_item and target_item:
+		for row in dn.items or []:
+			if _cstr(row.item_code) == target_item:
+				dn_item = row
+				break
+
+	rolls = []
+	if dn_item:
+		target_item = target_item or _cstr(dn_item.item_code)
+		raw = _cstr(getattr(dn_item, "custom_despatch_rolls_json", None) or "")
+		if raw:
+			try:
+				parsed = json.loads(raw)
+				if isinstance(parsed, list):
+					rolls = parsed
+			except Exception:
+				rolls = []
+
+	if not rolls:
+		da_name = _cstr(getattr(dn, "custom_despatch_approval", None) or "")
+		if not da_name:
+			linked = _despatch_approvals_referencing_dn(dn_name)
+			da_name = linked[0] if linked else ""
+		if da_name and frappe.db.exists("Despatch Approval", da_name):
+			da = frappe.get_doc("Despatch Approval", da_name)
+			for ln in da.lines or []:
+				if target_item and _cstr(ln.item_code) != target_item:
+					continue
+				bn = _cstr(_line_get(ln, "batch_no"))
+				qty = flt(_line_get(ln, "qty")) or flt(_line_get(ln, "net_weight"))
+				if bn:
+					rolls.append(_roll_detail_from_batch(bn, qty))
+
+	total_kg = sum(flt(r.get("net_weight")) for r in rolls)
+	return {
+		"rolls": rolls,
+		"item_code": target_item,
+		"total_kg": total_kg,
+		"roll_count": len(rolls),
+		"delivery_note": dn_name,
+		"docstatus": cint(dn.docstatus),
+	}
 
 
 @frappe.whitelist()

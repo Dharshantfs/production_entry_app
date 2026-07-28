@@ -2,6 +2,7 @@
 
 frappe.ui.form.on("Delivery Note", {
 	refresh(frm) {
+		jsb_bind_dn_item_rolls_buttons(frm);
 		if (frm.doc.docstatus !== 0) return;
 		frm.add_custom_button(
 			__("Accounts: Billing & Address"),
@@ -13,6 +14,10 @@ frappe.ui.form.on("Delivery Note", {
 			() => jsb_delete_draft_delivery_note(frm),
 			__("Delivery")
 		);
+	},
+
+	items_add(frm) {
+		jsb_bind_dn_item_rolls_buttons(frm);
 	},
 
 	after_save(frm) {
@@ -35,6 +40,85 @@ frappe.ui.form.on("Delivery Note", {
 		});
 	},
 });
+
+function jsb_dn_has_despatch_rolls(frm) {
+	if (frm.doc.custom_despatch_approval) {
+		return true;
+	}
+	return (frm.doc.items || []).some((row) => row.custom_despatch_rolls_json);
+}
+
+function jsb_bind_dn_item_rolls_buttons(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid || !jsb_dn_has_despatch_rolls(frm)) {
+		return;
+	}
+	setTimeout(() => {
+		(grid.grid_rows || []).forEach((gridRow) => {
+			const $row = gridRow.row || gridRow.wrapper;
+			if (!$row || !$row.find) {
+				return;
+			}
+			if ($row.find(".jsb-dn-rolls-btn").length) {
+				return;
+			}
+			const doc = gridRow.doc;
+			if (!doc || !doc.item_code) {
+				return;
+			}
+			if (!doc.custom_despatch_rolls_json && !frm.doc.custom_despatch_approval) {
+				return;
+			}
+			const $btn = $(
+				'<button type="button" class="btn btn-xs btn-default jsb-dn-rolls-btn" style="margin-left:6px;">' +
+					__("Rolls") +
+					"</button>"
+			);
+			$btn.on("click", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				jsb_open_dn_item_rolls_dialog(frm, doc);
+			});
+			const $target = $row.find(
+				'[data-fieldname="item_code"] .static-area, [data-fieldname="item_code"]'
+			).last();
+			if ($target.length) {
+				$target.append($btn);
+			} else {
+				$row.find(".grid-static-col").last().append($btn);
+			}
+		});
+	}, 200);
+}
+
+function jsb_open_dn_item_rolls_dialog(frm, itemRow) {
+	if (!frm.doc.name) {
+		frappe.msgprint(__("Save the Delivery Note first."));
+		return;
+	}
+	frappe.call({
+		method:
+			"production_entry.production_planning.despatch_logistics.get_delivery_note_item_rolls",
+		args: {
+			delivery_note: frm.doc.name,
+			item_code: itemRow.item_code,
+			child_name: itemRow.name,
+		},
+		freeze: true,
+		callback(r) {
+			const msg = r.message || {};
+			if (!msg.rolls || !msg.rolls.length) {
+				frappe.msgprint(__("No roll details found for this item."));
+				return;
+			}
+			jsb_show_despatch_rolls_dialog({
+				rolls: msg.rolls,
+				item_code: msg.item_code || itemRow.item_code,
+				delivery_note: frm.doc.name,
+			});
+		},
+	});
+}
 
 function jsb_delete_draft_delivery_note(frm) {
 	const da =

@@ -9,6 +9,8 @@ emergency reallocation (e.g. Dharshan plan → Gowtham DN).
 
 from __future__ import annotations
 
+import json
+
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate
@@ -252,6 +254,145 @@ def _match_so_detail(sales_order, item_code, qty):
 	return rows[0].name if rows else ""
 
 
+def _group_despatch_lines_by_item(lines):
+	"""Group despatch approval lines by item_code — sum qty, collect batches."""
+	groups = {}
+	for ln in lines or []:
+		qty = flt(_line_get(ln, "qty")) or flt(_line_get(ln, "net_weight"))
+		if qty <= 0:
+			continue
+		item_code = _cstr(_line_get(ln, "item_code"))
+		if not item_code:
+			continue
+		grp = groups.setdefault(item_code, {"qty": 0.0, "lines": [], "batches": []})
+		grp["qty"] += qty
+		grp["lines"].append(ln)
+		bn = _cstr(_line_get(ln, "batch_no"))
+		if bn:
+			grp["batches"].append((bn, qty))
+	return groups
+
+
+def _batch_row_as_dict(batch_no):
+	if not batch_no or not frappe.db.exists("Batch", batch_no):
+		return {}
+	fields = ["item", "batch_qty"]
+	for fn in (
+		"custom_quality",
+		"quality",
+		"custom_color",
+		"color",
+		"custom_gsm",
+		"gsm",
+		"custom_width_inch",
+		"width_inch",
+		"custom_width",
+		"width",
+		"meter_roll",
+		"meter_per_roll",
+		"net_weight",
+		"gross_weight",
+	):
+		if frappe.db.has_column("Batch", fn):
+			fields.append(fn)
+	return frappe.db.get_value("Batch", batch_no, fields, as_dict=True) or {}
+
+
+def _roll_detail_from_batch(batch_no, qty):
+	meta = _batch_row_as_dict(batch_no)
+	item_code = _cstr(meta.get("item"))
+	net_weight = flt(qty) or flt(meta.get("net_weight")) or flt(meta.get("batch_qty")) or 0
+	quality = _cstr(meta.get("custom_quality") or meta.get("quality") or "")
+	color = _cstr(meta.get("custom_color") or meta.get("color") or "")
+	gsm = cint_safe(meta.get("custom_gsm") or meta.get("gsm") or 0)
+	width = flt(
+		meta.get("custom_width_inch")
+		or meta.get("width_inch")
+		or meta.get("custom_width")
+		or meta.get("width")
+		or 0
+	)
+	if item_code and (not quality or not color or not gsm or width <= 0):
+		try:
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				parse_item_code,
+			)
+
+			q, w, g = parse_item_code(item_code)
+			if not quality:
+				quality = _cstr(q)
+			if not gsm:
+				gsm = cint_safe(g)
+			if width <= 0:
+				width = flt(w)
+		except Exception:
+			pass
+	meter = flt(meta.get("meter_roll") or meta.get("meter_per_roll") or 0)
+	gross = flt(meta.get("gross_weight") or 0) or (net_weight + 2)
+	return {
+		"batch_no": _cstr(batch_no),
+		"quality": quality,
+		"color": color,
+		"gsm": gsm,
+		"width_inch": width,
+		"net_weight": net_weight,
+		"gross_weight": gross,
+		"meter_roll": meter,
+		"item_code": item_code,
+	}
+
+
+def _rolls_json_for_batches(batch_entries):
+	rolls = []
+	for bn, qty in batch_entries or []:
+		if not bn:
+			continue
+		rolls.append(_roll_detail_from_batch(bn, qty))
+	return rolls
+
+
+def _make_outward_batch_bundle(item_code, warehouse, batch_entries):
+	"""Create Serial and Batch Bundle for multi-batch DN line."""
+	if not batch_entries or not frappe.db.exists("DocType", "Serial and Batch Bundle"):
+		return ""
+	if not frappe.db.has_column("Delivery Note Item", "serial_and_batch_bundle"):
+		return ""
+	bundle = frappe.new_doc("Serial and Batch Bundle")
+	bundle.item_code = item_code
+	bundle.warehouse = warehouse
+	bundle.type_of_transaction = "Outward"
+	bundle.voucher_type = "Delivery Note"
+	bundle.has_batch_no = 1
+	for bn, qty in batch_entries:
+		if not bn or flt(qty) <= 0:
+			continue
+		bundle.append(
+			"entries",
+			{"batch_no": bn, "qty": flt(qty), "warehouse": warehouse},
+		)
+	if not bundle.entries:
+		return ""
+	bundle.insert(ignore_permissions=True)
+	return bundle.name
+
+
+def _apply_batch_fields_to_dn_row(row, item_code, warehouse, batch_entries):
+	"""Set batch_no or serial_and_batch_bundle on DN item row."""
+	if not batch_entries:
+		return
+	has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
+	if not has_batch:
+		return
+	if len(batch_entries) == 1:
+		row["batch_no"] = batch_entries[0][0]
+	elif len(batch_entries) > 1:
+		bundle = _make_outward_batch_bundle(item_code, warehouse, batch_entries)
+		if bundle:
+			row["serial_and_batch_bundle"] = bundle
+	if frappe.db.has_column("Delivery Note Item", "use_serial_batch_fields"):
+		row["use_serial_batch_fields"] = 1
+
+
 def build_delivery_note_from_despatch(despatch_approval, party_code=None, despatch_customer=None):
 	"""Build Delivery Note doc (not saved) from approved despatch lines.
 
@@ -312,34 +453,40 @@ def build_delivery_note_from_despatch(despatch_approval, party_code=None, despat
 	dn.set_warehouse = wh
 	_apply_dn_addresses(dn, customer, against_so)
 	_apply_clubbing_transporter_to_dn(dn, da)
+	if _doc_has_field("Delivery Note", "custom_despatch_approval"):
+		dn.custom_despatch_approval = da.name
 
-	for ln in lines:
-		qty = flt(_line_get(ln, "qty")) or flt(_line_get(ln, "net_weight"))
-		if qty <= 0:
+	groups = _group_despatch_lines_by_item(lines)
+	for item_code, grp in groups.items():
+		total_qty = flt(grp.get("qty"))
+		if total_qty <= 0:
 			continue
-		item_code = _line_get(ln, "item_code")
-		so_for_line = _resolve_against_sales_order(ln, customer)
+		grp_lines = grp.get("lines") or []
+		first_ln = grp_lines[0] if grp_lines else None
+		so_for_line = _resolve_against_sales_order(first_ln, customer) if first_ln else ""
 		row = {
 			"item_code": item_code,
-			"qty": qty,
-			"uom": _line_get(ln, "uom")
+			"qty": total_qty,
+			"uom": _line_get(first_ln, "uom")
 			or frappe.db.get_value("Item", item_code, "stock_uom")
 			or "Kg",
 			"warehouse": wh,
 			"against_sales_order": so_for_line,
 		}
-		so_detail = _match_so_detail(so_for_line, item_code, qty) if so_for_line else ""
+		so_detail = _match_so_detail(so_for_line, item_code, total_qty) if so_for_line else ""
 		if so_detail:
 			if frappe.db.has_column("Delivery Note Item", "so_detail"):
 				row["so_detail"] = so_detail
 			if frappe.db.has_column("Delivery Note Item", "against_sales_order_item"):
 				row["against_sales_order_item"] = so_detail
 
-		bn = _cstr(_line_get(ln, "batch_no"))
-		if bn and frappe.db.get_value("Item", item_code, "has_batch_no"):
-			row["batch_no"] = bn
-		if frappe.db.has_column("Delivery Note Item", "use_serial_batch_fields"):
-			row["use_serial_batch_fields"] = 1 if bn else 0
+		batch_entries = grp.get("batches") or []
+		_apply_batch_fields_to_dn_row(row, item_code, wh, batch_entries)
+
+		rolls = _rolls_json_for_batches(batch_entries)
+		if rolls and _doc_has_field("Delivery Note Item", "custom_despatch_rolls_json"):
+			row["custom_despatch_rolls_json"] = json.dumps(rolls)
+
 		dn.append("items", row)
 
 	if not dn.items:

@@ -68,7 +68,10 @@ doctype_js = {
     "Transfer Approval": "public/js/transfer_approval_form.js",
     "Despatch Approval": "public/js/despatch_approval_form.js",
     "Stock Entry": "public/js/stock_entry_transfer.js",
-    "Delivery Note": "public/js/delivery_note_despatch.js",
+    "Delivery Note": [
+        "public/js/despatch_rolls_dialog.js",
+        "public/js/delivery_note_despatch.js",
+    ],
     "Production Board Access": "public/js/production_board_access.js",
     "Clubbing Sheet": "public/js/clubbing_sheet_form.js",
 }
