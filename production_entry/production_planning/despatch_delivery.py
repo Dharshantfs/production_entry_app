@@ -292,6 +292,7 @@ def _batch_row_as_dict(batch_no):
 		"meter_per_roll",
 		"custom_meter",
 		"custom_meter_roll",
+		"custom_meter_per_roll",
 		"custom_length_mtrs",
 		"length_mtrs",
 		"net_weight",
@@ -304,15 +305,23 @@ def _batch_row_as_dict(batch_no):
 	return frappe.db.get_value("Batch", batch_no, fields, as_dict=True) or {}
 
 
-def _roll_detail_from_batch(batch_no, qty):
+def _roll_detail_from_batch(batch_no, qty=None):
+	"""Build roll print row from Batch master (quality/color/gsm/width/meters)."""
 	meta = _batch_row_as_dict(batch_no)
 	item_code = _cstr(meta.get("item"))
+	item_name = ""
+	if item_code:
+		item_name = _cstr(frappe.db.get_value("Item", item_code, "item_name") or "")
+
 	net_weight = (
 		flt(qty)
-		or flt(meta.get("custom_net_weight"))
-		or flt(meta.get("net_weight"))
-		or flt(meta.get("batch_qty"))
-		or 0
+		if qty is not None and flt(qty) > 0
+		else (
+			flt(meta.get("custom_net_weight"))
+			or flt(meta.get("net_weight"))
+			or flt(meta.get("batch_qty"))
+			or 0
+		)
 	)
 	quality = _cstr(meta.get("custom_quality") or meta.get("quality") or "")
 	color = _cstr(meta.get("custom_color") or meta.get("color") or "")
@@ -324,33 +333,53 @@ def _roll_detail_from_batch(batch_no, qty):
 		or meta.get("width")
 		or 0
 	)
-	if item_code and (not quality or not color or not gsm or width <= 0):
-		try:
-			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
-				parse_item_code,
-			)
-
-			q, w, g = parse_item_code(item_code)
-			if not quality:
-				quality = _cstr(q)
-			if not gsm:
-				gsm = cint_safe(g)
-			if width <= 0:
-				width = flt(w)
-		except Exception:
-			pass
 	meter = flt(
 		meta.get("custom_meter")
 		or meta.get("custom_meter_roll")
+		or meta.get("custom_meter_per_roll")
 		or meta.get("meter_roll")
 		or meta.get("meter_per_roll")
 		or meta.get("custom_length_mtrs")
 		or meta.get("length_mtrs")
 		or 0
 	)
+
+	# Fill gaps from FG item code / item name (same path SPR uses)
+	if item_code and (not quality or not color or gsm <= 0 or width <= 0):
+		try:
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				_spr_resolve_roll_line_specs_from_item_code,
+			)
+
+			specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+			if not quality:
+				quality = _cstr(specs.get("quality") or "")
+			if not color:
+				color = _cstr(specs.get("color") or "")
+			if gsm <= 0:
+				gsm = cint_safe(specs.get("gsm") or 0)
+			if width <= 0:
+				width = flt(specs.get("width_inch") or 0)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "despatch_delivery._roll_detail_from_batch specs")
+
+	if item_code and (gsm <= 0 or width <= 0):
+		try:
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				parse_item_code,
+			)
+
+			parsed_gsm, parsed_w = parse_item_code(item_code)
+			if gsm <= 0:
+				gsm = cint_safe(parsed_gsm)
+			if width <= 0:
+				width = flt(parsed_w)
+		except Exception:
+			pass
+
 	gross = (
 		flt(meta.get("custom_gross_weight") or meta.get("gross_weight") or 0)
-		or (net_weight + 2)
+		or (net_weight + 2 if net_weight else 0)
 	)
 	return {
 		"batch_no": _cstr(batch_no),
@@ -363,6 +392,26 @@ def _roll_detail_from_batch(batch_no, qty):
 		"meter_roll": meter,
 		"item_code": item_code,
 	}
+
+
+def _refresh_rolls_from_batch(rolls):
+	"""Re-read quality/color/gsm/width/meters from Batch for each roll row."""
+	out = []
+	for r in rolls or []:
+		if not isinstance(r, dict):
+			continue
+		bn = _cstr(r.get("batch_no"))
+		if not bn:
+			continue
+		qty = flt(r.get("net_weight"))
+		fresh = _roll_detail_from_batch(bn, qty if qty > 0 else None)
+		# Keep explicit qty from stored JSON / despatch line when Batch qty differs
+		if qty > 0:
+			fresh["net_weight"] = qty
+			if not flt(fresh.get("gross_weight")):
+				fresh["gross_weight"] = qty + 2
+		out.append(fresh)
+	return out
 
 
 def _rolls_json_for_batches(batch_entries):

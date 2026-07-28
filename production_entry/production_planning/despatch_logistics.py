@@ -1519,6 +1519,7 @@ def get_delivery_note_item_rolls(delivery_note=None, item_code=None, child_name=
 
 	from production_entry.production_planning.despatch_delivery import (
 		_line_get,
+		_refresh_rolls_from_batch,
 		_roll_detail_from_batch,
 	)
 
@@ -1578,6 +1579,9 @@ def get_delivery_note_item_rolls(delivery_note=None, item_code=None, child_name=
 				qty = flt(_line_get(ln, "qty")) or flt(_line_get(ln, "net_weight"))
 				if bn:
 					rolls.append(_roll_detail_from_batch(bn, qty))
+
+	# Always re-read quality/color/gsm/width/meters from Batch master
+	rolls = _refresh_rolls_from_batch(rolls)
 
 	total_kg = sum(flt(r.get("net_weight")) for r in rolls)
 	return {

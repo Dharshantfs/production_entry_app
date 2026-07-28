@@ -81,7 +81,7 @@ function jsb_show_despatch_rolls_dialog(args) {
 		"</th><th>" +
 		__("GSM") +
 		"</th><th>" +
-		__('Size (")') +
+		__("Width (Inches)") +
 		"</th><th>" +
 		__("Mtrs") +
 		"</th><th>" +
@@ -95,9 +95,13 @@ function jsb_show_despatch_rolls_dialog(args) {
 	let totalGross = 0;
 	for (let i = 0; i < rolls.length; i++) {
 		const r = rolls[i];
-		const mtr = flt(r.meter_roll || r.meter_per_roll);
+		const mtr = flt(r.meter_roll || r.meter_per_roll || r.custom_meter || 0);
 		const net = flt(r.net_weight);
 		const gross = flt(r.gross_weight || r.net_weight + 2);
+		const width =
+			r.width_inch ||
+			r.custom_width_inch ||
+			(r.width_mm ? (flt(r.width_mm) / 25.4).toFixed(1) : "");
 		totalMtr += mtr;
 		totalNet += net;
 		totalGross += gross;
@@ -110,17 +114,16 @@ function jsb_show_despatch_rolls_dialog(args) {
 			(r.batch_no || "") +
 			"</td>" +
 			"<td>" +
-			(r.quality || "") +
+			(r.quality || r.custom_quality || "") +
 			"</td>" +
 			"<td>" +
-			(r.color || "") +
+			(r.color || r.custom_color || "") +
 			"</td>" +
 			"<td>" +
-			(r.gsm || "") +
+			(r.gsm || r.custom_gsm || "") +
 			"</td>" +
 			"<td>" +
-			(r.width_inch ||
-				(r.width_mm ? (flt(r.width_mm) / 25.4).toFixed(1) : "-")) +
+			(width || "-") +
 			"</td>" +
 			'<td class="tr">' +
 			mtr.toFixed(1) +
