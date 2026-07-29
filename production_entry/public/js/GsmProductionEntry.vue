@@ -4952,6 +4952,7 @@ async function handleBundleApplyResult(m, ppId) {
         width_inch: m.segment_width || 0,
         length_m: m.produced_length_mtrs || m.meter_roll || 0,
         pp_id: m.pp_id || ppId,
+        job_id: m.job_id || "",
       },
     });
     const extras = res.message || {};
@@ -7124,7 +7125,7 @@ function pickCoreForFabricWidth(widthInch, apiCoreValue) {
   return raw || opts[0]?.value || "";
 }
 
-async function fetchRollRowExtras(line, lengthM) {
+async function fetchRollRowExtras(line, lengthM, jobId = null) {
   const src = line.source;
   try {
     const res = await frappe.call({
@@ -7136,6 +7137,7 @@ async function fetchRollRowExtras(line, lengthM) {
         item_code: src.itemCode || src.item_code,
         pp_id: line.ppId || src.pp_id,
         production_plan_item: line.id,
+        job_id: jobId || line.jobId || line.job_id || "",
       },
     });
     return res.message || {};
@@ -7461,7 +7463,7 @@ async function addRollRow() {
     frappe.msgprint(__("Could not assign a unique batch number. Try again."));
     return;
   }
-  const extras = await fetchRollRowExtras(line, ordLen);
+  const extras = await fetchRollRowExtras(line, ordLen, jobId);
   const coreItem = pickCoreForFabricWidth(
     line.width_inch,
     extras.custom_core_width_mm || extras.core_size || ""

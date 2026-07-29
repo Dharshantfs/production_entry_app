@@ -1994,29 +1994,58 @@ def _planned_qty_kg_from_pp_shaft(
 	width_inch=None,
 	gsm=None,
 	production_plan_item=None,
+	job_id=None,
 ) -> float:
-	"""Per-roll planned kg from PP shaft net weight (SPR Create Entry parity), not GSM formula."""
+	"""Per-roll planned kg from PP shaft net weight (SPR Create Entry parity), not GSM formula.
+
+	Maps width → segment net weight within the selected job (e.g. 33→32kg, 35→50kg).
+	When two jobs share the same width, ``job_id`` / ``gsm`` pick the correct job's net weight.
+	"""
 	pp_id = _cstr(pp_id).strip()
 	wx = flt(width_inch)
 	if not pp_id or wx <= 0:
 		return 0.0
 	ppi = _cstr(production_plan_item).strip()
-	target_gsm = cint(gsm) if gsm is not None else 0
+	jid = _cstr(job_id).strip()
+	target_gsm = cint(gsm) if gsm is not None and _cstr(gsm) != "" else 0
 
 	spr_name = _find_spr_for_pp(pp_id, prefer_draft=True)
 	if spr_name:
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
-		net_ps, _jid = _spr_net_kg_per_shaft_for_pp_line_width(spr, wx, ppi or None)
+		net_ps, _matched_jid = _spr_net_kg_per_shaft_for_pp_line_width(
+			spr,
+			wx,
+			ppi or None,
+			job_id=jid or None,
+			gsm=target_gsm or None,
+		)
 		if net_ps is not None and flt(net_ps) > 0:
 			return round(flt(net_ps), 3)
 
 	if not frappe.db.exists("Production Plan", pp_id):
 		return 0.0
 	pp = frappe.get_doc("Production Plan", pp_id)
-	for shaft in pp.get("custom_shaft_details") or pp.get("shaft_details") or []:
+	shafts = list(pp.get("custom_shaft_details") or pp.get("shaft_details") or [])
+
+	def _pp_row_job_id(row, idx: int) -> str:
+		return _cstr(_pick_value(row, ["job_id", "job", "job_no"], str(idx)))
+
+	ordered = []
+	for idx, shaft in enumerate(shafts, start=1):
 		row = _normalize_pp_shaft_job_row(shaft)
-		if target_gsm and _shaft_gsm(row) != target_gsm:
-			continue
+		ordered.append((idx, row))
+
+	# Prefer exact job, then gsm match, then all
+	if jid:
+		pref = [(i, r) for i, r in ordered if _spr_job_keys_match(_pp_row_job_id(r, i), jid)]
+		if pref:
+			ordered = pref
+	if target_gsm:
+		pref = [(i, r) for i, r in ordered if _shaft_gsm(r) == target_gsm]
+		if pref:
+			ordered = pref
+
+	for _idx, row in ordered:
 		comb = _cstr(_pick_value(row, ["combination", "combined_width", "shaft", "shaft_details"], ""))
 		segs = max(1, _count_combination_segments(comb))
 		widths = _parse_combination_widths_inches(comb) if comb else []
@@ -2029,7 +2058,7 @@ def _planned_qty_kg_from_pp_shaft(
 		tw = flt(row.get("total_width"))
 		if tw > 0 and abs(tw - wx) <= 0.75 and weights:
 			return round(flt(weights[0]), 3)
-		if not comb and weights and flt(weights[0]) > 0:
+		if weights and flt(weights[0]) > 0:
 			sw = _shaft_width_inch(row)
 			if sw <= 0 or abs(sw - wx) <= 0.75:
 				return round(flt(weights[0]), 3)
@@ -2082,6 +2111,7 @@ def get_gsm_roll_row_extras(
 	item_code=None,
 	pp_id=None,
 	production_plan_item=None,
+	job_id=None,
 ):
 	"""Planned qty (PP shaft net kg) + polybag + auto core mm for a GSM roll line."""
 	gsm_val = cint(gsm) if gsm is not None else 0
@@ -2090,6 +2120,7 @@ def get_gsm_roll_row_extras(
 	item_code = _cstr(item_code).strip()
 	pp_id = _cstr(pp_id).strip()
 	ppi = _cstr(production_plan_item).strip()
+	jid = _cstr(job_id).strip()
 	if not gsm_val and item_code:
 		try:
 			g, w = parse_item_code(item_code)
@@ -2102,7 +2133,9 @@ def get_gsm_roll_row_extras(
 
 	planned_qty = 0.0
 	if pp_id and w_in > 0:
-		planned_qty = _planned_qty_kg_from_pp_shaft(pp_id, w_in, gsm_val, ppi or None)
+		planned_qty = _planned_qty_kg_from_pp_shaft(
+			pp_id, w_in, gsm_val, ppi or None, job_id=jid or None
+		)
 	if planned_qty <= 0 and gsm_val and w_in > 0 and ln > 0:
 		planned_qty = compute_mix_roll_planned_qty_kg(gsm_val, w_in, ln)
 

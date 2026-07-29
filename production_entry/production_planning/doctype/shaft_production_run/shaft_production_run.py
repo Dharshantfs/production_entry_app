@@ -12809,24 +12809,49 @@ def _spr_is_manual_shaft_job(sj) -> bool:
 
 
 def _spr_net_kg_per_shaft_for_pp_line_width(
-	spr_doc, width_inch: float, production_plan_item: str | None
+	spr_doc,
+	width_inch: float,
+	production_plan_item: str | None,
+	job_id: str | None = None,
+	gsm=None,
 ) -> tuple[float | None, str | None]:
 	"""
 	Match item width (inch) to a segment in Available Jobs (non-manual): kg per shaft for that segment.
 	Uses combination widths + net_weight split, or total_width for single-segment jobs.
+
+	When multiple jobs share the same width (e.g. Job1 20GSM 63" → 32kg, Job2 30GSM 63" → 24kg),
+	prefer ``job_id`` then ``gsm`` so planned qty maps to the selected job — not the first width hit.
+	Within one job, 33+35 with 32+50 maps each width to its segment weight.
 	"""
 	wx = flt(width_inch)
 	if wx <= 0:
 		return None, None
 	ppi = _cstr(production_plan_item) if production_plan_item else ""
+	jid_want = _cstr(job_id) if job_id else ""
+	target_gsm = cint(gsm) if gsm is not None and _cstr(gsm) != "" else 0
 	rows = list(_spr_job_rows(spr_doc))
-	preferred = [
-		sj
-		for sj in rows
-		if not _spr_is_manual_shaft_job(sj) and ppi and _cstr(getattr(sj, "production_plan_item", None)) == ppi
-	]
-	candidates = preferred if preferred else [sj for sj in rows if not _spr_is_manual_shaft_job(sj)]
-	for sj in candidates:
+	non_manual = [sj for sj in rows if not _spr_is_manual_shaft_job(sj)]
+
+	candidates = non_manual
+	if jid_want:
+		by_job = [sj for sj in non_manual if _spr_job_keys_match(_spr_job_id(sj), jid_want)]
+		if by_job:
+			candidates = by_job
+	elif ppi:
+		by_ppi = [
+			sj
+			for sj in non_manual
+			if _cstr(getattr(sj, "production_plan_item", None)) == ppi
+		]
+		if by_ppi:
+			candidates = by_ppi
+
+	if target_gsm:
+		by_gsm = [sj for sj in candidates if cint(getattr(sj, "gsm", None) or 0) == target_gsm]
+		if by_gsm:
+			candidates = by_gsm
+
+	def _match_width_on_job(sj):
 		comb = getattr(sj, "combination", None)
 		segs = max(1, _count_combination_segments(comb))
 		widths = _parse_combination_widths_inches(comb) if comb else []
@@ -12837,10 +12862,28 @@ def _spr_net_kg_per_shaft_for_pp_line_width(
 				if abs(flt(widths[i]) - wx) <= 0.5:
 					if i < len(weights) and flt(weights[i]) > 0:
 						return flt(weights[i]), jid
-			continue
+			return None
 		tw = flt(getattr(sj, "total_width", None))
 		if tw > 0 and abs(tw - wx) <= 0.5 and weights:
 			return flt(weights[0]), jid
+		# Single-width job with blank combination — match shaft width / first segment
+		sw = flt(getattr(sj, "width_inch", None) or getattr(sj, "width", None) or 0)
+		if sw <= 0 and widths:
+			sw = flt(widths[0])
+		if (sw <= 0 or abs(sw - wx) <= 0.5) and weights and flt(weights[0]) > 0:
+			return flt(weights[0]), jid
+		return None
+
+	for sj in candidates:
+		hit = _match_width_on_job(sj)
+		if hit:
+			return hit
+	# Last resort: any non-manual job matching width (legacy callers without job_id/gsm)
+	if jid_want or target_gsm:
+		for sj in non_manual:
+			hit = _match_width_on_job(sj)
+			if hit:
+				return hit
 	return None, None
 
 
