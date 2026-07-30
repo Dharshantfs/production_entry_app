@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import frappe
 from frappe import _
@@ -17,7 +18,7 @@ from production_entry.production_planning.scheduler_api import (
 from production_entry.production_planning.transfer_logistics import (
 	BOARD_KIND_TO_SCOPE,
 	TRANSFER_WAREHOUSE_BY_COMPANY,
-	_batch_fuzzy_equal,
+	_batch_match_key,
 	_cstr,
 	_chart_fetch_kwargs,
 	_parse_chart_rows,
@@ -1743,6 +1744,76 @@ def get_despatch_approval_club_detail(name=None):
 	}
 
 
+def _despatch_roll_scan_parts(value):
+	"""Split a roll barcode into (batch prefix, roll number).
+
+	'JS-0107269/6' -> ('JS0107269', 6). Roll number is None for a batch-only scan.
+	"""
+	key = _batch_match_key(value)
+	if not key:
+		return "", None
+	m = re.match(r"^(.*?)/(\d+)$", key)
+	if not m:
+		return key, None
+	return m.group(1), int(m.group(2))
+
+
+def _despatch_roll_scan_equal(line_batch, scanned):
+	"""Exact roll-level match for despatch scanning.
+
+	Each roll is its own line even when the batch series repeats, so
+	JS-0107269/6 must never match JS-0107269/7 (same batch, different roll) or
+	JS-0107268/6 (same roll number, different batch). Only scanner normalisation
+	(prefix fixes, punctuation, /6 vs /06) is tolerated — never fuzzy distance.
+	"""
+	lb = _cstr(line_batch).strip()
+	sc = _cstr(scanned).strip()
+	if not lb or not sc:
+		return False
+	if lb == sc:
+		return True
+	lk, sk = _batch_match_key(lb), _batch_match_key(sc)
+	if not lk or not sk:
+		return False
+	if lk == sk:
+		return True
+	line_prefix, line_roll = _despatch_roll_scan_parts(lb)
+	scan_prefix, scan_roll = _despatch_roll_scan_parts(sc)
+	if line_roll is None or scan_roll is None:
+		return False
+	return line_prefix == scan_prefix and line_roll == scan_roll
+
+
+def _despatch_find_scan_match(lines, barcode, unscanned_only=False):
+	"""Resolve a scanned barcode to one despatch line.
+
+	Returns (line, ambiguous_lines). A batch-only scan (no roll number) matches
+	just one remaining roll of that batch; otherwise it is reported ambiguous so
+	the operator scans the full roll number.
+	"""
+	pool = [
+		ln
+		for ln in (lines or [])
+		if not unscanned_only or not cint(getattr(ln, "custom_scanned", None) or 0)
+	]
+	for ln in pool:
+		if _despatch_roll_scan_equal(_cstr(ln.batch_no), barcode):
+			return ln, []
+
+	scan_prefix, scan_roll = _despatch_roll_scan_parts(barcode)
+	if scan_roll is None and scan_prefix:
+		candidates = [
+			ln
+			for ln in pool
+			if _despatch_roll_scan_parts(_cstr(ln.batch_no))[0] == scan_prefix
+		]
+		if len(candidates) == 1:
+			return candidates[0], []
+		if len(candidates) > 1:
+			return None, candidates
+	return None, []
+
+
 @frappe.whitelist()
 def record_despatch_club_scan(name=None, barcode=None):
 	"""Mark one approved batch as scanned (order-by-order for club cards)."""
@@ -1780,33 +1851,37 @@ def record_despatch_club_scan(name=None, barcode=None):
 	if active_pc is None:
 		return {"ok": True, "already_complete": True, "message": _("All rolls already scanned.")}
 
-	match = None
-	for ln in orders[active_pc]["lines"]:
-		bn = _cstr(ln.batch_no)
-		if bn == bc or _batch_fuzzy_equal(bn, bc):
-			match = ln
-			break
+	active_lines = orders[active_pc]["lines"]
+	match, ambiguous = _despatch_find_scan_match(active_lines, bc, unscanned_only=True)
+	if not match and ambiguous:
+		frappe.throw(
+			_("Batch {0} has {1} rolls pending. Scan the full roll number (e.g. {2}).").format(
+				bc, len(ambiguous), _cstr(ambiguous[0].batch_no)
+			)
+		)
+
 	if not match:
-		# Wrong order / unknown batch
+		# Same roll already scanned for this order?
+		done, _amb = _despatch_find_scan_match(active_lines, bc)
+		if done:
+			return {
+				"ok": True,
+				"duplicate": True,
+				"batch_no": _cstr(done.batch_no) or bc,
+				"party_code": active_pc,
+				"message": _("Roll {0} already scanned.").format(_cstr(done.batch_no) or bc),
+			}
+		# Wrong order / unknown roll
 		for ln in da.lines or []:
-			bn = _cstr(ln.batch_no)
-			if bn == bc or _batch_fuzzy_equal(bn, bc):
+			if _despatch_roll_scan_equal(_cstr(ln.batch_no), bc):
 				frappe.throw(
-					_("Batch {0} belongs to order {1}. Finish order {2} first.").format(
+					_("Roll {0} belongs to order {1}. Finish order {2} first.").format(
 						bc, _cstr(ln.party_code), active_pc or "—"
 					)
 				)
-		frappe.throw(_("Batch {0} is not on this despatch approval.").format(bc))
+		frappe.throw(_("Roll {0} is not on this despatch approval.").format(bc))
 
-	if cint(getattr(match, "custom_scanned", None) or 0):
-		return {
-			"ok": True,
-			"duplicate": True,
-			"batch_no": bc,
-			"party_code": active_pc,
-			"message": _("Already scanned."),
-		}
-
+	bc = _cstr(match.batch_no) or bc
 	match.custom_scanned = 1
 	da.save(ignore_permissions=True)
 	frappe.db.commit()

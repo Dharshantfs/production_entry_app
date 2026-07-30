@@ -964,7 +964,10 @@ async function submitClubScan(da, forcedBarcode) {
     });
     const msg = r.message || {};
     clubScanInput.value = { ...clubScanInput.value, [da.name]: "" };
-    frappe.show_alert({ message: msg.message || __("Scanned"), indicator: "green" });
+    frappe.show_alert({
+      message: msg.message || __("Scanned"),
+      indicator: msg.duplicate ? "orange" : "green",
+    });
     await loadDespatchCards();
     focusClubScanInput(da);
   } catch (e) {
