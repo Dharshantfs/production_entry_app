@@ -97,6 +97,10 @@
             <span class="gpe-day-target">Order Tgt {{ formatKg(grp.dayTargetKg) }} Kg</span>
             <span class="gpe-day-rem">Rem {{ formatKg(grp.dayRemKg) }} Kg</span>
           </div>
+          <div v-if="grp.quality || grp.color" class="gpe-order-spec">
+            <span v-if="grp.quality" class="gpe-spec-chip gpe-spec-quality">{{ grp.quality }}</span>
+            <span v-if="grp.color" class="gpe-spec-chip gpe-spec-color">{{ grp.color }}</span>
+          </div>
           <label
             v-for="job in grp.jobs"
             :key="job.job_key"
@@ -116,6 +120,10 @@
                 <span class="gpe-job-title">Job {{ job.job_id }}</span>
                 <span class="gpe-job-head-dot">·</span>
                 <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
+              </div>
+              <div v-if="job.quality || job.color" class="gpe-job-spec">
+                <span v-if="job.quality" class="gpe-spec-chip gpe-spec-quality">{{ job.quality }}</span>
+                <span v-if="job.color" class="gpe-spec-chip gpe-spec-color">{{ job.color }}</span>
               </div>
               <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
               <div v-if="job.job_target_kg > 0" class="gpe-job-target">
@@ -209,6 +217,10 @@
                 <span class="gpe-day-target">Order Tgt {{ formatKg(grp.dayTargetKg) }} Kg</span>
                 <span class="gpe-day-rem">Rem {{ formatKg(grp.dayRemKg) }} Kg</span>
               </div>
+              <div v-if="grp.quality || grp.color" class="gpe-order-spec">
+                <span v-if="grp.quality" class="gpe-spec-chip gpe-spec-quality">{{ grp.quality }}</span>
+                <span v-if="grp.color" class="gpe-spec-chip gpe-spec-color">{{ grp.color }}</span>
+              </div>
               <label
                 v-for="job in grp.jobs"
                 :key="job.job_key"
@@ -221,6 +233,10 @@
                     <span class="gpe-job-title">Job {{ job.job_id }}</span>
                     <span class="gpe-job-head-dot">·</span>
                     <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
+                  </div>
+                  <div v-if="job.quality || job.color" class="gpe-job-spec">
+                    <span v-if="job.quality" class="gpe-spec-chip gpe-spec-quality">{{ job.quality }}</span>
+                    <span v-if="job.color" class="gpe-spec-chip gpe-spec-color">{{ job.color }}</span>
                   </div>
                   <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
                   <div v-if="job.job_target_kg > 0" class="gpe-job-target">
@@ -2364,8 +2380,9 @@ function orderMetaForPp(ppId) {
   return {
     orderCode,
     partyName: boardJob?.party_name || row?.customer_name || row?.customer || "",
-    quality: boardJob?.quality || row?.quality || "",
-    color: boardJob?.color || row?.color || row?.fabric_colour || "",
+    // Prefer planning/color-chart row for order-level; board job is per-job fallback.
+    quality: row?.quality || boardJob?.quality || "",
+    color: row?.color || row?.fabric_colour || boardJob?.color || "",
     gsm: boardJob?.gsm || row?.gsm || 0,
     planningLineId: row?.itemName || row?.name || "",
   };
@@ -2636,8 +2653,8 @@ function enrichJobCard(job) {
     ...job,
     orderCode: meta.orderCode,
     partyName: meta.partyName,
-    quality: meta.quality,
-    color: meta.color,
+    quality: job.quality || meta.quality || "",
+    color: job.color || meta.color || "",
     planningLineId: meta.planningLineId,
     selectable,
     chip,
@@ -3229,11 +3246,14 @@ const jobOrderGroups = computed(() => {
     const key = `${enriched.orderCode}::${job.pp_id}`;
     if (!map.has(key)) {
       const dayStats = orderDayStatsForPp(job.pp_id);
+      const orderMeta = orderMetaForPp(job.pp_id);
       map.set(key, {
         key,
         orderCode: enriched.orderCode,
         partyName: enriched.partyName,
         ppId: job.pp_id,
+        quality: orderMeta.quality || "",
+        color: orderMeta.color || "",
         dayTargetKg: dayStats.dayTargetKg,
         dayRemKg: dayStats.dayRemKg,
         jobs: [],
@@ -8157,7 +8177,7 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .gpe-submit-confirm-dialog {
-  width: min(720px, 94vw);
+  width: min(1000px, 94vw);
   max-height: 88vh;
   overflow: auto;
 }
@@ -8551,6 +8571,36 @@ onUnmounted(() => {
   padding: 2px 8px;
   white-space: nowrap;
   line-height: 1.35;
+}
+.gpe-job-spec,
+.gpe-order-spec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+.gpe-order-spec {
+  margin: 0 0 8px;
+}
+.gpe-spec-chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 5px;
+  line-height: 1.35;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.gpe-spec-quality {
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+.gpe-spec-color {
+  color: #065f46;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
 }
 .gpe-job-combination {
   font-size: 13px;

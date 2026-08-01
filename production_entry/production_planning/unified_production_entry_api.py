@@ -2677,9 +2677,83 @@ def _gsm_pp_shaft_rows(pp) -> list[dict]:
 				or _shaft_width_inch(row),
 				"meter_roll": meter_roll,
 				"net_weight": display_nw,
+				"quality": _cstr(_pick_value(row, ["quality", "custom_quality"], "")),
+				"color": _cstr(
+					_pick_value(row, ["color", "custom_color", "fabric_colour", "colour"], "")
+				),
 			}
 		)
 	return out
+
+
+def _gsm_job_quality_color(pp_id: str, job_id: str, shaft_row: dict | None = None, cache: dict | None = None) -> dict:
+	"""Resolve quality + color for one PP job (PP shaft → SPR job/items → WO item code)."""
+	cache = cache if cache is not None else {}
+	shaft_row = shaft_row or {}
+	job_id = _cstr(job_id).strip()
+	quality = _cstr(shaft_row.get("quality") or "").strip()
+	color = _cstr(shaft_row.get("color") or "").strip()
+
+	if "spr_doc" not in cache:
+		spr_name = _find_spr_for_pp(pp_id, prefer_draft=False) or _find_draft_spr_for_pp(pp_id)
+		spr_doc = None
+		spr_jobs = {}
+		if spr_name and frappe.db.exists("Shaft Production Run", spr_name):
+			try:
+				spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
+			except Exception:
+				spr_doc = None
+		if spr_doc:
+			for sj in _spr_job_rows(spr_doc):
+				jid = _cstr(getattr(sj, "job_id", None) or getattr(sj, "job_no", None)).strip()
+				if jid:
+					spr_jobs[jid] = sj
+		cache["spr_doc"] = spr_doc
+		cache["spr_jobs"] = spr_jobs
+
+	sj = (cache.get("spr_jobs") or {}).get(job_id)
+	if sj and not quality:
+		quality = _cstr(getattr(sj, "quality", None) or "").strip()
+
+	if (not quality or not color) and cache.get("spr_doc"):
+		for it in cache["spr_doc"].items or []:
+			if not _spr_is_real_roll_item_row(it):
+				continue
+			it_job = _cstr(getattr(it, "job", None) or getattr(it, "job_id", None)).strip()
+			if job_id and not _spr_job_keys_match(it_job, job_id):
+				continue
+			if not quality:
+				quality = _cstr(getattr(it, "quality", None) or "").strip()
+			if not color:
+				color = _cstr(getattr(it, "color", None) or getattr(it, "fabric_colour", None) or "").strip()
+			if quality and color:
+				break
+
+	if not quality or not color:
+		wo_key = f"wo::{job_id}"
+		if wo_key not in cache:
+			try:
+				cache[wo_key] = resolve_work_order_for_roll_line(
+					pp_id,
+					gsm=shaft_row.get("gsm"),
+					job_id=job_id or None,
+				) or {}
+			except Exception:
+				cache[wo_key] = {}
+		wo = cache.get(wo_key) or {}
+		item_code = _cstr(wo.get("production_item") or shaft_row.get("item_code") or "").strip()
+		item_name = _cstr(wo.get("production_item_name") or shaft_row.get("item_name") or "").strip()
+		if item_code:
+			try:
+				specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+			except Exception:
+				specs = {}
+			if not quality:
+				quality = _cstr((specs or {}).get("quality") or "").strip()
+			if not color:
+				color = _cstr((specs or {}).get("color") or "").strip()
+
+	return {"quality": quality, "color": color}
 
 
 def _gsm_order_code_for_pp(pp_id: str) -> str:
@@ -2847,6 +2921,7 @@ def _gsm_build_job_board_entry(
 	shift: str | None = None,
 	unit: str | None = None,
 	wo_terminal: bool = False,
+	qc_cache: dict | None = None,
 ) -> dict:
 	job_id = _cstr(shaft_row.get("job") or "")
 	limits = _gsm_job_limits_from_shaft_row(shaft_row)
@@ -2906,6 +2981,7 @@ def _gsm_build_job_board_entry(
 	job_produced_kg = flt(stats.get("job_produced_kg") or 0)
 	job_remaining_kg = max(0.0, round(job_target_kg - job_produced_kg, 2)) if job_target_kg > 0 else 0.0
 	order_code = _gsm_order_code_for_pp(pp_id)
+	qc = _gsm_job_quality_color(pp_id, job_id, shaft_row, cache=qc_cache)
 	return {
 		"pp_id": pp_id,
 		"order_code": order_code,
@@ -2917,6 +2993,8 @@ def _gsm_build_job_board_entry(
 		"combination_label": _gsm_combination_label(comb),
 		"meter_roll": flt(shaft_row.get("meter_roll") or 0),
 		"net_weight": flt(shaft_row.get("net_weight") or 0),
+		"quality": _cstr(qc.get("quality") or ""),
+		"color": _cstr(qc.get("color") or ""),
 		"job_target_kg": job_target_kg,
 		"job_produced_kg": job_produced_kg,
 		"job_remaining_kg": job_remaining_kg,
@@ -3049,6 +3127,7 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 			continue
 		wo_terminal = _gsm_pp_wo_terminal(pp_id)
 		pp_jobs = []
+		qc_cache: dict = {}
 		for shaft_row in _gsm_pp_shaft_rows(frappe.get_doc("Production Plan", pp_id)):
 			entry = _gsm_build_job_board_entry(
 				pp_id,
@@ -3057,6 +3136,7 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 				shift=shift,
 				unit=unit,
 				wo_terminal=wo_terminal,
+				qc_cache=qc_cache,
 			)
 			pp_jobs.append(entry)
 			out_jobs.append(entry)
@@ -3068,12 +3148,25 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 				shift=shift,
 				unit=unit,
 				wo_terminal=False,
+				qc_cache=qc_cache,
 			)
 			entry["is_manual"] = True
 			entry["work_order"] = _cstr(man_row.get("work_order"))
 			entry["item_code"] = _cstr(man_row.get("item_code"))
 			entry["item_name"] = _cstr(man_row.get("item_name"))
-			entry["quality"] = _cstr(man_row.get("quality"))
+			# Prefer shaft/manual quality; fill gaps from item-code specs already resolved above.
+			if not entry.get("quality"):
+				entry["quality"] = _cstr(man_row.get("quality"))
+			if not entry.get("color") and entry.get("item_code"):
+				try:
+					specs = _spr_resolve_roll_line_specs_from_item_code(
+						entry["item_code"], entry.get("item_name")
+					)
+					entry["color"] = _cstr((specs or {}).get("color") or "")
+					if not entry.get("quality"):
+						entry["quality"] = _cstr((specs or {}).get("quality") or "")
+				except Exception:
+					pass
 			pp_jobs.append(entry)
 			out_jobs.append(entry)
 		by_pp[pp_id] = pp_jobs
