@@ -528,7 +528,7 @@
                 <th>Quality</th>
                 <th>Color</th>
                 <th class="gpe-num">Sticker GSM</th>
-                <th class="gpe-num">Width</th>
+                <th class="gpe-num">Width (inches)</th>
                 <th class="gpe-num">Ordered Length (MTR)</th>
                 <th class="gpe-num">Produced Length (MTR)</th>
                 <th>Prod GSM</th>
@@ -541,8 +541,8 @@
                 <th>Core</th>
                 <th class="gpe-num">Core Base Wt (Kg)</th>
                 <th>Polybag</th>
-                <th class="gpe-num">Diameter</th>
-                <th class="gpe-num">CBM</th>
+                <th class="gpe-num">Diameter (inches)</th>
+                <th class="gpe-num">CBM (inches)</th>
                 <th>Bay</th>
                 <th>Actions</th>
               </tr>
