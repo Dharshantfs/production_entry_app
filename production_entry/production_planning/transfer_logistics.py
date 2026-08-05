@@ -511,13 +511,13 @@ def _produced_roll_count_for_chart_row(item):
 
 
 def _transferred_roll_count_for_planning_row(ptr):
-	"""Non-rejected transfer approval lines linked to this planning row."""
+	"""Active transfer approval lines linked to this planning row (excludes rejected / orphaned STE)."""
 	row_id = _cstr(ptr)
 	if not row_id:
 		return 0
 	rows = frappe.db.sql(
 		"""
-		select count(tl.name) as cnt
+		select tl.name as line_name, ta.status, ta.stock_entry
 		from `tabTransfer Approval Line` tl
 		inner join `tabTransfer Approval` ta on ta.name = tl.parent
 		where tl.planning_table_row = %s and ifnull(ta.status, '') != 'Rejected'
@@ -525,7 +525,18 @@ def _transferred_roll_count_for_planning_row(ptr):
 		row_id,
 		as_dict=True,
 	)
-	return cint(rows[0].cnt if rows else 0)
+	cnt = 0
+	for r in rows:
+		st = _cstr(r.status)
+		if st in ("Pending Approval", "Draft"):
+			cnt += 1
+			continue
+		if st != "Approved":
+			continue
+		ste_ds = _transfer_approval_ste_docstatus(r.stock_entry)
+		if ste_ds in (0, 1):
+			cnt += 1
+	return cnt
 
 
 def _transfer_status_blocks_request(status, planning_table_row=None, produced_rolls=0, transferred_rolls=0):
@@ -1708,73 +1719,155 @@ def create_transfer_approval_request(
 	return {"ok": True, "name": doc.name, "status": doc.status}
 
 
-def update_planning_row_transfer_status(ptr):
+def _clear_planning_row_transfer_fields(ptr):
+	"""Wipe transfer status/destination/approval link on a Planning Table row."""
 	if not ptr or not frappe.db.exists("Planning Table", ptr):
 		return
-		
-	rows = frappe.db.sql("""
-		select ta.to_destination_label, ta.to_company, ta.status, count(tl.name) as roll_count
+	updates = {}
+	if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+		updates["custom_transfer_destination"] = ""
+	if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+		updates["custom_transfer_status"] = ""
+	if frappe.db.has_column("Planning Table", "custom_transfer_approval"):
+		updates["custom_transfer_approval"] = ""
+	if updates:
+		frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+		_sync_psi_transfer_fields(ptr, updates)
+
+
+def _transfer_approval_ste_docstatus(stock_entry):
+	"""Return STE docstatus, or None if name empty / STE missing."""
+	ste = _cstr(stock_entry)
+	if not ste or not frappe.db.exists("Stock Entry", ste):
+		return None
+	return cint(frappe.db.get_value("Stock Entry", ste, "docstatus") or 0)
+
+
+def update_planning_row_transfer_status(ptr):
+	"""Recompute Planning Table transfer status from live Transfer Approvals + STEs."""
+	if not ptr or not frappe.db.exists("Planning Table", ptr):
+		return
+
+	rows = frappe.db.sql(
+		"""
+		select
+			ta.name as ta_name,
+			ta.to_destination_label,
+			ta.to_company,
+			ta.status,
+			ta.stock_entry,
+			count(tl.name) as roll_count
 		from `tabTransfer Approval Line` tl
 		inner join `tabTransfer Approval` ta on ta.name = tl.parent
-		where tl.planning_table_row = %s and ta.status != 'Rejected'
+		where tl.planning_table_row = %s and ifnull(ta.status, '') != 'Rejected'
 		group by ta.name
-	""", ptr, as_dict=1)
-	
+		""",
+		ptr,
+		as_dict=1,
+	)
+
 	if not rows:
-		updates = {
-			"custom_transfer_destination": "",
-			"custom_transfer_status": ""
-		}
-	else:
-		dests = []
-		statuses = []
-		total_transferred = 0
-		for r in rows:
-			lbl = _compact_transfer_destination_label(
-				r.to_destination_label or "",
-				r.to_company or "",
-			)
-			rc = cint(r.roll_count)
-			total_transferred += rc
-			if lbl and rc:
-				dests.append(f"{lbl} ({rc} roll{'s' if rc != 1 else ''})")
-			elif lbl:
-				dests.append(lbl)
-			statuses.append(r.status)
+		_clear_planning_row_transfer_fields(ptr)
+		return
 
-		produced_rolls = 0
-		try:
-			pt_row = frappe.db.get_value(
-				"Planning Table",
-				ptr,
-				["spr_name", "item_code"],
-				as_dict=True,
-			)
-			if pt_row:
-				produced_rolls = _produced_roll_count_for_chart_row(
-					{"spr_name": pt_row.get("spr_name"), "item_code": pt_row.get("item_code")}
-				)
-		except Exception:
-			pass
+	dests = []
+	has_pending = False
+	has_draft_ste = False
+	has_approved_no_ste = False
+	submitted_rolls = 0
+	active_rolls = 0
+	latest_approval = ""
 
-		if "Pending Approval" in statuses:
-			final_status = "Pending Approval"
-		elif produced_rolls > 0 and total_transferred < produced_rolls:
-			final_status = _("Partially transferred ({0}/{1} rolls)").format(
-				total_transferred, produced_rolls
+	for r in rows:
+		lbl = _compact_transfer_destination_label(
+			r.to_destination_label or "",
+			r.to_company or "",
+		)
+		rc = cint(r.roll_count)
+		st = _cstr(r.status)
+		ste_ds = _transfer_approval_ste_docstatus(r.stock_entry)
+		# Approved/Pending with deleted STE no longer blocks the row.
+		if ste_ds is None and _cstr(r.stock_entry):
+			frappe.db.set_value(
+				"Transfer Approval",
+				r.ta_name,
+				"stock_entry",
+				"",
+				update_modified=False,
 			)
+			r.stock_entry = ""
+			ste_ds = None
+
+		if st == "Pending Approval" or st == "Draft":
+			has_pending = True
+			active_rolls += rc
+		elif st == "Approved":
+			if ste_ds == 1:
+				submitted_rolls += rc
+				active_rolls += rc
+			elif ste_ds == 0:
+				has_draft_ste = True
+				active_rolls += rc
+			else:
+				# Approved but STE gone — treat as inactive so row can be re-requested.
+				has_approved_no_ste = True
+				continue
 		else:
-			final_status = "Transferred"
-		final_dest = _truncate_planning_transfer_field(" | ".join(dests))
-		
-		updates = {
-			"custom_transfer_destination": final_dest,
-			"custom_transfer_status": _truncate_planning_transfer_field(final_status)
-		}
-		
+			active_rolls += rc
+
+		if lbl and rc:
+			dests.append(f"{lbl} ({rc} roll{'s' if rc != 1 else ''})")
+		elif lbl:
+			dests.append(lbl)
+		if r.ta_name:
+			latest_approval = r.ta_name
+
+	if not has_pending and not has_draft_ste and submitted_rolls <= 0 and has_approved_no_ste and active_rolls <= 0:
+		_clear_planning_row_transfer_fields(ptr)
+		return
+
+	produced_rolls = 0
+	try:
+		pt_row = frappe.db.get_value(
+			"Planning Table",
+			ptr,
+			["spr_name", "item_code"],
+			as_dict=True,
+		)
+		if pt_row:
+			produced_rolls = _produced_roll_count_for_chart_row(
+				{"spr_name": pt_row.get("spr_name"), "item_code": pt_row.get("item_code")}
+			)
+	except Exception:
+		pass
+
+	if has_pending:
+		final_status = "Pending Approval"
+	elif has_draft_ste:
+		final_status = "Draft STE Created"
+	elif submitted_rolls > 0 and produced_rolls > 0 and submitted_rolls < produced_rolls:
+		final_status = _("Partially transferred ({0}/{1} rolls)").format(
+			submitted_rolls, produced_rolls
+		)
+	elif submitted_rolls > 0:
+		final_status = "Transferred"
+	elif has_approved_no_ste:
+		_clear_planning_row_transfer_fields(ptr)
+		return
+	else:
+		final_status = ""
+
+	updates = {}
 	if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+		updates["custom_transfer_destination"] = _truncate_planning_transfer_field(" | ".join(dests))
+	if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+		updates["custom_transfer_status"] = _truncate_planning_transfer_field(final_status)
+	if latest_approval and frappe.db.has_column("Planning Table", "custom_transfer_approval"):
+		updates["custom_transfer_approval"] = latest_approval if final_status else ""
+
+	if updates:
 		frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
-	_sync_psi_transfer_fields(ptr, updates)
+		_sync_psi_transfer_fields(ptr, updates)
 
 
 def _stamp_planning_rows_for_transfer_request(approval_name, label):
@@ -1825,19 +1918,34 @@ def _stamp_planning_rows_after_transfer_submit(ta):
 
 
 def _resolved_planning_row_transfer_status(pt_name, fallback_status=""):
+	"""Return live transfer status; heal stale Draft STE / Pending when docs were deleted."""
 	ptr = _cstr(pt_name)
-	if not ptr or not frappe.db.has_column("Planning Table", "custom_transfer_approval"):
+	if not ptr:
 		return _cstr(fallback_status)
-	row = frappe.db.get_value(
-		"Planning Table",
-		ptr,
-		["custom_transfer_status", "custom_transfer_approval"],
-		as_dict=True,
-	)
+
+	row = None
+	fields = ["custom_transfer_status"]
+	if frappe.db.has_column("Planning Table", "custom_transfer_approval"):
+		fields.append("custom_transfer_approval")
+	if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+		row = frappe.db.get_value("Planning Table", ptr, fields, as_dict=True)
 	if not row:
 		return _cstr(fallback_status)
+
 	status = _cstr(row.get("custom_transfer_status") or fallback_status)
-	approval = _cstr(row.get("custom_transfer_approval"))
+	st = status.lower()
+
+	# Stale lock statuses after Transfer Approval / STE delete — recompute from live docs.
+	if st in {"pending approval", "approved", "draft ste created"}:
+		update_planning_row_transfer_status(ptr)
+		refreshed = ""
+		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+			refreshed = _cstr(
+				frappe.db.get_value("Planning Table", ptr, "custom_transfer_status") or ""
+			)
+		return refreshed
+
+	approval = _cstr(row.get("custom_transfer_approval")) if "custom_transfer_approval" in (row or {}) else ""
 	if not approval:
 		return status
 	ta_row = frappe.db.get_value(
@@ -1856,6 +1964,65 @@ def _resolved_planning_row_transfer_status(pt_name, fallback_status=""):
 		frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
 		_sync_psi_transfer_fields(ptr, updates)
 	return transfer_status
+
+
+def transfer_approval_on_trash(doc, method=None):
+	"""When Transfer Approval is deleted, unlock planning rows so transfer can be re-requested."""
+	ptrs = []
+	seen = set()
+	for ln in doc.get("lines") or []:
+		ptr = _cstr(getattr(ln, "planning_table_row", None) or (ln.get("planning_table_row") if isinstance(ln, dict) else ""))
+		if ptr and ptr not in seen:
+			seen.add(ptr)
+			ptrs.append(ptr)
+	for ptr in ptrs:
+		try:
+			update_planning_row_transfer_status(ptr)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "transfer_approval_on_trash")
+
+
+def stock_entry_on_trash(doc, method=None):
+	"""When transfer STE is deleted, clear TA link and unlock / recompute planning status."""
+	_release_planning_rows_for_deleted_transfer_ste(doc)
+
+
+def stock_entry_on_cancel(doc, method=None):
+	"""When transfer STE is cancelled, same unlock path as delete."""
+	_release_planning_rows_for_deleted_transfer_ste(doc)
+
+
+def _release_planning_rows_for_deleted_transfer_ste(doc):
+	ste_name = _cstr(getattr(doc, "name", None))
+	if not ste_name:
+		return
+	ta_names = frappe.get_all(
+		"Transfer Approval",
+		filters={"stock_entry": ste_name},
+		pluck="name",
+	)
+	if not ta_names:
+		return
+	ptrs = set()
+	for ta_name in ta_names:
+		frappe.db.set_value(
+			"Transfer Approval",
+			ta_name,
+			{"stock_entry": "", "status": "Pending Approval"},
+			update_modified=False,
+		)
+		for ln in frappe.get_all(
+			"Transfer Approval Line",
+			filters={"parent": ta_name},
+			pluck="planning_table_row",
+		):
+			if ln:
+				ptrs.add(_cstr(ln))
+	for ptr in ptrs:
+		try:
+			update_planning_row_transfer_status(ptr)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "release_planning_rows_transfer_ste")
 
 
 def stock_entry_on_submit(doc, method=None):

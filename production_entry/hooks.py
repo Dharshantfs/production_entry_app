@@ -177,6 +177,11 @@ doc_events = {
     "Stock Entry": {
         "before_submit": "production_entry.production_planning.transfer_logistics.stock_entry_validate_logistics_scan",
         "on_submit": "production_entry.production_planning.transfer_logistics.stock_entry_on_submit",
+        "on_cancel": "production_entry.production_planning.transfer_logistics.stock_entry_on_cancel",
+        "on_trash": "production_entry.production_planning.transfer_logistics.stock_entry_on_trash",
+    },
+    "Transfer Approval": {
+        "on_trash": "production_entry.production_planning.transfer_logistics.transfer_approval_on_trash",
     },
     "Design Master": _DESIGN_MASTER_HOOKS,
     "DESIGN MASTER": _DESIGN_MASTER_HOOKS,

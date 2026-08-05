@@ -8682,7 +8682,15 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				if bom_no_ex and frappe.db.has_column("Planning Table", "qty"):
 					_bag_sheet_lam = _planning_sheet_has_bag_fg(ps.name)
 					if _bag_sheet_lam and comp.get("role") in ("fabric", "pb"):
-						pass
+						comp_qty_ex, _ = _bag_deeper_child_qty_from_bom(
+							bom_no_ex,
+							comp_ic,
+							lam_ic,
+							lam_row,
+							so_it,
+							ps.name,
+							bom_row=bom_row_ex,
+						)
 					else:
 						lam_scale, lam_uom = _lam_parent_scale_for_bom(lam_ic, lam_row, so_it, ps.name)
 						if bom_row_ex is not None:
@@ -8696,10 +8704,10 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 								parent_item_code=lam_ic,
 								planning_sheet_name=ps.name,
 							)
-						if comp_qty_ex > 0:
-							cur_q_ex = flt(frappe.db.get_value("Planning Table", ex_name, "qty") or 0)
-							if abs(comp_qty_ex - cur_q_ex) > 1e-6:
-								updates["qty"] = comp_qty_ex
+					if comp_qty_ex > 0:
+						cur_q_ex = flt(frappe.db.get_value("Planning Table", ex_name, "qty") or 0)
+						if abs(comp_qty_ex - cur_q_ex) > 1e-6:
+							updates["qty"] = comp_qty_ex
 				if updates:
 					frappe.db.set_value("Planning Table", ex_name, updates, update_modified=False)
 				# Re-apply BOM role units on existing child rows (100 → width/white rules; PB-* → VR).
@@ -8805,8 +8813,15 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			bom_row = comp.get("bom_row")
 			_bag_sheet_new = _planning_sheet_has_bag_fg(ps.name)
 			if _bag_sheet_new and comp.get("role") in ("fabric", "pb"):
-				comp_qty = 0
-				comp_uom = _cstr(frappe.db.get_value("Item", comp_ic, "stock_uom") or "Kg").strip() or "Kg"
+				comp_qty, comp_uom = _bag_deeper_child_qty_from_bom(
+					bom_no,
+					comp_ic,
+					lam_ic,
+					lam_row,
+					so_it,
+					ps.name,
+					bom_row=bom_row,
+				)
 			else:
 				lam_scale, lam_uom = _lam_parent_scale_for_bom(lam_ic, lam_row, so_it, ps.name)
 				if bom_no and bom_row is not None:
@@ -9762,7 +9777,13 @@ def _sync_bom_child_rows_from_planning_rows(
 				updates["width_inch"] = 0
 			_apply_254_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
 			_apply_252_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
-			if not _skip_bag_deeper_child_qty_on_sync(ps.name, parent_ic, child_ic):
+			if _planning_sheet_has_bag_fg(ps.name) and (
+				child_ic.startswith("100") or _is_printed_bopp_item_code(child_ic)
+			) and parent_proc in _MAIN_FABRIC_MID_PROCESSES:
+				child_qty_new, child_uom_new = _bag_deeper_child_qty_from_bom(
+					bom_no, child_ic, parent_ic, prow, so_it, ps.name
+				)
+			else:
 				scale_qty = flt(prow.get("qty") or 0) or flt(getattr(so_it, "qty", 0))
 				scale_uom = prow.get("uom") or getattr(so_it, "uom", None)
 				scale_qty, scale_uom = _parent_bom_scale_qty_uom(parent_ic, scale_qty, scale_uom, ps.name)
@@ -9774,12 +9795,12 @@ def _sync_bom_child_rows_from_planning_rows(
 					parent_item_code=parent_ic,
 					planning_sheet_name=ps.name,
 				)
-				cur_child_qty = flt(frappe.db.get_value("Planning Table", ex_nm, "qty") or 0)
-				skip_board_qty = child_qty_new > 0 and abs(cur_child_qty - child_qty_new) < 0.001
-				if child_qty_new > 0 and frappe.db.has_column("Planning Table", "qty") and not skip_board_qty:
-					updates["qty"] = child_qty_new
-				if child_uom_new and frappe.db.has_column("Planning Table", "uom"):
-					updates["uom"] = child_uom_new
+			cur_child_qty = flt(frappe.db.get_value("Planning Table", ex_nm, "qty") or 0)
+			skip_board_qty = child_qty_new > 0 and abs(cur_child_qty - child_qty_new) < 0.001
+			if child_qty_new > 0 and frappe.db.has_column("Planning Table", "qty") and not skip_board_qty:
+				updates["qty"] = child_qty_new
+			if child_uom_new and frappe.db.has_column("Planning Table", "uom"):
+				updates["uom"] = child_uom_new
 			if updates:
 				qty_up = updates.pop("qty", None)
 				frappe.db.set_value("Planning Table", ex_nm, updates, update_modified=False)
@@ -9788,9 +9809,13 @@ def _sync_bom_child_rows_from_planning_rows(
 			continue
 
 		parent_doc = frappe.get_doc("Planning Table", prow.get("name")) if prow.get("name") else None
-		if _skip_bag_deeper_child_qty_on_sync(ps.name, parent_ic, child_ic):
-			child_qty = 0
-			child_uom = _cstr(frappe.db.get_value("Item", child_ic, "stock_uom") or "Kg").strip() or "Kg"
+		parent_pp = _item_process_prefix(parent_ic) or _lamination_process_from_item_code(parent_ic)
+		if _planning_sheet_has_bag_fg(ps.name) and (
+			child_ic.startswith("100") or _is_printed_bopp_item_code(child_ic)
+		) and parent_pp in _MAIN_FABRIC_MID_PROCESSES:
+			child_qty, child_uom = _bag_deeper_child_qty_from_bom(
+				bom_no, child_ic, parent_ic, prow, so_it, ps.name
+			)
 		else:
 			scale_qty = flt(prow.get("qty") or 0) or flt(getattr(so_it, "qty", 0))
 			scale_uom = prow.get("uom") or getattr(so_it, "uom", None)
@@ -30568,13 +30593,18 @@ def _bag_fabric_100_on_loop_chain(chain_parent_pp, parent_ic, soi, pt_rows, dire
 
 
 def _bag_fabric_100_parent_fabric_label(chain_parent_pp, parent_ic, soi, pt_rows, direct_by_soi, bag_fg_context):
-	"""Main-chain bag fabric rows are always Main 100 Base Fabric; loop chains keep Loop {parent} labels."""
+	"""Bag 100* rows: loop chain → Loop {pp} Base Fabric; main chain → Main {pp} Base Fabric."""
 	if not bag_fg_context:
 		cp = _cstr(chain_parent_pp).strip()
 		return f"{cp} Base Fabric" if cp else "100 Base Fabric"
 	if _bag_fabric_100_on_loop_chain(chain_parent_pp, parent_ic, soi, pt_rows, direct_by_soi):
 		return _chain_child_parent_fabric_label(
 			parent_ic, chain_parent_pp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
+		)
+	cp = _cstr(chain_parent_pp).strip()
+	if cp:
+		return _chain_child_parent_fabric_label(
+			parent_ic, cp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
 		)
 	return "Main 100 Base Fabric"
 
@@ -30708,7 +30738,10 @@ def _resolve_parent_fabric_label(
 				)
 			return f"{cp} Base Fabric"
 		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
-		return nb or "Main 100 Base Fabric"
+		if nb:
+			return nb
+		cp_fb = _fabric_parent_process_from_item_code(ic)
+		return f"Main {cp_fb} Base Fabric" if cp_fb else "100 Base Fabric"
 
 	if direct_on_fg_bom and bag_fg_context:
 		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
@@ -31265,15 +31298,53 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 	return added
 
 
+def _bag_deeper_child_qty_from_bom(
+	bom_no,
+	child_ic,
+	parent_ic,
+	parent_row,
+	so_it,
+	planning_sheet_name,
+	bom_row=None,
+):
+	"""Qty for 100/PB under bag mid-parent — scale from parent Meter→Kg when parent is still in Meter."""
+	if not bom_no or not child_ic:
+		return 0.0, ""
+	lam_scale, lam_uom = _lam_parent_scale_for_bom(parent_ic, parent_row, so_it, planning_sheet_name)
+	pt_name = None
+	if isinstance(parent_row, dict):
+		pt_name = parent_row.get("name")
+		if not lam_scale:
+			lam_scale = flt(parent_row.get("qty") or 0)
+			lam_uom = parent_row.get("uom") or lam_uom
+	elif parent_row:
+		pt_name = getattr(parent_row, "name", None)
+	scale_kg = flt(lam_scale)
+	uom_low = _cstr(lam_uom).strip().lower()
+	if uom_low == "meter" and planning_sheet_name and _planning_sheet_has_bag_fg(planning_sheet_name):
+		kg = _meter_qty_to_kg_for_planning_row(parent_ic, lam_scale, pt_name=pt_name)
+		if kg > 0:
+			scale_kg = kg
+	elif uom_low and uom_low != "kg" and scale_kg > 0:
+		scale_kg = _planning_qty_in_kg_for_bom(parent_ic, lam_scale, lam_uom)
+	if bom_row is not None:
+		qty = _scaled_component_qty_from_bom_row(bom_no, bom_row, scale_kg)
+	else:
+		qty = _fabric_qty_from_bom(
+			bom_no,
+			child_ic,
+			scale_kg,
+			from_uom="Kg",
+			parent_item_code=parent_ic,
+			planning_sheet_name=planning_sheet_name,
+		)
+	uom = _cstr(frappe.db.get_value("Item", child_ic, "stock_uom") or "Kg").strip() or "Kg"
+	return flt(qty), uom
+
+
 def _skip_bag_deeper_child_qty_on_sync(planning_sheet_name, parent_ic, child_ic):
-	"""Bag sheets: 100/PB qty is set only on Meter→Kg button, not during BOM sync."""
-	if not planning_sheet_name or not _planning_sheet_has_bag_fg(planning_sheet_name):
-		return False
-	pic = _cstr(parent_ic).strip()
-	cic = _cstr(child_ic).strip()
-	if _lamination_process_from_item_code(pic) != "107" and _item_process_prefix(pic) != "107":
-		return False
-	return cic.startswith("100") or _is_printed_bopp_item_code(cic)
+	"""Deprecated — bag deeper child qty is computed on sync (no longer deferred to Meter→Kg)."""
+	return False
 
 
 def _planning_sheet_has_bag_fg(planning_sheet_name):
@@ -31591,12 +31662,17 @@ def _recalc_bag_deeper_bom_children(planning_sheet_name):
 				break
 		if not row_107:
 			continue
+		parent_ic = _cstr(row_107.get("item_code"))
 		if _cstr(row_107.get("uom")).strip().lower() == "meter":
-			continue
-		scale_kg = flt(row_107.get("qty") or 0)
+			scale_kg = _meter_qty_to_kg_for_planning_row(
+				parent_ic,
+				flt(row_107.get("qty") or 0),
+				pt_name=row_107.get("name"),
+			)
+		else:
+			scale_kg = flt(row_107.get("qty") or 0)
 		if scale_kg <= 0:
 			continue
-		parent_ic = _cstr(row_107.get("item_code"))
 		res107 = _resolve_107_child_components(parent_ic) or {}
 		bom_no = res107.get("bom_name")
 		if not bom_no:
