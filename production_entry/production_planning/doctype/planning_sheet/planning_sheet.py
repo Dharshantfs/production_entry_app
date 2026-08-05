@@ -274,6 +274,79 @@ class Planningsheet(Document):
                 pr.unit = nu
                 leg.unit = nu
 
+    def _sync_linked_planned_dates(self):
+        """Keep board ``planned_date`` and items ``custom_item_planned_date`` aligned when linked.
+
+        Desk often POSTs a stale value for the grid the user did not edit. Prefer the side that
+        changed vs DB; if both changed, prefer the board schedule date (primary planning field).
+        """
+        if cint(self.docstatus) != 0:
+            return
+
+        def _norm_date(v):
+            if v is None or str(v).strip() == "":
+                return ""
+            try:
+                return str(getdate(v))
+            except Exception:
+                return str(v).strip()[:10]
+
+        items_by_name = {
+            ((getattr(r, "name", None) or "").strip()): r
+            for r in (self.get("items") or [])
+            if getattr(r, "name", None)
+        }
+        legacy_by_so_line = {}
+        for leg in self.get("items") or []:
+            so_line = (getattr(leg, "so_item", None) or getattr(leg, "sales_order_item", None) or "").strip()
+            ic = str(getattr(leg, "item_code", None) or "").strip()
+            if so_line and ic:
+                legacy_by_so_line[(so_line, ic)] = leg
+
+        for pr in self.get("planned_items") or []:
+            si = (getattr(pr, "source_item", None) or "").strip()
+            leg = None
+            if si and si in items_by_name:
+                leg = items_by_name[si]
+            if not leg:
+                pr_so = (
+                    getattr(pr, "so_item", None)
+                    or getattr(pr, "sales_order_item", None)
+                    or ""
+                ).strip()
+                pr_ic = str(getattr(pr, "item_code", None) or "").strip()
+                if pr_so and pr_ic:
+                    leg = legacy_by_so_line.get((pr_so, pr_ic))
+            if not leg:
+                continue
+
+            board_d = _norm_date(getattr(pr, "planned_date", None))
+            leg_d = _norm_date(getattr(leg, "custom_item_planned_date", None))
+            if board_d == leg_d:
+                continue
+
+            pr_name = (getattr(pr, "name", None) or "").strip()
+            leg_db = None
+            pr_db = None
+            if si and frappe.db.exists("Planning sheet Item", si):
+                leg_db = _norm_date(frappe.db.get_value("Planning sheet Item", si, "custom_item_planned_date"))
+            if pr_name and frappe.db.exists("Planning Table", pr_name):
+                pr_db = _norm_date(frappe.db.get_value("Planning Table", pr_name, "planned_date"))
+
+            leg_changed = leg_db is None or leg_d != leg_db
+            board_changed = pr_db is None or board_d != pr_db
+
+            if board_changed and not leg_changed:
+                leg.custom_item_planned_date = board_d or None
+            elif leg_changed and not board_changed:
+                pr.planned_date = leg_d or None
+            else:
+                # Prefer board schedule when both changed or both are new.
+                if board_d:
+                    leg.custom_item_planned_date = board_d
+                elif leg_d:
+                    pr.planned_date = leg_d
+
     def _normalize_child_table_units(self):
         """Map ``unit`` to existing Workstation names (L1/L2 Leader, Unit 1–4, etc.)."""
         for row in self.get("planned_items") or []:
@@ -366,6 +439,7 @@ class Planningsheet(Document):
             self._sync_submitted_board_units_to_legacy()
             return
         self._sync_linked_planning_units()
+        self._sync_linked_planned_dates()
         self.validate_items()
         self.calculate_totals()
         self.parse_item_details()

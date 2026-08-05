@@ -145,6 +145,13 @@ frappe.ui.form.on('Planning sheet Item', {
         frm.refresh_field('planned_items');
         ps_schedule_planning_grid_columns(frm);
     },
+    custom_item_planned_date: function (frm, cdt, cdn) {
+        const row = locals[cdt][cdn];
+        const pr = _findPlannedRowForLegacy(frm, row);
+        if (!pr) return;
+        frappe.model.set_value(pr.doctype, pr.name, 'planned_date', row.custom_item_planned_date || null);
+        frm.refresh_field('planned_items');
+    },
 });
 
 frappe.ui.form.on('Planning Table', {
@@ -174,6 +181,13 @@ frappe.ui.form.on('Planning Table', {
         if (row.plan_name) {
             frappe.model.set_value(leg.doctype, leg.name, 'plan_name', row.plan_name);
         }
+        frm.refresh_field('items');
+    },
+    planned_date: function (frm, cdt, cdn) {
+        const row = locals[cdt][cdn];
+        const leg = _findLegacyRowForPlanned(frm, row);
+        if (!leg) return;
+        frappe.model.set_value(leg.doctype, leg.name, 'custom_item_planned_date', row.planned_date || null);
         frm.refresh_field('items');
     },
 });

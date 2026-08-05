@@ -8045,6 +8045,8 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_sync_box_bag_fabric_planning_rows(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_box_bag_fabric")
+	# Box-bag BOM can add process-103 loop rows after the first force — re-apply unassigned slitting.
+	_force_slitting_unit_on_sheet(planning_sheet_name)
 	_sync_sheet_cutting_bom_child_row_specs(planning_sheet_name)
 	try:
 		_sync_sheet_cutting_no_of_sheets_from_so(planning_sheet_name)
@@ -31009,7 +31011,10 @@ def _unit_for_bag_fg_bom_child(child_ic, child_proc, specs=None):
 	"""Default production unit for a direct BOM child on bag FG."""
 	if _is_printed_bopp_item_code(child_ic):
 		return PRINTED_BOPP_FILM_UNIT
-	if child_proc in ("103", "108", "110"):
+	# Process 103 → Unassigned Slitting (same idea as fabric whites → UNASSIGNED).
+	if child_proc == "103":
+		return SLITTING_UNASSIGNED_UNIT
+	if child_proc in ("108", "110"):
 		return SLITTING_UNIT
 	if child_proc in ("104", "107"):
 		return LAMINATION_UNIT

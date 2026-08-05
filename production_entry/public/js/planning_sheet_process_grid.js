@@ -29,6 +29,8 @@ const PS_NEVER_SHOW_GRID_FIELDS = new Set([
 	'custom_lamination_shift',
 	'custom_slitting_shift',
 	'custom_sheet_cutting_shift',
+	// Board must not show Custom Quality (use `quality`); items keep Planned Date via logical planned_date.
+	'custom_quality',
 ]);
 
 function ps_filter_grid_show_fields(fieldnames) {
@@ -98,9 +100,9 @@ const PS_FIELD_ORDER_BY_PROCESS = {
 const PS_BASE_FIELDS = [
 	'item_code', 'item_name', 'qty', 'uom', 'unit',
 	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'width_inch',
-	'gsm', 'quality', 'color', 'custom_quality',
+	'gsm', 'quality', 'color',
 	'custom_parent_fabric', 'custom_parent_child_trace_id',
-	'custom_item_planned_date', 'planned_date', 'custom_plan_code', 'plan_name',
+	'planned_date', 'custom_plan_code', 'plan_name',
 	'custom_movement_type', 'order_sheet', 'spr_name',
 ];
 
@@ -198,6 +200,10 @@ function ps_resolve_order_for_table(table_fieldname, logicalOrder) {
 	const seen = {};
 	ps_filter_grid_show_fields(logicalOrder).forEach((fn) => {
 		const resolved = ps_resolve_field_for_table(table_fieldname, fn);
+		// Board schedule date is `planned_date` only — never show legacy Item planned date column.
+		if (table_fieldname === 'planned_items' && resolved === 'custom_item_planned_date') {
+			return;
+		}
 		if (seen[resolved]) {
 			return;
 		}
