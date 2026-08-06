@@ -37,6 +37,24 @@ TRANSFER_WAREHOUSE_BY_COMPANY = {
 	},
 }
 
+# Draft STE naming_series by (from_company, to_company) on Transfer Approval approve.
+TRANSFER_STE_SERIES_BY_COMPANY_PAIR = {
+	("Jayashree Spun Bond - 1ZT", "J Vasanth Exports"): "JSBW/2627/JV/.###",
+	(
+		"Thusma SMS Nonwovens Private Limited - 1Z0",
+		"Varshine Retails Private Limited",
+	): "TSNW/2526/VR/.###",
+	(
+		"Jayashree Spun Bond - 1ZT",
+		"Thusma SMS Nonwovens Private Limited - 1Z0",
+	): "JSBW/2627/TNSPL/.###",
+	(
+		"Thusma SMS Nonwovens Private Limited - 1Z0",
+		"Varshine Tex (Puducherry)",
+	): "TSNW/2526/VT/.###",
+	("Jayashree Spun Bond - 1ZT", "Varshine Tex (Puducherry)"): "JSBW/2627/VTP/.###",
+}
+
 BOARD_KIND_TO_SCOPE = {
 	"production": "only_100",
 	"lamination": "lamination_only",
@@ -570,6 +588,25 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 	ptr = _cstr(item.get("itemName") or item.get("name") or item.get("planning_table_row"))
 	produced_rolls = _produced_roll_count_for_chart_row(item)
 	transferred_rolls = _transferred_roll_count_for_planning_row(ptr)
+	st_low = _cstr(status).lower()
+	# Stale lock/destination after TA/STE delete (0 active lines) — clear DB.
+	if ptr and transferred_rolls == 0 and (
+		dest
+		or st_low in {"pending approval", "approved", "draft ste created"}
+	):
+		_clear_planning_row_transfer_fields(ptr)
+		dest = ""
+		status = ""
+		st_low = ""
+		if isinstance(item, dict):
+			item["custom_transfer_destination"] = ""
+			item["custom_transfer_status"] = ""
+	active_transfer = (
+		transferred_rolls > 0
+		or _transfer_status_blocks_request(status, ptr, produced_rolls, transferred_rolls)
+		or st_low.startswith("transferred")
+		or "partially transferred" in st_low
+	)
 	can_transfer = (
 		is_transfer_movement(mt)
 		and bool(wo_terminal)
@@ -593,7 +630,7 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 		else:
 			block_reason = status
 	movement_display = mt_norm or ""
-	if dest and is_transfer_movement(mt):
+	if dest and is_transfer_movement(mt) and active_transfer:
 		if produced_rolls > 0:
 			movement_display = f"{mt_norm} → {dest} ({transferred_rolls}/{produced_rolls} rolls)"
 		else:
@@ -794,6 +831,15 @@ def get_transfer_eligible_rows(
 		if pt_name:
 			r["transfer_status"] = _resolved_planning_row_transfer_status(pt_name, r.get("transfer_status"))
 			r["custom_transfer_status"] = r["transfer_status"]
+			# Re-read destination after reconcile so in-memory chart data is not stale.
+			if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+				r["custom_transfer_destination"] = _cstr(
+					frappe.db.get_value("Planning Table", pt_name, "custom_transfer_destination") or ""
+				)
+				r["transfer_destination"] = r["custom_transfer_destination"]
+			else:
+				r["custom_transfer_destination"] = ""
+				r["transfer_destination"] = ""
 		spr_ds = cint(r.get("spr_docstatus") or 0)
 		wo_terminal = bool(r.get("wo_terminal") or (spr_ds == 1 and _cstr(r.get("spr_name"))))
 		extra = enrich_chart_row_transfer_payload(
@@ -2195,6 +2241,15 @@ def reject_transfer_approval(name=None):
 	return {"ok": True, "name": name}
 
 
+def _transfer_ste_naming_series(from_company, to_company):
+	"""Stock Entry naming_series for logistics transfer pair; empty if unmapped."""
+	fc = _cstr(from_company).strip()
+	tc = _cstr(to_company).strip()
+	if not fc or not tc:
+		return ""
+	return _cstr(TRANSFER_STE_SERIES_BY_COMPANY_PAIR.get((fc, tc)) or "").strip()
+
+
 def _create_draft_transfer_stock_entry(ta):
 	fc = _cstr(ta.from_company)
 	wh = TRANSFER_WAREHOUSE_BY_COMPANY.get(fc)
@@ -2210,6 +2265,9 @@ def _create_draft_transfer_stock_entry(ta):
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = "Material Transfer"
 	se.company = fc
+	series = _transfer_ste_naming_series(fc, ta.to_company)
+	if series and frappe.db.has_column("Stock Entry", "naming_series"):
+		se.naming_series = series
 	se.set_posting_time = 1
 	se.posting_date = getdate()
 	se.posting_time = now_datetime().strftime("%H:%M:%S")
@@ -2254,6 +2312,10 @@ def _create_draft_transfer_stock_entry(ta):
 		se.append("items", row)
 
 	se.insert(ignore_permissions=True)
+	if series and frappe.db.has_column("Stock Entry", "naming_series"):
+		cur = _cstr(frappe.db.get_value("Stock Entry", se.name, "naming_series") or "")
+		if cur != series:
+			frappe.db.set_value("Stock Entry", se.name, "naming_series", series, update_modified=False)
 	_ensure_stock_entry_order_codes(se.name, order_codes)
 	_ensure_stock_entry_party_and_nature(se.name, ta.to_company, nature)
 	if not _ensure_stock_entry_external_transfer(se.name, 1):
