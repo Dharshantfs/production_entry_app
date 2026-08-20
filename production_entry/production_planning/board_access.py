@@ -214,6 +214,76 @@ def _access_docname_for_user(user: str) -> str | None:
 	)
 
 
+def page_has_permission(doc, ptype=None, user=None, debug=False, **kwargs):
+	"""Allow Page read when Production Board Access grants that board/page slug.
+
+	Returns True to grant, None to fall back to standard Page role checks.
+	"""
+	if ptype and ptype not in ("read", "select", "write", "share", "print", "email", "report"):
+		return None
+	# Only elevate read/select for desk navigation; leave write to roles.
+	if ptype in ("write", "share", "print", "email", "report"):
+		return None
+
+	name = doc if isinstance(doc, str) else getattr(doc, "name", None)
+	slug = _normalize_board_slug(name)
+	if not slug:
+		return None
+
+	user = user or frappe.session.user
+	if not user or user in ("Guest",):
+		return None
+
+	try:
+		scope = get_user_board_scope(user)
+	except Exception:
+		return None
+
+	# Privileged / unlimited users already pass via System Manager roles.
+	if scope.get("unlimited"):
+		return None
+
+	allowed = set(_normalize_board_slug(s) for s in (scope.get("allowed_boards") or []) if s)
+	if not allowed:
+		return None
+
+	if _equivalent_board_slugs(slug) & allowed:
+		return True
+	return None
+
+
+def extend_bootinfo(bootinfo):
+	"""Expose Production Board Access pages in desk search / page_info."""
+	try:
+		scope = get_user_board_scope()
+	except Exception:
+		return
+
+	if scope.get("unlimited"):
+		return
+
+	allowed = scope.get("allowed_boards") or []
+	if not allowed:
+		return
+
+	page_info = bootinfo.get("page_info")
+	if page_info is None:
+		return
+
+	for slug in allowed:
+		norm = _normalize_board_slug(slug)
+		if not norm or norm in page_info:
+			continue
+		if not frappe.db.exists("Page", norm):
+			continue
+		title = (
+			frappe.db.get_value("Page", norm, "title")
+			or BOARD_PICKER_LABELS.get(norm)
+			or norm.replace("-", " ").title()
+		)
+		page_info[norm] = {"title": title, "route": norm}
+
+
 @frappe.whitelist()
 def get_production_board_user_context(board_slug: str | None = None):
 	"""Return board access scope for the session user (page gate + Vue)."""

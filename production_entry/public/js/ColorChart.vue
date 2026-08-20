@@ -746,6 +746,13 @@ async function loadColorChartBoardAccess() {
           applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
           applyBoardAccessUnitScope(scope, filterUnit, units);
         }
+        if (scope.loaded !== false && scope.permitted === false && !scope.unlimited) {
+          frappe.msgprint({
+            title: __("Not Permitted"),
+            message: __("Color Chart is not enabled for your Production Board Access. Ask an admin to add a Color Chart row."),
+            indicator: "red",
+          });
+        }
         resolve();
       },
       error: () => {
