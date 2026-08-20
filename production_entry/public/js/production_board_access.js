@@ -10,12 +10,16 @@ const BOARD_SELECT_FALLBACK =
 	"printed-bopp-film-board|Printed BOPP Film Board\n" +
 	"box-bag-board|Box Bag Board\n" +
 	"w-cut-d-cut-board|W CUT / D CUT Board\n" +
-	"color-chart|Color Chart\n" +
 	"confirm-orders|Confirm Orders\n" +
-	"planning|Planning";
+	"planning|Planning\n" +
+	"logistics-kanban|Logistics Kanban\n" +
+	"despatch-approval-dashboard|Despatch Approval\n" +
+	"transfer-approval-dashboard|Transfer Approval";
 
 function normalizeBoardSlug(raw) {
-	const s = String(raw || "").trim().toLowerCase();
+	const s = String(raw || "")
+		.trim()
+		.toLowerCase();
 	if (!s) return "";
 	return (s.includes("|") ? s.split("|")[0] : s).trim();
 }
@@ -33,7 +37,9 @@ function wCutCompaniesFromBoardRows(rows) {
 		if (!row.board) return;
 		if (isWCutDCutBoardSlug(row.board)) {
 			hasWCut = true;
-			const c = String(row.w_cut_d_cut_company || "Both").trim().toUpperCase();
+			const c = String(row.w_cut_d_cut_company || "Both")
+				.trim()
+				.toUpperCase();
 			out.add(c === "JVE" || c === "VTP" ? c : "BOTH");
 			return;
 		}
@@ -45,11 +51,7 @@ function wCutCompaniesFromBoardRows(rows) {
 function applyBoardSelectOptions(frm, options) {
 	const boards = frm.fields_dict.allowed_boards;
 	if (boards && boards.grid) {
-		boards.grid.update_docfield_property(
-			"board",
-			"options",
-			options || BOARD_SELECT_FALLBACK
-		);
+		boards.grid.update_docfield_property("board", "options", options || BOARD_SELECT_FALLBACK);
 	}
 }
 
@@ -69,14 +71,22 @@ function setupAllowedUnitsQuery(frm) {
 	frm.set_query("unit", "allowed_units", () => {
 		const meta = wCutCompaniesFromBoardRows(frm.doc.allowed_boards || []);
 		return {
-			query:
-				"production_entry.production_planning.board_access.production_board_access_workstation_query",
+			query: "production_entry.production_planning.board_access.production_board_access_workstation_query",
 			filters: {
 				has_w_cut: meta.hasWCut ? 1 : 0,
 				has_other_boards: meta.hasOtherBoards ? 1 : 0,
 				w_cut_companies: meta.companies,
 			},
 		};
+	});
+}
+
+function styleChildGrid(frm, fieldname) {
+	const field = frm.fields_dict[fieldname];
+	if (!field || !field.grid) return;
+	field.grid.wrapper.find(".grid-heading-row").css({
+		background: "#f8fafc",
+		"font-weight": "600",
 	});
 }
 
@@ -90,9 +100,11 @@ function decorateBoardAccessForm(frm) {
 			`<div class="pp-board-access-banner" style="margin:0 0 14px;padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,#eff6ff,#f0fdf4);border:1px solid #bfdbfe;">
 				<div style="font-weight:700;font-size:15px;color:#1e3a8a;margin-bottom:6px;">Production Board Access</div>
 				<div style="font-size:12px;color:#334155;line-height:1.5;">
-					Assign by <strong>user name</strong> (search shows name + email). <strong>Many users can share the same unit</strong> (shift-wise).
-					Add <strong>one row per board</strong> — table view access is automatic. Tick <strong>Freeze</strong> columns to disable toolbar buttons (Maintenance, Transfer, Despatch, Arrangement, Assign Shift, Sync SPR, Merge, Reorder).
-					For <strong>W CUT / D CUT</strong>, set <strong>Company</strong> to JVE, VTP, or Both; pick matching workstations under Allowed Units.
+					Assign by <strong>user name</strong> (search shows name + email). Use three tables:
+					<strong>1) Production boards</strong> (kanban / process boards + Production Plan / SPR-WO freezes),
+					<strong>2) Color Chart</strong> (Unit / Plan / toolbar buttons),
+					<strong>3) GSM Production Entry</strong> (shift / entry controls).
+					Tick <strong>Freeze</strong> to leave controls visible but disabled (read-only).
 				</div>
 			</div>`
 		);
@@ -109,8 +121,7 @@ function decorateBoardAccessForm(frm) {
 frappe.ui.form.on("Production Board Access", {
 	onload(frm) {
 		frm.set_query("user", () => ({
-			query:
-				"production_entry.production_planning.board_access.production_board_access_user_query",
+			query: "production_entry.production_planning.board_access.production_board_access_user_query",
 		}));
 		setupAllowedUnitsQuery(frm);
 	},
@@ -118,8 +129,7 @@ frappe.ui.form.on("Production Board Access", {
 	refresh(frm) {
 		applyBoardSelectOptions(frm, BOARD_SELECT_FALLBACK);
 		frappe.call({
-			method:
-				"production_entry.production_planning.board_access.get_production_board_page_options",
+			method: "production_entry.production_planning.board_access.get_production_board_page_options",
 			callback: (r) => {
 				if (r && r.message) {
 					applyBoardSelectOptions(frm, r.message);
@@ -129,14 +139,11 @@ frappe.ui.form.on("Production Board Access", {
 		decorateBoardAccessForm(frm);
 		setupAllowedUnitsQuery(frm);
 
-		const boards = frm.fields_dict.allowed_boards;
-		if (boards && boards.grid) {
-			boards.grid.wrapper.find(".grid-heading-row").css({
-				background: "#f8fafc",
-				"font-weight": "600",
-			});
-			(frm.doc.allowed_boards || []).forEach((row) => toggleWCutCompanyFieldVisibility(frm, row));
-		}
+		styleChildGrid(frm, "allowed_boards");
+		styleChildGrid(frm, "allowed_color_chart");
+		styleChildGrid(frm, "allowed_gsm");
+
+		(frm.doc.allowed_boards || []).forEach((row) => toggleWCutCompanyFieldVisibility(frm, row));
 	},
 
 	user(frm) {
@@ -152,6 +159,25 @@ frappe.ui.form.on("Production Board Access", {
 	allowed_boards_add(frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
 		toggleWCutCompanyFieldVisibility(frm, row);
+	},
+
+	allowed_color_chart_add(frm) {
+		// One access row is enough; keep grid open for freeze ticks.
+		if ((frm.doc.allowed_color_chart || []).length > 1) {
+			frappe.show_alert({
+				message: __("Color Chart usually needs one row — extra rows still grant the same page."),
+				indicator: "orange",
+			});
+		}
+	},
+
+	allowed_gsm_add(frm) {
+		if ((frm.doc.allowed_gsm || []).length > 1) {
+			frappe.show_alert({
+				message: __("GSM Production Entry usually needs one row — extra rows still grant the same page."),
+				indicator: "orange",
+			});
+		}
 	},
 });
 

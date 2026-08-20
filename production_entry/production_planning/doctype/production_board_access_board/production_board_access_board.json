@@ -16,18 +16,8 @@
   "freeze_sync_spr",
   "freeze_merge",
   "freeze_reorder",
-  "section_break_gsm",
-  "freeze_gsm_unit",
-  "freeze_gsm_date",
-  "freeze_gsm_shift",
-  "freeze_gsm_add_row",
-  "column_break_gsm_2",
-  "freeze_gsm_submit",
-  "freeze_gsm_tools",
-  "freeze_gsm_summary",
-  "freeze_gsm_shift_entries",
-  "freeze_gsm_clear_entries",
-  "freeze_gsm_prev_shift"
+  "freeze_production_plan",
+  "freeze_spr_wo"
  ],
  "fields": [
   {
@@ -35,7 +25,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Board (Page ID)",
-   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning\ngsm-production-entry|GSM Production Entry",
+   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\nconfirm-orders|Confirm Orders\nplanning|Planning\nlogistics-kanban|Logistics Kanban\ndespatch-approval-dashboard|Despatch Approval\ntransfer-approval-dashboard|Transfer Approval",
    "reqd": 1
   },
   {
@@ -110,78 +100,24 @@
    "label": "Reorder"
   },
   {
-   "fieldname": "section_break_gsm",
-   "fieldtype": "Section Break",
-   "label": "GSM Production Entry — Freeze",
-   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'gsm-production-entry'"
+   "default": "0",
+   "description": "Production Table — freeze Production Plan View button (column stays visible, read-only)",
+   "fieldname": "freeze_production_plan",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Production Plan"
   },
   {
    "default": "0",
-   "fieldname": "freeze_gsm_unit",
+   "description": "Production Table — freeze SPR / WO New SPR and View SPR buttons (column stays visible, read-only)",
+   "fieldname": "freeze_spr_wo",
    "fieldtype": "Check",
-   "label": "Unit Selection"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_date",
-   "fieldtype": "Check",
-   "label": "Planned Date"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_shift",
-   "fieldtype": "Check",
-   "label": "Shift Selection"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_add_row",
-   "fieldtype": "Check",
-   "label": "Add Roll Row"
-  },
-  {
-   "fieldname": "column_break_gsm_2",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_submit",
-   "fieldtype": "Check",
-   "label": "Submit Entry"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_tools",
-   "fieldtype": "Check",
-   "label": "Tools Menu"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_summary",
-   "fieldtype": "Check",
-   "label": "Summary Tab"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_shift_entries",
-   "fieldtype": "Check",
-   "label": "Shift Entries Tab"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_clear_entries",
-   "fieldtype": "Check",
-   "label": "Clear Entries"
-  },
-  {
-   "default": "0",
-   "fieldname": "freeze_gsm_prev_shift",
-   "fieldtype": "Check",
-   "label": "Prev Shift Tab"
+   "in_list_view": 1,
+   "label": "SPR / WO"
   }
  ],
  "istable": 1,
- "modified": "2026-07-15 16:00:00.000000",
+ "modified": "2026-08-20 16:00:00.000000",
  "module": "Production Planning",
  "name": "Production Board Access Board",
  "owner": "Administrator",

@@ -300,13 +300,13 @@
                             </td>
                             <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row.item) }}</td>
                             <td class="cell-center pt-pp-sticky-cell" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
-                              <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
+                              <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="freezeProductionPlan ? 'Production Plan is read-only for your access' : `View PP: ${row.item.pp_id || 'resolve from sheet'}`" :disabled="freezeProductionPlan" :style="boardActionFrozenStyle(boardAccessContext, 'production_plan')">
                                 📋 View
                               </button>
                               <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
                             <td class="cell-center pt-spr-sticky-cell" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
-                              <div class="pt-stock-cell">
+                              <div class="pt-stock-cell" :style="boardActionFrozenStyle(boardAccessContext, 'spr_wo')">
                                 <div v-if="row.item.pp_id" class="pt-pill-row">
                                   <span
                                     v-if="row.item.spr_name"
@@ -333,15 +333,17 @@
                                 v-if="canShowStockEntry(row.item)" 
                                 @click="handleStockEntryAction(row.item)" 
                                 class="cc-pp-btn pt-btn-entry" 
-                                :title="getStockEntryTitle(row.item)">
+                                :disabled="freezeSprWo"
+                                :title="freezeSprWo ? 'SPR / WO is read-only for your access' : getStockEntryTitle(row.item)">
                                 {{ getStockEntryLabel(row.item) }}
                               </button>
                               <button 
                                 v-if="shouldShowItemViewSpr(row.item)" 
                                 @click="openItemSPR(row.item.spr_name, row.item)" 
                                 class="cc-pp-btn pt-btn-entry" 
+                                :disabled="freezeSprWo"
                                 :class="Number(row.item.spr_docstatus) === 1 && row.item.wo_terminal ? 'pt-spr-btn-done' : Number(row.item.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
-                                :title="itemSprPrimaryButtonTitle(row.item)">
+                                :title="freezeSprWo ? 'SPR / WO is read-only for your access' : itemSprPrimaryButtonTitle(row.item)">
                                 {{ itemSprPrimaryButtonLabel(row.item) }}
                               </button>
                               </div>
@@ -446,13 +448,13 @@
                             </td>
                             <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row) }}</td>
                             <td class="cell-center pt-pp-sticky-cell" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
-                              <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
+                              <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="freezeProductionPlan ? 'Production Plan is read-only for your access' : `View PP for merged row`" :disabled="freezeProductionPlan" :style="boardActionFrozenStyle(boardAccessContext, 'production_plan')">
                                 📋 View
                               </button>
                               <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
                             <td class="cell-center pt-spr-sticky-cell" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
-                              <div class="pt-stock-cell">
+                              <div class="pt-stock-cell" :style="boardActionFrozenStyle(boardAccessContext, 'spr_wo')">
                                 <div v-if="row.pp_id" class="pt-pill-row">
                                   <span
                                     v-if="row.spr_name"
@@ -479,15 +481,17 @@
                                 v-if="canShowMergedStockEntry(row)" 
                                 @click="handleMergedStockEntryAction(row)" 
                                 class="cc-pp-btn pt-btn-entry" 
-                                :title="mergedStockPrimaryTitle(row)">
+                                :disabled="freezeSprWo"
+                                :title="freezeSprWo ? 'SPR / WO is read-only for your access' : mergedStockPrimaryTitle(row)">
                                 {{ mergedStockPrimaryLabel(row) }}
                               </button>
                               <button 
                                 v-if="shouldShowMergedViewSpr(row)" 
                                 @click="openMergedSPR(row.spr_name, row)" 
                                 class="cc-pp-btn pt-btn-entry"
+                                :disabled="freezeSprWo"
                                 :class="Number(row.spr_docstatus) === 1 && row.mergeAllWoTerminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
-                                :title="mergedSprPrimaryButtonTitle(row)">
+                                :title="freezeSprWo ? 'SPR / WO is read-only for your access' : mergedSprPrimaryButtonTitle(row)">
                                 {{ mergedSprPrimaryButtonLabel(row) }}
                               </button>
                               </div>
@@ -1254,6 +1258,8 @@ const freezeDespatch = computed(() => isBoardActionFrozen(boardAccessContext.val
 const freezeArrangement = computed(() => isBoardActionFrozen(boardAccessContext.value, "arrangement"));
 const freezeMerge = computed(() => isBoardActionFrozen(boardAccessContext.value, "merge"));
 const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
+const freezeProductionPlan = computed(() => isBoardActionFrozen(boardAccessContext.value, "production_plan"));
+const freezeSprWo = computed(() => isBoardActionFrozen(boardAccessContext.value, "spr_wo"));
 const hideCustomerColumns = computed(() => shouldHideCustomerColumns(boardAccessContext.value));
 const customerColHidden = computed(() => (hideCustomerColumns.value ? 1 : 0));
 const SHIFT_VIEW_PILOT_DATES = new Set(["2026-06-23", "2026-06-24"]);

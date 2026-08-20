@@ -74,9 +74,11 @@ def _ensure_board_access_child_doctypes_if_missing():
 	app_path = frappe.get_app_path("production_entry")
 	base = os.path.join(app_path, "production_planning", "doctype")
 	specs = (
-		("Production Board Access", "production_board_access"),
 		("Production Board Access Unit", "production_board_access_unit"),
 		("Production Board Access Board", "production_board_access_board"),
+		("Production Board Access Color Chart", "production_board_access_color_chart"),
+		("Production Board Access GSM", "production_board_access_gsm"),
+		("Production Board Access", "production_board_access"),
 	)
 	for dt_name, folder in specs:
 		if frappe.db.exists("DocType", dt_name):

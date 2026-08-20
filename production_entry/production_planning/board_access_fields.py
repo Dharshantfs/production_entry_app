@@ -91,7 +91,7 @@ def _cleanup_failed_custom_fields():
 			except Exception:
 				pass
 
-	for fieldname in ("allowed_units", "allowed_boards"):
+	for fieldname in ("allowed_units", "allowed_boards", "allowed_color_chart", "allowed_gsm"):
 		ps = frappe.db.get_value(
 			"Property Setter",
 			{

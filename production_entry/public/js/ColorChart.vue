@@ -31,28 +31,28 @@
           @input="fetchData"
         />
       </div>
-      <div class="cc-filter-item">
+      <div class="cc-filter-item" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_plan')">
         <label>Plan</label>
         <div style="display:flex; gap:4px; align-items:center;">
-            <select v-model="selectedPlan" @change="fetchData">
+            <select v-model="selectedPlan" @change="fetchData" :disabled="freezeCcPlan">
                 <option v-for="p in visiblePlans" :key="p.name" :value="p.name">
                     {{ p.locked ? '🔒 ' : '' }}{{ p.name === 'Default' ? 'Default' : currentMonthPrefix + ' ' + p.name }}
                 </option>
             </select>
-            <button v-if="selectedPlan" class="cc-mini-btn" @click="togglePlanLock" :title="isCurrentPlanLocked ? 'Unlock Plan' : 'Lock Plan'" style="margin-right:2px; padding: 2px 4px;font-size: 14px;">
+            <button v-if="selectedPlan" class="cc-mini-btn" @click="guardedTogglePlanLock" :title="isCurrentPlanLocked ? 'Unlock Plan' : 'Lock Plan'" style="margin-right:2px; padding: 2px 4px;font-size: 14px;" :disabled="freezeCcPlan">
                 {{ isCurrentPlanLocked ? '🔒' : '🔓' }}
             </button>
-            <button class="cc-mini-btn" @click="createNewPlan" title="Create New Plan Tab" style="color:#2563eb; font-weight:bold;">
+            <button class="cc-mini-btn" @click="guardedCreateNewPlan" title="Create New Plan Tab" style="color:#2563eb; font-weight:bold;" :disabled="freezeCcPlan">
                 ➕ New
             </button>
-            <button v-if="selectedPlan !== 'Default'" class="cc-mini-btn" @click="deletePlan" title="Delete this Plan" style="color:#dc2626; font-weight:bold;">
+            <button v-if="selectedPlan !== 'Default'" class="cc-mini-btn" @click="guardedDeletePlan" title="Delete this Plan" style="color:#dc2626; font-weight:bold;" :disabled="freezeCcPlan">
                 🗑️
             </button>
         </div>
       </div>
-      <div class="cc-filter-item">
+      <div class="cc-filter-item" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_unit')">
         <label>Unit</label>
-        <select v-model="filterUnit">
+        <select v-model="filterUnit" :disabled="freezeCcUnit">
           <option value="">All Units</option>
           <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
         </select>
@@ -93,38 +93,38 @@
           </button>
       </div>
       
-      <button class="cc-clear-btn" @click="clearFilters">✕ Clear</button>
-      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="emergencyReset" title="FORCE UNLOCK: Returns all stuck orders to Color Chart">
+      <button class="cc-clear-btn" @click="guardedClearFilters" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_clear')">✕ Clear</button>
+      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="guardedEmergencyReset" title="FORCE UNLOCK: Returns all stuck orders to Color Chart" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_emergency_reset')">
         🚑 Emergency Reset
       </button>
-      <button class="cc-clear-btn" style="color: #6366f1; border-color: #6366f1; margin-left: 8px;" @click="showGlobalSortInfo" title="View Color Hierarchy Rules">
+      <button class="cc-clear-btn" style="color: #6366f1; border-color: #6366f1; margin-left: 8px;" @click="guardedShowGlobalSortInfo" title="View Color Hierarchy Rules" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_sort_info')">
         🎨 Sort Info
       </button>
-      <button class="cc-clear-btn" style="color: #2563eb; border-color: #2563eb; margin-left: 8px;" @click="autoAllocate" title="Auto-assign orders based on Width & Quality">
+      <button class="cc-clear-btn" style="color: #2563eb; border-color: #2563eb; margin-left: 8px;" @click="guardedAutoAllocate" title="Auto-assign orders based on Width & Quality" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_auto_alloc')">
         🪄 Auto Alloc
       </button>
-      <button class="cc-clear-btn" style="color: #059669; border-color: #059669; margin-left: 8px;" @click="openPullOrdersDialog" title="Pull orders from a future date">
+      <button class="cc-clear-btn" style="color: #059669; border-color: #059669; margin-left: 8px;" @click="guardedOpenPullOrdersDialog" title="Pull orders from a future date" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_pull_orders')">
         📥 Pull Orders
       </button>
-      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="pushToProductionBoard" :disabled="!canPushToBoard" title="Push visible orders to Production Board plan">
+      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="guardedPushToProductionBoard" :disabled="!canPushToBoard || freezeCcPushToBoard" title="Push visible orders to Production Board plan" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_push_to_board')">
         📤 Push to Board
       </button>
-      <button class="cc-clear-btn" style="color: #ca8a04; border-color: #ca8a04; margin-left: 8px; font-weight:600;" @click="openMovePlanDialog" title="Move visible orders to another Color Chart plan">
+      <button class="cc-clear-btn" style="color: #ca8a04; border-color: #ca8a04; margin-left: 8px; font-weight:600;" @click="guardedOpenMovePlanDialog" title="Move visible orders to another Color Chart plan" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_move_to_plan')">
         📥 Move to Plan
       </button>
-      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="openRescueDialog" title="Rescue lost or stuck orders">
+      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="guardedOpenRescueDialog" title="Rescue lost or stuck orders" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_rescue_orders')">
         🚑 Rescue Orders
       </button>
-      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="syncAllPlanCodes" title="Recalculate Plan Codes for all existing sheets">
+      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="guardedSyncAllPlanCodes" title="Recalculate Plan Codes for all existing sheets" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_sync_plan_codes')">
         📂 Sync Plan Codes
       </button>
       <button v-if="hasRecentlyReset" class="cc-clear-btn" style="color: #ca8a04; border-color: #ca8a04; margin-left: 8px; font-weight:600;" @click="restoreWhiteOrders" title="Restore accidentally cleared white orders">
         🛠️ Restore Whites
       </button>
-      <button class="cc-clear-btn" style="background-color: #10b981; color: white; border: none; margin-left: auto;" @click="goToConfirmedOrders" title="View Confirmed Orders Page">
+      <button class="cc-clear-btn" style="background-color: #10b981; color: white; border: none; margin-left: auto;" @click="guardedGoToConfirmedOrders" title="View Confirmed Orders Page" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_confirmed_orders')">
           ✅ Confirmed Orders
       </button>
-      <button v-if="canAccessDashboard" class="cc-clear-btn" style="background-color: #f59e0b; color: white; border: none; margin-left: 8px;" @click="goToSequenceApprovals" title="View Sequence Approval Dashboard">
+      <button v-if="canAccessDashboard" class="cc-clear-btn" style="background-color: #f59e0b; color: white; border: none; margin-left: 8px;" @click="guardedGoToSequenceApprovals" title="View Sequence Approval Dashboard" :style="boardActionFrozenStyle(ccBoardAccess, 'cc_approval_dashboard')">
           📋 Approval Dashboard
       </button>
     </div>
@@ -661,6 +661,100 @@ import {
   buildMaintenanceData,
   getMaintenanceRecordsForDate,
 } from "./maintenance_utils.js";
+import {
+  applyBoardAccessDateScope,
+  applyBoardAccessUnitScope,
+  boardActionFrozenStyle,
+  isBoardActionFrozen,
+} from "./board_access_ui.js";
+
+const CC_BOARD_SLUG = "color-chart";
+const ccBoardAccess = ref({ unlimited: true, allowed_units: [], loaded: false, permitted: true, frozen_actions: {} });
+const freezeCcUnit = computed(() => isBoardActionFrozen(ccBoardAccess.value, "cc_unit"));
+const freezeCcPlan = computed(() => isBoardActionFrozen(ccBoardAccess.value, "cc_plan"));
+const freezeCcPushToBoard = computed(() => isBoardActionFrozen(ccBoardAccess.value, "cc_push_to_board"));
+
+function ccFrozenMsg(label) {
+  frappe.msgprint(__("{0} is disabled for your access.", [label]));
+}
+function guardedClearFilters() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_clear")) return ccFrozenMsg("Clear");
+  clearFilters();
+}
+function guardedEmergencyReset() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_emergency_reset")) return ccFrozenMsg("Emergency Reset");
+  emergencyReset();
+}
+function guardedShowGlobalSortInfo() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_sort_info")) return ccFrozenMsg("Sort Info");
+  showGlobalSortInfo();
+}
+function guardedAutoAllocate() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_auto_alloc")) return ccFrozenMsg("Auto Alloc");
+  autoAllocate();
+}
+function guardedOpenPullOrdersDialog() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_pull_orders")) return ccFrozenMsg("Pull Orders");
+  openPullOrdersDialog();
+}
+function guardedPushToProductionBoard() {
+  if (freezeCcPushToBoard.value) return ccFrozenMsg("Push to Board");
+  pushToProductionBoard();
+}
+function guardedOpenMovePlanDialog() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_move_to_plan")) return ccFrozenMsg("Move to Plan");
+  openMovePlanDialog();
+}
+function guardedOpenRescueDialog() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_rescue_orders")) return ccFrozenMsg("Rescue Orders");
+  openRescueDialog();
+}
+function guardedSyncAllPlanCodes() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_sync_plan_codes")) return ccFrozenMsg("Sync Plan Codes");
+  syncAllPlanCodes();
+}
+function guardedGoToConfirmedOrders() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_confirmed_orders")) return ccFrozenMsg("Confirmed Orders");
+  goToConfirmedOrders();
+}
+function guardedGoToSequenceApprovals() {
+  if (isBoardActionFrozen(ccBoardAccess.value, "cc_approval_dashboard")) return ccFrozenMsg("Approval Dashboard");
+  goToSequenceApprovals();
+}
+function guardedTogglePlanLock() {
+  if (freezeCcPlan.value) return ccFrozenMsg("Plan");
+  togglePlanLock();
+}
+function guardedCreateNewPlan() {
+  if (freezeCcPlan.value) return ccFrozenMsg("Plan");
+  createNewPlan();
+}
+function guardedDeletePlan() {
+  if (freezeCcPlan.value) return ccFrozenMsg("Plan");
+  deletePlan();
+}
+
+async function loadColorChartBoardAccess() {
+  await new Promise((resolve) => {
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: CC_BOARD_SLUG },
+      callback: (r) => {
+        const scope = (r && r.message) || { unlimited: true, allowed_units: [], permitted: true };
+        ccBoardAccess.value = { ...scope, loaded: true };
+        if (!scope.unlimited) {
+          applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
+          applyBoardAccessUnitScope(scope, filterUnit, units);
+        }
+        resolve();
+      },
+      error: () => {
+        ccBoardAccess.value = { unlimited: true, allowed_units: [], loaded: true, permitted: true, frozen_actions: {} };
+        resolve();
+      },
+    });
+  });
+}
 
 // Color groups for keyword-based matching
 // Check MOST SPECIFIC (multi-word) first, then SINGLE-WORD catch-all groups
@@ -5022,6 +5116,7 @@ watch(filterWeek, async () => {
 });
 
 onMounted(async () => {
+  await loadColorChartBoardAccess();
   // 1. Read URL Params
   const params = new URLSearchParams(window.location.search);
   const dateParam = params.get('date');
