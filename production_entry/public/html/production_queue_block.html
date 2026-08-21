@@ -1,66 +1,91 @@
-<div id="production-queue-board" style="display: flex; gap: 20px; padding: 20px; overflow-x: auto; background: #f8f9fa; min-height: 600px; border-radius: 10px;"></div>
+<div class="pq-wrap" style="padding:16px 20px 28px;font-family:inherit;">
+  <div style="margin-bottom:14px;">
+    <div style="font-size:18px;font-weight:700;color:#0f172a;">Production Queuing</div>
+    <div style="font-size:13px;color:#64748b;margin-top:4px;">
+      Open the boards you are allowed to use. Unit filters come from Production Board Access.
+    </div>
+  </div>
+  <div class="pq-cards" style="display:flex;flex-wrap:wrap;gap:12px;"></div>
+  <div class="pq-hint" style="margin-top:16px;font-size:12px;color:#94a3b8;"></div>
+</div>
 
 <script>
-frappe.ready(() => {
-    const units = ['Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'];
-    const board = $('#production-queue-board');
-    board.empty();
+(function () {
+  const root = typeof root_element !== "undefined" ? root_element : document;
+  const cardsEl = root.querySelector(".pq-cards");
+  const hintEl = root.querySelector(".pq-hint");
+  if (!cardsEl) return;
 
-    // Create columns
-    units.forEach(u => {
-        board.append(`
-            <div style="flex: 0 0 300px; background: #dfe3e8; border-radius: 8px; padding: 15px;">
-                <h5 style="text-align: center; margin-bottom: 15px; font-weight: bold;">${u}</h5>
-                <div id="${u.replace(' ', '')}" class="drop-target" style="min-height: 500px;"></div>
-            </div>`);
-    });
+  const BOARD_LINKS = [
+    { slug: "production-board", label: "Production Board", desc: "Fabric units Unit 1–4", icon: "📋" },
+    { slug: "lamination-board", label: "Lamination Board", desc: "TNSPL Lamination", icon: "🧱" },
+    { slug: "printing-order-board", label: "Printing Order Board", desc: "Printing units", icon: "🖨️" },
+    { slug: "slitting-board", label: "Slitting Board", desc: "Slitting", icon: "✂️" },
+    { slug: "rewinding-board", label: "Rewinding Board", desc: "Rewinding", icon: "🔁" },
+    { slug: "sheet-cutting-board", label: "Sheet Cutting Board", desc: "Sheet cutting", icon: "📄" },
+    { slug: "printed-bopp-film-board", label: "Printed BOPP Film Board", desc: "BOPP film", icon: "🎞️" },
+    { slug: "box-bag-board", label: "Box Bag Board", desc: "Box bag", icon: "🛍️" },
+    { slug: "w-cut-d-cut-board", label: "W CUT / D CUT Board", desc: "Bag making", icon: "✂️" },
+    { slug: "color-chart", label: "Color Chart", desc: "Color planning", icon: "🎨" },
+    { slug: "production-table", label: "Production Table", desc: "Table view", icon: "📊" },
+    { slug: "gsm-production-entry", label: "GSM Production Entry", desc: "Shift entry", icon: "⚖️" },
+  ];
 
-    // Child doctype: Planning sheet Item (matches tabPlanning sheet Item / Frappe DocType name)
-    frappe.call({
-        method: "frappe.client.get_list",
-        args: {
-            doctype: "Planning sheet Item",
-            fields: ["name", "parent", "unit", "color", "custom_quality"],
-            filters: {"docstatus": ["<", 2]}
-        },
-        callback: function(r) {
-            if (r.message) {
-                r.message.forEach(item => {
-                    const targetId = (item.unit || 'Unit 1').replace(' ', '');
-                    $(`#${targetId}`).append(`
-                        <div class="q-card" draggable="true" data-name="${item.name}" data-parent="${(item.parent || '').replace(/"/g, '&quot;')}"
-                             style="background: white; padding: 12px; margin-bottom: 12px; border-radius: 6px; border-left: 6px solid #2490ef; cursor: grab; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                            <strong>${item.parent}</strong><br>
-                            <small><b>${item.color || 'No Color'}</b> | ${item.custom_quality || 'No Quality'}</small>
-                        </div>`);
-                });
-                setupDrag();
-            }
-        }
-    });
+  function cardHtml(b) {
+    return (
+      '<a href="/app/' + b.slug + '" class="pq-card" style="' +
+      "display:block;min-width:200px;max-width:260px;flex:1 1 200px;" +
+      "padding:14px 16px;border-radius:10px;border:1px solid #e2e8f0;" +
+      "background:#fff;text-decoration:none;color:inherit;" +
+      "box-shadow:0 1px 2px rgba(15,23,42,.06);" +
+      '">' +
+      '<div style="font-size:22px;line-height:1;">' + b.icon + "</div>" +
+      '<div style="font-weight:700;font-size:14px;margin-top:8px;color:#0f172a;">' +
+      frappe.utils.escape_html(b.label) +
+      "</div>" +
+      '<div style="font-size:12px;color:#64748b;margin-top:4px;">' +
+      frappe.utils.escape_html(b.desc) +
+      "</div>" +
+      "</a>"
+    );
+  }
 
-    function setupDrag() {
-        $('.q-card').on('dragstart', function(e) { e.originalEvent.dataTransfer.setData("text", $(this).data('name')); });
-        $('.drop-target').on('dragover', function(e) { e.preventDefault(); }).on('drop', function(e) {
-            e.preventDefault();
-            const rowName = e.originalEvent.dataTransfer.getData("text");
-            const newUnit = $(this).parent().find('h5').text();
-            const parentLabel = $(`.q-card[data-name="${rowName}"]`).data('parent') || rowName;
-
-            frappe.call({
-                method: "frappe.client.set_value",
-                args: {
-                    doctype: "Planning sheet Item",
-                    name: rowName,
-                    fieldname: "unit",
-                    value: newUnit
-                },
-                callback: () => {
-                    frappe.show_alert({message: `Updated ${parentLabel} → ${newUnit}`, indicator: 'green'});
-                    location.reload();
-                }
-            });
-        });
+  function render(list) {
+    cardsEl.innerHTML = list.map(cardHtml).join("");
+    if (!list.length) {
+      hintEl.textContent =
+        "No boards enabled for your login. Ask admin to add rows under Production Board Access.";
+    } else {
+      hintEl.textContent =
+        "Showing " + list.length + " board(s) from your Production Board Access (or all if unrestricted).";
     }
-});
+  }
+
+  function allowedFromScope(scope) {
+    if (!scope || scope.unlimited) return BOARD_LINKS.slice();
+    const allowed = new Set((scope.allowed_boards || []).map((s) => String(s || "").toLowerCase()));
+    if (!allowed.size) return [];
+    return BOARD_LINKS.filter((b) => allowed.has(b.slug));
+  }
+
+  frappe.call({
+    method: "production_entry.production_planning.board_access.get_production_board_user_context",
+    args: {},
+    callback: function (r) {
+      const scope = (r && r.message) || { unlimited: true, allowed_boards: [] };
+      let list = allowedFromScope(scope);
+      // Fallback: if page_info already grants a page, keep it even when access row is missing.
+      if (!list.length && frappe.boot && frappe.boot.page_info) {
+        list = BOARD_LINKS.filter((b) => !!frappe.boot.page_info[b.slug]);
+      }
+      if (!list.length) {
+        list = BOARD_LINKS.filter((b) => b.slug === "production-board" || b.slug === "color-chart");
+      }
+      render(list);
+    },
+    error: function () {
+      render(BOARD_LINKS.filter((b) => b.slug === "production-board"));
+    },
+  });
+})();
 </script>

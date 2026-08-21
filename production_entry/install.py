@@ -208,7 +208,7 @@ def _fix_planning_sheet_child_parenttype():
 
 def _sync_production_queue_custom_block():
 	"""
-	Restore the Apr 2026 POC «production queue» board from app asset
+	Restore the «production queue» board launcher from app asset
 	``public/html/production_queue_block.html`` into ``Custom HTML Block`` ``production-queue``
 	so Workspace pages that embed this block keep working after deploy.
 	"""
@@ -229,11 +229,12 @@ def _sync_production_queue_custom_block():
 		return
 	name = "production-queue"
 	if frappe.db.exists("Custom HTML Block", name):
-		current = frappe.db.get_value("Custom HTML Block", name, "html") or ""
-		if current.strip() == html.strip():
-			return
 		doc = frappe.get_doc("Custom HTML Block", name)
 		doc.html = html
+		# Operators must see this block — role lock caused blank Production Queuing.
+		if doc.get("roles"):
+			doc.set("roles", [])
+		doc.flags.ignore_permissions = True
 		doc.save(ignore_permissions=True)
 	else:
 		doc = frappe.get_doc(
@@ -243,48 +244,67 @@ def _sync_production_queue_custom_block():
 
 
 def _ensure_workspace_shows_production_queue():
-	"""If ``Production Entry Desk`` exists, embed Custom HTML Block ``production-queue`` once."""
+	"""Embed Custom HTML Block ``production-queue`` on Production Entry Desk and Production Queuing."""
 	if frappe.flags.in_test:
-		return
-	if not frappe.db.exists("Workspace", WORKSPACE_PRODUCTION_ENTRY_DESK):
 		return
 	if not frappe.db.exists("Custom HTML Block", "production-queue"):
 		return
-	doc = frappe.get_doc("Workspace", WORKSPACE_PRODUCTION_ENTRY_DESK)
-	raw = doc.content or "[]"
-	if isinstance(raw, str):
-		try:
-			content = json.loads(raw)
-		except Exception:
-			content = []
-	else:
-		content = list(raw)
-	has_block = any(
-		b.get("type") == "custom_block"
-		and b.get("data", {}).get("custom_block_name") == "production-queue"
-		for b in content
-	)
-	changed = False
-	if not has_block:
-		content.append(
-			{
-				"id": "pe-desk-queue",
-				"source": "production_entry_desk",
-				"type": "custom_block",
-				"data": {"custom_block_name": "production-queue", "col": 12},
-			}
+
+	for ws_name in (WORKSPACE_PRODUCTION_ENTRY_DESK, "Production Queuing", "Production Queue"):
+		if not frappe.db.exists("Workspace", ws_name):
+			continue
+		doc = frappe.get_doc("Workspace", ws_name)
+		raw = doc.content or "[]"
+		if isinstance(raw, str):
+			try:
+				content = json.loads(raw)
+			except Exception:
+				content = []
+		else:
+			content = list(raw)
+		has_block = any(
+			b.get("type") == "custom_block"
+			and b.get("data", {}).get("custom_block_name") == "production-queue"
+			for b in content
 		)
-		doc.content = json.dumps(content)
-		changed = True
-	linked = {row.custom_block_name for row in (doc.custom_blocks or [])}
-	if "production-queue" not in linked:
-		doc.append(
-			"custom_blocks",
-			{"custom_block_name": "production-queue", "label": "Production queue"},
-		)
-		changed = True
-	if changed:
-		doc.save(ignore_permissions=True)
+		changed = False
+		if not has_block:
+			# Blank / empty workspaces: replace with a usable layout.
+			if not content or all(
+				(b.get("type") in (None, "") and not b.get("data")) for b in content
+			):
+				content = [
+					{
+						"id": "pq-header",
+						"type": "header",
+						"data": {"text": doc.label or ws_name, "col": 12},
+					},
+					{
+						"id": "pq-queue-block",
+						"type": "custom_block",
+						"data": {"custom_block_name": "production-queue", "col": 12},
+					},
+				]
+			else:
+				content.append(
+					{
+						"id": f"pe-queue-{frappe.generate_hash(length=8)}",
+						"type": "custom_block",
+						"data": {"custom_block_name": "production-queue", "col": 12},
+					}
+				)
+			doc.content = json.dumps(content)
+			changed = True
+		linked = {row.custom_block_name for row in (doc.custom_blocks or [])}
+		if "production-queue" not in linked:
+			doc.append(
+				"custom_blocks",
+				{"custom_block_name": "production-queue", "label": "Production queue"},
+			)
+			changed = True
+		if changed:
+			doc.flags.ignore_permissions = True
+			doc.save(ignore_permissions=True)
 
 
 def _ensure_learning_page_on_workspace():
