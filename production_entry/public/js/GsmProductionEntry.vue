@@ -1814,7 +1814,7 @@ import {
 } from "./board_access_ui.js";
 
 const STORAGE_KEY = `gsm_production_entry_draft_v3_${frappe.session.user || "guest"}`;
-const BOARD_SLUG = "production-table";
+const BOARD_SLUG = "gsm-production-entry";
 const GSM_BOARD_SLUG = "gsm-production-entry";
 const FABRIC_UNITS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4"];
 

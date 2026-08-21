@@ -216,6 +216,150 @@ def _access_docname_for_user(user: str) -> str | None:
 	)
 
 
+def _all_managed_page_slugs() -> set[str]:
+	"""Pages controlled by Production Board Access (boards + table aliases + learning)."""
+	out: set[str] = set()
+	for s in BOARD_SLUGS + BOARD_PICKER_SLUGS:
+		out |= _equivalent_board_slugs(s)
+	# Companion table pages for every *-board
+	for s in list(out):
+		out |= _equivalent_board_slugs(s)
+	return out
+
+
+def _user_allowed_page_slugs(scope: dict) -> set[str]:
+	allowed: set[str] = set()
+	for s in scope.get("allowed_boards") or []:
+		allowed |= _equivalent_board_slugs(s)
+	return allowed
+
+
+def page_has_permission(doc, ptype=None, user=None, debug=False, **kwargs):
+	"""Hide / deny Production Planning pages not granted in Production Board Access.
+
+	Empty-role Pages (GSM, Slitting Order Table, Production Learning, …) otherwise show
+	to every Desk user in the sidebar. Restricted users only see allowed boards.
+	"""
+	if ptype and ptype not in ("read", "select", "write", "share", "print", "email", "report"):
+		return None
+	if ptype in ("write", "share", "print", "email", "report"):
+		return None
+
+	name = doc if isinstance(doc, str) else getattr(doc, "name", None)
+	slug = _normalize_board_slug(name)
+	if not slug:
+		return None
+
+	user = user or frappe.session.user
+	if not user or user in ("Guest",):
+		return None
+
+	try:
+		scope = get_user_board_scope(user)
+	except Exception:
+		return None
+
+	if scope.get("unlimited"):
+		return None
+
+	managed = _all_managed_page_slugs()
+	if slug not in managed and not (_equivalent_board_slugs(slug) & managed):
+		return None
+
+	allowed = _user_allowed_page_slugs(scope)
+	if _equivalent_board_slugs(slug) & allowed:
+		return True
+	return False
+
+
+def extend_bootinfo(bootinfo):
+	"""Keep desk search / sidebar Pages list aligned with Production Board Access."""
+	try:
+		scope = get_user_board_scope()
+	except Exception:
+		return
+
+	try:
+		bootinfo["production_board_access"] = {
+			"unlimited": bool(scope.get("unlimited")),
+			"allowed_boards": list(scope.get("allowed_boards") or []),
+			"allowed_units": list(scope.get("allowed_units") or []),
+		}
+	except Exception:
+		pass
+
+	if scope.get("unlimited"):
+		return
+
+	page_info = bootinfo.get("page_info")
+	if page_info is None:
+		return
+
+	managed = _all_managed_page_slugs()
+	allowed = _user_allowed_page_slugs(scope)
+
+	for key in list(page_info.keys()):
+		norm = _normalize_board_slug(key)
+		if not norm:
+			continue
+		if norm in managed or (_equivalent_board_slugs(norm) & managed):
+			if not (_equivalent_board_slugs(norm) & allowed):
+				page_info.pop(key, None)
+
+	for slug in sorted(allowed):
+		norm = _normalize_board_slug(slug)
+		if not norm or norm in page_info:
+			continue
+		if not frappe.db.exists("Page", norm):
+			continue
+		title = (
+			frappe.db.get_value("Page", norm, "title")
+			or BOARD_PICKER_LABELS.get(norm)
+			or norm.replace("-", " ").title()
+		)
+		page_info[norm] = {"title": title, "route": norm}
+
+	_filter_boot_workspace_page_links(bootinfo, allowed, managed)
+
+
+def _workspace_link_slug(row) -> str:
+	if isinstance(row, dict):
+		link_type = (row.get("type") or row.get("link_type") or "").strip()
+		link_to = row.get("link_to") or row.get("link") or ""
+	else:
+		link_type = (getattr(row, "type", None) or getattr(row, "link_type", None) or "").strip()
+		link_to = getattr(row, "link_to", None) or getattr(row, "link", None) or ""
+	if link_type and str(link_type).lower() not in ("page",):
+		return ""
+	return _normalize_board_slug(link_to)
+
+
+def _keep_workspace_page_row(row, allowed: set[str], managed: set[str]) -> bool:
+	slug = _workspace_link_slug(row)
+	if not slug:
+		return True
+	if slug not in managed and not (_equivalent_board_slugs(slug) & managed):
+		return True
+	return bool(_equivalent_board_slugs(slug) & allowed)
+
+
+def _filter_boot_workspace_page_links(bootinfo, allowed: set[str], managed: set[str]) -> None:
+	workspaces = bootinfo.get("workspaces")
+	items = []
+	if isinstance(workspaces, dict):
+		items = list(workspaces.values())
+	elif isinstance(workspaces, list):
+		items = workspaces
+	for ws in items:
+		if not isinstance(ws, dict):
+			continue
+		for key in ("shortcuts", "links"):
+			rows = ws.get(key)
+			if not isinstance(rows, list):
+				continue
+			ws[key] = [r for r in rows if _keep_workspace_page_row(r, allowed, managed)]
+
+
 @frappe.whitelist()
 def get_production_board_user_context(board_slug: str | None = None):
 	"""Return board access scope for the session user (page gate + Vue)."""
@@ -795,7 +939,10 @@ def build_board_picker_select_options() -> str:
 
 	def _add(slug: str, title: str | None = None) -> None:
 		norm = _normalize_board_slug(slug)
-		if not norm or norm in seen or _is_table_page_slug(norm):
+		if not norm or norm in seen:
+			return
+		# Allow explicit picker entries even when they are companion table pages.
+		if _is_table_page_slug(norm) and norm not in BOARD_PICKER_SLUGS:
 			return
 		seen.add(norm)
 		label = (title or BOARD_PICKER_LABELS.get(norm) or norm.replace("-", " ").title()).strip()

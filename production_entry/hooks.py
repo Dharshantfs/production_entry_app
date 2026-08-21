@@ -124,6 +124,15 @@ after_migrate = ["production_entry.install.after_migrate"]
 # 	"Event": "frappe.desk.doctype.event.event.has_permission",
 # }
 
+# Gate Production Planning Pages by Production Board Access (sidebar + route).
+has_permission = {
+	"Page": "production_entry.production_planning.board_access.page_has_permission",
+}
+
+# Strip ungranted boards from desk boot (search / Pages sidebar).
+extend_bootinfo = "production_entry.production_planning.board_access.extend_bootinfo"
+boot_session = "production_entry.production_planning.board_access.extend_bootinfo"
+
 # DocType Class
 # ---------------
 # Override standard doctype classes
