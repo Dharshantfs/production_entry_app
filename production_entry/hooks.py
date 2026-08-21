@@ -125,7 +125,9 @@ has_permission = {
 }
 
 # Inject board-access pages into desk boot (Awesome Bar / page routes).
+# Register both hook names — Frappe versions differ on which runs.
 extend_bootinfo = "production_entry.production_planning.board_access.extend_bootinfo"
+boot_session = "production_entry.production_planning.board_access.extend_bootinfo"
 
 # DocType Class
 # ---------------

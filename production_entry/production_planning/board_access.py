@@ -275,11 +275,21 @@ def page_has_permission(doc, ptype=None, user=None, debug=False, **kwargs):
 
 
 def extend_bootinfo(bootinfo):
-	"""Show only granted boards in desk search / workspace shortcuts."""
+	"""Show only granted boards in desk search / workspace shortcuts / sidebar links."""
 	try:
 		scope = get_user_board_scope()
 	except Exception:
 		return
+
+	# Always expose scope for desk UI (Production Queuing launcher, etc.).
+	try:
+		bootinfo["production_board_access"] = {
+			"unlimited": bool(scope.get("unlimited")),
+			"allowed_boards": list(scope.get("allowed_boards") or []),
+			"allowed_units": list(scope.get("allowed_units") or []),
+		}
+	except Exception:
+		pass
 
 	if scope.get("unlimited"):
 		return
@@ -300,7 +310,7 @@ def extend_bootinfo(bootinfo):
 			if not (_equivalent_board_slugs(norm) & allowed):
 				page_info.pop(key, None)
 
-	for slug in allowed:
+	for slug in sorted(allowed):
 		norm = _normalize_board_slug(slug)
 		if not norm or norm in page_info:
 			continue
@@ -312,6 +322,100 @@ def extend_bootinfo(bootinfo):
 			or norm.replace("-", " ").title()
 		)
 		page_info[norm] = {"title": title, "route": norm}
+
+	_filter_boot_workspace_links(bootinfo, allowed, managed)
+
+
+def _link_slug(row) -> str:
+	"""Extract page slug from a workspace link/shortcut row (dict or object)."""
+	if isinstance(row, dict):
+		link_type = (row.get("type") or row.get("link_type") or "").strip()
+		link_to = row.get("link_to") or row.get("link") or ""
+	else:
+		link_type = (getattr(row, "type", None) or getattr(row, "link_type", None) or "").strip()
+		link_to = getattr(row, "link_to", None) or getattr(row, "link", None) or ""
+	if link_type and link_type not in ("Page", "page"):
+		# shortcut child uses type=Page
+		if str(link_type).lower() != "page":
+			return ""
+	return _normalize_board_slug(link_to)
+
+
+def _keep_workspace_row(row, allowed: set[str], managed: set[str]) -> bool:
+	slug = _link_slug(row)
+	if not slug:
+		return True
+	if slug not in managed and not (_equivalent_board_slugs(slug) & managed):
+		return True
+	return bool(_equivalent_board_slugs(slug) & allowed)
+
+
+def _filter_boot_workspace_links(bootinfo, allowed: set[str], managed: set[str]) -> None:
+	"""Hide board shortcuts/links the operator was not given."""
+	# workspaces may be dict {name: ws} or list
+	workspaces = bootinfo.get("workspaces")
+	items = []
+	if isinstance(workspaces, dict):
+		items = list(workspaces.values())
+	elif isinstance(workspaces, list):
+		items = workspaces
+
+	for ws in items:
+		if not isinstance(ws, dict):
+			continue
+		for key in ("shortcuts", "links"):
+			rows = ws.get(key)
+			if not isinstance(rows, list):
+				continue
+			ws[key] = [r for r in rows if _keep_workspace_row(r, allowed, managed)]
+
+	# Sidebar items (v15/v16 variants)
+	for key in ("workspace_sidebar_item", "sidebar_items"):
+		rows = bootinfo.get(key)
+		if not isinstance(rows, list):
+			continue
+		bootinfo[key] = [r for r in rows if _keep_workspace_row(r, allowed, managed)]
+
+
+@frappe.whitelist()
+def get_board_launcher_links():
+	"""Return only boards granted by Production Board Access (for Production Queuing UI)."""
+	scope = get_user_board_scope()
+	catalog = [
+		{"slug": "production-board", "label": "Production Board", "desc": "Fabric units Unit 1–4"},
+		{"slug": "lamination-board", "label": "Lamination Board", "desc": "TNSPL Lamination"},
+		{"slug": "printing-order-board", "label": "Printing Order Board", "desc": "Printing"},
+		{"slug": "slitting-board", "label": "Slitting Board", "desc": "Slitting"},
+		{"slug": "rewinding-board", "label": "Rewinding Board", "desc": "Rewinding"},
+		{"slug": "sheet-cutting-board", "label": "Sheet Cutting Board", "desc": "Sheet cutting"},
+		{"slug": "printed-bopp-film-board", "label": "Printed BOPP Film Board", "desc": "BOPP film"},
+		{"slug": "box-bag-board", "label": "Box Bag Board", "desc": "Box bag"},
+		{"slug": "w-cut-d-cut-board", "label": "W CUT / D CUT Board", "desc": "Bag making"},
+		{"slug": "color-chart", "label": "Color Chart", "desc": "Color planning"},
+		{"slug": "production-table", "label": "Production Table", "desc": "Table view"},
+		{"slug": "gsm-production-entry", "label": "GSM Production Entry", "desc": "Shift entry"},
+		{"slug": "logistics-kanban", "label": "Logistics Kanban", "desc": "Transfer / despatch"},
+	]
+	if scope.get("unlimited"):
+		return {"unlimited": True, "boards": catalog}
+	allowed = _user_allowed_page_slugs(scope)
+	boards = []
+	seen = set()
+	for row in catalog:
+		slug = row["slug"]
+		if not (_equivalent_board_slugs(slug) & allowed):
+			continue
+		# Prefer kanban over table twin when both granted
+		if slug.endswith("-table") and slug.replace("-table", "-board") in {
+			_normalize_board_slug(x) for x in allowed
+		}:
+			# keep production-table if explicitly wanted — still show when production-board also allowed
+			pass
+		if slug in seen:
+			continue
+		seen.add(slug)
+		boards.append(row)
+	return {"unlimited": False, "boards": boards}
 
 
 @frappe.whitelist()
