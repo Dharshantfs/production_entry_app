@@ -1,66 +1,102 @@
-<div id="production-queue-board" style="display: flex; gap: 20px; padding: 20px; overflow-x: auto; background: #f8f9fa; min-height: 600px; border-radius: 10px;"></div>
+<div class="pq-wrap" style="padding:16px 20px 28px;font-family:inherit;">
+  <div style="margin-bottom:14px;">
+    <div style="font-size:18px;font-weight:700;color:#0f172a;">Production Queuing</div>
+    <div style="font-size:13px;color:#64748b;margin-top:4px;">
+      Open boards from your Production Board Access. Unit filters come from Allowed Units.
+    </div>
+  </div>
+  <div class="pq-cards" style="display:flex;flex-wrap:wrap;gap:12px;"></div>
+  <div class="pq-hint" style="margin-top:16px;font-size:12px;color:#94a3b8;"></div>
+</div>
 
 <script>
-frappe.ready(() => {
-    const units = ['Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'];
-    const board = $('#production-queue-board');
-    board.empty();
-
-    // Create columns
-    units.forEach(u => {
-        board.append(`
-            <div style="flex: 0 0 300px; background: #dfe3e8; border-radius: 8px; padding: 15px;">
-                <h5 style="text-align: center; margin-bottom: 15px; font-weight: bold;">${u}</h5>
-                <div id="${u.replace(' ', '')}" class="drop-target" style="min-height: 500px;"></div>
-            </div>`);
-    });
-
-    // Child doctype: Planning sheet Item (matches tabPlanning sheet Item / Frappe DocType name)
-    frappe.call({
-        method: "frappe.client.get_list",
-        args: {
-            doctype: "Planning sheet Item",
-            fields: ["name", "parent", "unit", "color", "custom_quality"],
-            filters: {"docstatus": ["<", 2]}
-        },
-        callback: function(r) {
-            if (r.message) {
-                r.message.forEach(item => {
-                    const targetId = (item.unit || 'Unit 1').replace(' ', '');
-                    $(`#${targetId}`).append(`
-                        <div class="q-card" draggable="true" data-name="${item.name}" data-parent="${(item.parent || '').replace(/"/g, '&quot;')}"
-                             style="background: white; padding: 12px; margin-bottom: 12px; border-radius: 6px; border-left: 6px solid #2490ef; cursor: grab; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                            <strong>${item.parent}</strong><br>
-                            <small><b>${item.color || 'No Color'}</b> | ${item.custom_quality || 'No Quality'}</small>
-                        </div>`);
-                });
-                setupDrag();
-            }
-        }
-    });
-
-    function setupDrag() {
-        $('.q-card').on('dragstart', function(e) { e.originalEvent.dataTransfer.setData("text", $(this).data('name')); });
-        $('.drop-target').on('dragover', function(e) { e.preventDefault(); }).on('drop', function(e) {
-            e.preventDefault();
-            const rowName = e.originalEvent.dataTransfer.getData("text");
-            const newUnit = $(this).parent().find('h5').text();
-            const parentLabel = $(`.q-card[data-name="${rowName}"]`).data('parent') || rowName;
-
-            frappe.call({
-                method: "frappe.client.set_value",
-                args: {
-                    doctype: "Planning sheet Item",
-                    name: rowName,
-                    fieldname: "unit",
-                    value: newUnit
-                },
-                callback: () => {
-                    frappe.show_alert({message: `Updated ${parentLabel} → ${newUnit}`, indicator: 'green'});
-                    location.reload();
-                }
-            });
-        });
+(function () {
+  function run() {
+    var root = typeof root_element !== "undefined" && root_element ? root_element : document;
+    var cardsEl = root.querySelector ? root.querySelector(".pq-cards") : null;
+    var hintEl = root.querySelector ? root.querySelector(".pq-hint") : null;
+    if (!cardsEl || typeof frappe === "undefined" || !frappe.call) {
+      setTimeout(run, 200);
+      return;
     }
-});
+
+    var CATALOG = [
+      { slug: "production-board", label: "Production Board", desc: "Fabric units Unit 1–4" },
+      { slug: "color-chart", label: "Color Chart", desc: "Color planning (- CC)" },
+      { slug: "gsm-production-entry", label: "GSM Production Entry", desc: "Shift entry (- GSM)" },
+      { slug: "production-table", label: "Production Table", desc: "PP / SPR columns (- PB)" },
+      { slug: "lamination-board", label: "Lamination Board", desc: "TNSPL Lamination" },
+      { slug: "printing-order-board", label: "Printing Order Board", desc: "Printing" },
+      { slug: "slitting-board", label: "Slitting Board", desc: "Slitting" },
+      { slug: "rewinding-board", label: "Rewinding Board", desc: "Rewinding" },
+      { slug: "sheet-cutting-board", label: "Sheet Cutting Board", desc: "Sheet cutting" },
+      { slug: "printed-bopp-film-board", label: "Printed BOPP Film Board", desc: "BOPP film" },
+      { slug: "box-bag-board", label: "Box Bag Board", desc: "Box bag" },
+      { slug: "w-cut-d-cut-board", label: "W CUT / D CUT Board", desc: "Bag making" },
+      { slug: "logistics-kanban", label: "Logistics Kanban", desc: "Transfer / despatch (- LK)" },
+      { slug: "transfer-approval-dashboard", label: "Transfer Approval", desc: "Approve transfers (- TA)" },
+      { slug: "despatch-approval-dashboard", label: "Despatch Approval", desc: "Approve despatch (- DA)" },
+    ];
+
+    function esc(s) {
+      try { return frappe.utils.escape_html(String(s || "")); }
+      catch (e) {
+        return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+      }
+    }
+
+    function cardHtml(b) {
+      return (
+        '<a href="/app/' + esc(b.slug) + '" class="pq-card" style="' +
+        "display:block;min-width:200px;max-width:260px;flex:1 1 200px;" +
+        "padding:14px 16px;border-radius:10px;border:1px solid #cbd5e1;" +
+        "background:#fff;text-decoration:none;color:inherit;" +
+        "box-shadow:0 1px 2px rgba(15,23,42,.08);" +
+        '">' +
+        '<div style="font-weight:700;font-size:15px;color:#0f172a;">' + esc(b.label) + "</div>" +
+        '<div style="font-size:12px;color:#64748b;margin-top:6px;">' + esc(b.desc || "") + "</div>" +
+        '<div style="font-size:12px;color:#2563eb;margin-top:10px;font-weight:600;">Open →</div>' +
+        "</a>"
+      );
+    }
+
+    function render(list) {
+      cardsEl.innerHTML = (list || []).map(cardHtml).join("");
+      if (hintEl) {
+        hintEl.textContent = !(list || []).length
+          ? "No boards granted. Add rows under Production Board Access → Allowed Boards."
+          : "Showing " + list.length + " board(s) from your access (or all if unrestricted).";
+      }
+    }
+
+    function filterList(scope) {
+      if (!scope || scope.unlimited) return CATALOG.slice();
+      var allowed = {};
+      (scope.allowed_boards || []).forEach(function (s) {
+        allowed[String(s || "").toLowerCase()] = true;
+      });
+      if (!Object.keys(allowed).length) return [];
+      return CATALOG.filter(function (b) {
+        return !!allowed[b.slug];
+      });
+    }
+
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: {},
+      callback: function (r) {
+        render(filterList((r && r.message) || { unlimited: true, allowed_boards: [] }));
+      },
+      error: function () {
+        render(CATALOG.slice());
+      },
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
 </script>

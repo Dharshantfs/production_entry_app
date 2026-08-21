@@ -34,6 +34,9 @@ BOARD_SLUGS = (
 	"confirm-orders",
 	"planning",
 	"gsm-production-entry",
+	"logistics-kanban",
+	"transfer-approval-dashboard",
+	"despatch-approval-dashboard",
 )
 
 # Boards shown in Production Board Access picker (table pages inherit via alias — do not list here).
@@ -50,10 +53,10 @@ BOARD_PICKER_SLUGS = (
 	"color-chart",
 	"confirm-orders",
 	"planning",
-	"logistics-kanban",
-	"despatch-approval-dashboard",
-	"transfer-approval-dashboard",
 	"gsm-production-entry",
+	"logistics-kanban",
+	"transfer-approval-dashboard",
+	"despatch-approval-dashboard",
 )
 
 BOARD_PICKER_LABELS = {
@@ -69,10 +72,10 @@ BOARD_PICKER_LABELS = {
 	"color-chart": "Color Chart",
 	"confirm-orders": "Confirm Orders",
 	"planning": "Planning",
-	"logistics-kanban": "Logistics Kanban",
-	"despatch-approval-dashboard": "Despatch Approval",
-	"transfer-approval-dashboard": "Transfer Approval",
 	"gsm-production-entry": "GSM Production Entry",
+	"logistics-kanban": "Logistics Kanban",
+	"transfer-approval-dashboard": "Transfer Approval",
+	"despatch-approval-dashboard": "Despatch Approval",
 }
 
 # Table / companion pages — access granted automatically when matching board is allowed.
@@ -247,40 +250,93 @@ def get_production_board_user_context(board_slug: str | None = None):
 
 
 def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
-	"""Per-board toolbar freeze flags from Allowed Boards child rows."""
+	"""Per-board freeze flags from Allowed Boards child rows (- PB / - CC / - GSM / - LK / - TA / - DA)."""
 	from frappe.utils import cint
 
 	doc = frappe.get_doc(DOCTYPE_ACCESS, access_name)
 	requested = _equivalent_board_slugs(board_slug)
+	slug = _normalize_board_slug(board_slug)
 	for row in doc.get("allowed_boards") or []:
 		row_slug = _normalize_board_slug(row.board)
 		if not row_slug:
 			continue
-		if requested & _equivalent_board_slugs(row_slug):
-			result = {
-				"maintenance": bool(cint(getattr(row, "freeze_maintenance", 0))),
-				"transfer": bool(cint(getattr(row, "freeze_transfer", 0))),
-				"despatch": bool(cint(getattr(row, "freeze_despatch", 0))),
-				"arrangement": bool(cint(getattr(row, "freeze_arrangement", 0))),
-				"assign_shift": bool(cint(getattr(row, "freeze_assign_shift", 0))),
-				"sync_spr": bool(cint(getattr(row, "freeze_sync_spr", 0))),
-				"merge": bool(cint(getattr(row, "freeze_merge", 0))),
-				"reorder": bool(cint(getattr(row, "freeze_reorder", 0))),
-			}
-			if _normalize_board_slug(board_slug) == "gsm-production-entry":
-				result.update({
-					"gsm_unit": bool(cint(getattr(row, "freeze_gsm_unit", 0))),
-					"gsm_date": bool(cint(getattr(row, "freeze_gsm_date", 0))),
-					"gsm_shift": bool(cint(getattr(row, "freeze_gsm_shift", 0))),
-					"gsm_add_row": bool(cint(getattr(row, "freeze_gsm_add_row", 0))),
-					"gsm_submit": bool(cint(getattr(row, "freeze_gsm_submit", 0))),
-					"gsm_tools": bool(cint(getattr(row, "freeze_gsm_tools", 0))),
-					"gsm_summary": bool(cint(getattr(row, "freeze_gsm_summary", 0))),
-					"gsm_shift_entries": bool(cint(getattr(row, "freeze_gsm_shift_entries", 0))),
-					"gsm_clear_entries": bool(cint(getattr(row, "freeze_gsm_clear_entries", 0))),
-					"gsm_prev_shift": bool(cint(getattr(row, "freeze_gsm_prev_shift", 0))),
-				})
-			return result
+		if not (requested & _equivalent_board_slugs(row_slug)):
+			continue
+
+		result = {
+			"maintenance": bool(cint(getattr(row, "freeze_maintenance", 0))),
+			"transfer": bool(cint(getattr(row, "freeze_transfer", 0))),
+			"despatch": bool(cint(getattr(row, "freeze_despatch", 0))),
+			"arrangement": bool(cint(getattr(row, "freeze_arrangement", 0))),
+			"assign_shift": bool(cint(getattr(row, "freeze_assign_shift", 0))),
+			"sync_spr": bool(cint(getattr(row, "freeze_sync_spr", 0))),
+			"merge": bool(cint(getattr(row, "freeze_merge", 0))),
+			"reorder": bool(cint(getattr(row, "freeze_reorder", 0))),
+			"production_plan": bool(cint(getattr(row, "freeze_production_plan", 0))),
+			"spr_wo": bool(cint(getattr(row, "freeze_spr_wo", 0))),
+		}
+
+		if slug == "color-chart" or "color-chart" in requested:
+			result.update({
+				"cc_kanban": bool(cint(getattr(row, "freeze_cc_kanban", 0))),
+				"cc_matrix": bool(cint(getattr(row, "freeze_cc_matrix", 0))),
+				"cc_unit": bool(cint(getattr(row, "freeze_cc_unit", 0))),
+				"cc_plan": bool(cint(getattr(row, "freeze_cc_plan", 0))),
+				"cc_clear": bool(cint(getattr(row, "freeze_cc_clear", 0))),
+				"cc_emergency_reset": bool(cint(getattr(row, "freeze_cc_emergency_reset", 0))),
+				"cc_sort_info": bool(cint(getattr(row, "freeze_cc_sort_info", 0))),
+				"cc_auto_alloc": bool(cint(getattr(row, "freeze_cc_auto_alloc", 0))),
+				"cc_pull_orders": bool(cint(getattr(row, "freeze_cc_pull_orders", 0))),
+				"cc_push_to_board": bool(cint(getattr(row, "freeze_cc_push_to_board", 0))),
+				"cc_move_to_plan": bool(cint(getattr(row, "freeze_cc_move_to_plan", 0))),
+				"cc_rescue_orders": bool(cint(getattr(row, "freeze_cc_rescue_orders", 0))),
+				"cc_sync_plan_codes": bool(cint(getattr(row, "freeze_cc_sync_plan_codes", 0))),
+				"cc_confirmed_orders": bool(cint(getattr(row, "freeze_cc_confirmed_orders", 0))),
+				"cc_approval_dashboard": bool(cint(getattr(row, "freeze_cc_approval_dashboard", 0))),
+			})
+
+		if slug == "gsm-production-entry" or "gsm-production-entry" in requested:
+			result.update({
+				"gsm_unit": bool(cint(getattr(row, "freeze_gsm_unit", 0))),
+				"gsm_date": bool(cint(getattr(row, "freeze_gsm_date", 0))),
+				"gsm_shift": bool(cint(getattr(row, "freeze_gsm_shift", 0))),
+				"gsm_start_shift": bool(cint(getattr(row, "freeze_gsm_start_shift", 0))),
+				"gsm_mixing_sheet": bool(cint(getattr(row, "freeze_gsm_mixing_sheet", 0))),
+				"gsm_add_row": bool(cint(getattr(row, "freeze_gsm_add_row", 0))),
+				"gsm_remove_row": bool(cint(getattr(row, "freeze_gsm_remove_row", 0))),
+				"gsm_submit": bool(cint(getattr(row, "freeze_gsm_submit", 0))),
+				"gsm_tools": bool(cint(getattr(row, "freeze_gsm_tools", 0))),
+				"gsm_shaft_details": bool(cint(getattr(row, "freeze_gsm_shaft_details", 0))),
+				"gsm_summary": bool(cint(getattr(row, "freeze_gsm_summary", 0))),
+				"gsm_shift_entries": bool(cint(getattr(row, "freeze_gsm_shift_entries", 0))),
+				"gsm_clear_entries": bool(cint(getattr(row, "freeze_gsm_clear_entries", 0))),
+				"gsm_prev_shift": bool(cint(getattr(row, "freeze_gsm_prev_shift", 0))),
+			})
+
+		if slug == "logistics-kanban" or "logistics-kanban" in requested:
+			result.update({
+				"logistics_transfer": bool(cint(getattr(row, "freeze_logistics_transfer", 0))),
+				"logistics_despatch": bool(cint(getattr(row, "freeze_logistics_despatch", 0))),
+				"logistics_filters": bool(cint(getattr(row, "freeze_logistics_filters", 0))),
+				"logistics_transfer_approvals": bool(cint(getattr(row, "freeze_logistics_transfer_approvals", 0))),
+				"logistics_despatch_approvals": bool(cint(getattr(row, "freeze_logistics_despatch_approvals", 0))),
+			})
+
+		if slug == "transfer-approval-dashboard" or "transfer-approval-dashboard" in requested:
+			result.update({
+				"transfer_approve": bool(cint(getattr(row, "freeze_transfer_approve", 0))),
+				"transfer_reject": bool(cint(getattr(row, "freeze_transfer_reject", 0))),
+				"transfer_refresh": bool(cint(getattr(row, "freeze_transfer_refresh", 0))),
+			})
+
+		if slug == "despatch-approval-dashboard" or "despatch-approval-dashboard" in requested:
+			result.update({
+				"despatch_approve": bool(cint(getattr(row, "freeze_despatch_approve", 0))),
+				"despatch_reject": bool(cint(getattr(row, "freeze_despatch_reject", 0))),
+				"despatch_refresh": bool(cint(getattr(row, "freeze_despatch_refresh", 0))),
+			})
+
+		return result
 	return {}
 
 

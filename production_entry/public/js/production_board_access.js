@@ -12,7 +12,11 @@ const BOARD_SELECT_FALLBACK =
 	"w-cut-d-cut-board|W CUT / D CUT Board\n" +
 	"color-chart|Color Chart\n" +
 	"confirm-orders|Confirm Orders\n" +
-	"planning|Planning";
+	"planning|Planning\n" +
+	"gsm-production-entry|GSM Production Entry\n" +
+	"logistics-kanban|Logistics Kanban\n" +
+	"transfer-approval-dashboard|Transfer Approval\n" +
+	"despatch-approval-dashboard|Despatch Approval";
 
 function normalizeBoardSlug(raw) {
 	const s = String(raw || "").trim().toLowerCase();
@@ -91,8 +95,10 @@ function decorateBoardAccessForm(frm) {
 				<div style="font-weight:700;font-size:15px;color:#1e3a8a;margin-bottom:6px;">Production Board Access</div>
 				<div style="font-size:12px;color:#334155;line-height:1.5;">
 					Assign by <strong>user name</strong> (search shows name + email). <strong>Many users can share the same unit</strong> (shift-wise).
-					Add <strong>one row per board</strong> — table view access is automatic. Tick <strong>Freeze</strong> columns to disable toolbar buttons (Maintenance, Transfer, Despatch, Arrangement, Assign Shift, Sync SPR, Merge, Reorder).
-					For <strong>W CUT / D CUT</strong>, set <strong>Company</strong> to JVE, VTP, or Both; pick matching workstations under Allowed Units.
+					Add <strong>one row per board</strong> (Color Chart, GSM, Logistics, Transfer/Despatch Approval, etc.).
+					Tick <strong>Freeze</strong> checkboxes — labels show which screen they belong to:
+					<strong>- PB</strong> Production Board/Table, <strong>- CC</strong> Color Chart,
+					<strong>- GSM</strong> GSM Entry, <strong>- LK</strong> Logistics, <strong>- TA</strong> Transfer Approval, <strong>- DA</strong> Despatch Approval.
 				</div>
 			</div>`
 		);

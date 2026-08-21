@@ -32,14 +32,14 @@
       </div>
 
       <div class="lk-toggle">
-        <button type="button" :class="{ active: mode === 'transfer' }" @click="setMode('transfer')">Transfer</button>
-        <button type="button" :class="{ active: mode === 'despatch' }" @click="setMode('despatch')">Despatch</button>
+        <button type="button" :class="{ active: mode === 'transfer' }" :style="boardActionFrozenStyle(lkBoardAccess, 'logistics_transfer')" @click="guardedSetMode('transfer')">Transfer</button>
+        <button type="button" :class="{ active: mode === 'despatch' }" :style="boardActionFrozenStyle(lkBoardAccess, 'logistics_despatch')" @click="guardedSetMode('despatch')">Despatch</button>
       </div>
     </div>
 
-    <div class="lk-filters">
+    <div class="lk-filters" :style="boardActionFrozenStyle(lkBoardAccess, 'logistics_filters')">
       <label>View</label>
-      <select v-model="viewScope" @change="loadCards" class="lk-select lk-select-sm">
+      <select v-model="viewScope" @change="loadCards" class="lk-select lk-select-sm" :disabled="freezeLk('logistics_filters')">
         <option value="daily">Daily</option>
         <option value="weekly">Weekly</option>
         <option value="monthly">Monthly</option>
@@ -47,15 +47,15 @@
       </select>
       <template v-if="viewScope === 'daily'">
         <label>Date</label>
-        <input type="date" v-model="filterDate" @change="loadCards" class="lk-input-date" />
+        <input type="date" v-model="filterDate" @change="loadCards" class="lk-input-date" :disabled="freezeLk('logistics_filters')" />
       </template>
       <template v-else-if="viewScope === 'weekly'">
         <label>Week</label>
-        <input type="week" v-model="filterWeek" @change="loadCards" class="lk-input-date" />
+        <input type="week" v-model="filterWeek" @change="loadCards" class="lk-input-date" :disabled="freezeLk('logistics_filters')" />
       </template>
       <template v-else-if="viewScope === 'monthly'">
         <label>Month</label>
-        <input type="month" v-model="filterMonth" @change="loadCards" class="lk-input-date" />
+        <input type="month" v-model="filterMonth" @change="loadCards" class="lk-input-date" :disabled="freezeLk('logistics_filters')" />
       </template>
       <label>Order code</label>
       <input
@@ -63,6 +63,7 @@
         type="text"
         placeholder="Filter by order…"
         class="lk-input-text"
+        :disabled="freezeLk('logistics_filters')"
         @keyup.enter="loadCards"
       />
       <label v-if="mode === 'despatch'">Clubbing Sheet</label>
@@ -72,9 +73,10 @@
         type="text"
         placeholder="Filter by club ID…"
         class="lk-input-text"
+        :disabled="freezeLk('logistics_filters')"
         @keyup.enter="loadDespatchCards"
       />
-      <button type="button" class="cc-clear-btn" @click="loadCards">Apply</button>
+      <button type="button" class="cc-clear-btn" :disabled="freezeLk('logistics_filters')" @click="loadCards">Apply</button>
     </div>
 
     <template v-if="mode === 'transfer'">
@@ -90,7 +92,7 @@
           <option value="draft">Draft STE only</option>
           <option value="submitted">Submitted STE only</option>
         </select>
-        <button type="button" class="lk-link-btn" @click="goApprovals">Transfer Approvals →</button>
+        <button type="button" class="lk-link-btn" :style="boardActionFrozenStyle(lkBoardAccess, 'logistics_transfer_approvals')" @click="guardedGoApprovals">Transfer Approvals →</button>
       </div>
 
       <div v-if="!fromCompany" class="lk-hint">Select a company to see transfer destination cards.</div>
@@ -162,7 +164,7 @@
           <option value="">All companies…</option>
           <option v-for="c in companies" :key="c.name" :value="c.name">{{ c.name }}</option>
         </select>
-        <button type="button" class="lk-link-btn" @click="goDespatchApprovals">Despatch Approvals →</button>
+        <button type="button" class="lk-link-btn" :style="boardActionFrozenStyle(lkBoardAccess, 'logistics_despatch_approvals')" @click="guardedGoDespatchApprovals">Despatch Approvals →</button>
       </div>
 
       <div v-if="!despatchCards.length" class="lk-hint">No company cards for despatch.</div>
@@ -422,9 +424,64 @@ import { onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import Sortable from "sortablejs";
 import TransferDialog from "./TransferDialog.vue";
 import DespatchDialog from "./DespatchDialog.vue";
+import { boardActionFrozenStyle, isBoardActionFrozen } from "./board_access_ui.js";
 
 const API = "production_entry.production_planning.transfer_logistics";
 const DESPATCH_API = "production_entry.production_planning.despatch_logistics";
+const lkBoardAccess = ref({
+  unlimited: true,
+  allowed_units: [],
+  loaded: false,
+  permitted: true,
+  frozen_actions: {},
+});
+
+function freezeLk(action) {
+  return isBoardActionFrozen(lkBoardAccess.value, action);
+}
+
+function guardedSetMode(m) {
+  const key = m === "despatch" ? "logistics_despatch" : "logistics_transfer";
+  if (freezeLk(key)) {
+    frappe.msgprint(__("This Logistics mode is frozen for your access."));
+    return;
+  }
+  setMode(m);
+}
+
+function guardedGoApprovals() {
+  if (freezeLk("logistics_transfer_approvals")) {
+    frappe.msgprint(__("Transfer Approvals is frozen for your access."));
+    return;
+  }
+  goApprovals();
+}
+
+function guardedGoDespatchApprovals() {
+  if (freezeLk("logistics_despatch_approvals")) {
+    frappe.msgprint(__("Despatch Approvals is frozen for your access."));
+    return;
+  }
+  goDespatchApprovals();
+}
+
+async function loadLkBoardAccess() {
+  await new Promise((resolve) => {
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: "logistics-kanban" },
+      callback: (r) => {
+        lkBoardAccess.value = { ...((r && r.message) || {}), loaded: true };
+        resolve();
+      },
+      error: () => {
+        lkBoardAccess.value = { unlimited: true, loaded: true, frozen_actions: {} };
+        resolve();
+      },
+    });
+  });
+}
+
 const mode = ref("transfer");
 const mounted = ref(false);
 const gateOpen = ref(false);
@@ -1132,7 +1189,8 @@ function reloadBoard() {
 watch(fromCompany, reloadBoard);
 watch([viewScope, filterDate, filterWeek, filterMonth, filterOrderCode, filterClubbingSheet], reloadBoard);
 
-onMounted(() => {
+onMounted(async () => {
+  await loadLkBoardAccess();
   initWeekMonth();
   requestAnimationFrame(() => {
     mounted.value = true;

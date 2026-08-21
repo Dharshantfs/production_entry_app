@@ -33,26 +33,26 @@
       </div>
       <div class="cc-filter-item">
         <label>Plan</label>
-        <div style="display:flex; gap:4px; align-items:center;">
-            <select v-model="selectedPlan" @change="fetchData">
+        <div style="display:flex; gap:4px; align-items:center;" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_plan')">
+            <select v-model="selectedPlan" @change="fetchData" :disabled="freezeCc('cc_plan')">
                 <option v-for="p in visiblePlans" :key="p.name" :value="p.name">
                     {{ p.locked ? '🔒 ' : '' }}{{ p.name === 'Default' ? 'Default' : currentMonthPrefix + ' ' + p.name }}
                 </option>
             </select>
-            <button v-if="selectedPlan" class="cc-mini-btn" @click="togglePlanLock" :title="isCurrentPlanLocked ? 'Unlock Plan' : 'Lock Plan'" style="margin-right:2px; padding: 2px 4px;font-size: 14px;">
+            <button v-if="selectedPlan" class="cc-mini-btn" @click="guardCc('cc_plan', togglePlanLock)" :title="isCurrentPlanLocked ? 'Unlock Plan' : 'Lock Plan'" style="margin-right:2px; padding: 2px 4px;font-size: 14px;">
                 {{ isCurrentPlanLocked ? '🔒' : '🔓' }}
             </button>
-            <button class="cc-mini-btn" @click="createNewPlan" title="Create New Plan Tab" style="color:#2563eb; font-weight:bold;">
+            <button class="cc-mini-btn" @click="guardCc('cc_plan', createNewPlan)" title="Create New Plan Tab" style="color:#2563eb; font-weight:bold;">
                 ➕ New
             </button>
-            <button v-if="selectedPlan !== 'Default'" class="cc-mini-btn" @click="deletePlan" title="Delete this Plan" style="color:#dc2626; font-weight:bold;">
+            <button v-if="selectedPlan !== 'Default'" class="cc-mini-btn" @click="guardCc('cc_plan', deletePlan)" title="Delete this Plan" style="color:#dc2626; font-weight:bold;">
                 🗑️
             </button>
         </div>
       </div>
       <div class="cc-filter-item">
         <label>Unit</label>
-        <select v-model="filterUnit">
+        <select v-model="filterUnit" :disabled="freezeCc('cc_unit')" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_unit')">
           <option value="">All Units</option>
           <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
         </select>
@@ -78,7 +78,8 @@
           <button 
             class="cc-view-btn" 
             :class="{ active: viewMode === 'kanban' }" 
-            @click="viewMode = 'kanban'"
+            @click="guardCc('cc_kanban', () => { viewMode = 'kanban' })"
+            :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_kanban')"
             title="Kanban Board View"
           >
             📋 Kanban
@@ -86,45 +87,46 @@
           <button 
             class="cc-view-btn" 
             :class="{ active: viewMode === 'matrix' }" 
-            @click="viewMode = 'matrix'"
+            @click="guardCc('cc_matrix', () => { viewMode = 'matrix' })"
+            :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_matrix')"
             title="Matrix Pivot View"
           >
             📊 Matrix
           </button>
       </div>
       
-      <button class="cc-clear-btn" @click="clearFilters">✕ Clear</button>
-      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="emergencyReset" title="FORCE UNLOCK: Returns all stuck orders to Color Chart">
+      <button class="cc-clear-btn" @click="guardCc('cc_clear', clearFilters)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_clear')">✕ Clear</button>
+      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="guardCc('cc_emergency_reset', emergencyReset)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_emergency_reset')" title="FORCE UNLOCK: Returns all stuck orders to Color Chart">
         🚑 Emergency Reset
       </button>
-      <button class="cc-clear-btn" style="color: #6366f1; border-color: #6366f1; margin-left: 8px;" @click="showGlobalSortInfo" title="View Color Hierarchy Rules">
+      <button class="cc-clear-btn" style="color: #6366f1; border-color: #6366f1; margin-left: 8px;" @click="guardCc('cc_sort_info', showGlobalSortInfo)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_sort_info')" title="View Color Hierarchy Rules">
         🎨 Sort Info
       </button>
-      <button class="cc-clear-btn" style="color: #2563eb; border-color: #2563eb; margin-left: 8px;" @click="autoAllocate" title="Auto-assign orders based on Width & Quality">
+      <button class="cc-clear-btn" style="color: #2563eb; border-color: #2563eb; margin-left: 8px;" @click="guardCc('cc_auto_alloc', autoAllocate)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_auto_alloc')" title="Auto-assign orders based on Width & Quality">
         🪄 Auto Alloc
       </button>
-      <button class="cc-clear-btn" style="color: #059669; border-color: #059669; margin-left: 8px;" @click="openPullOrdersDialog" title="Pull orders from a future date">
+      <button class="cc-clear-btn" style="color: #059669; border-color: #059669; margin-left: 8px;" @click="guardCc('cc_pull_orders', openPullOrdersDialog)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_pull_orders')" title="Pull orders from a future date">
         📥 Pull Orders
       </button>
-      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="pushToProductionBoard" :disabled="!canPushToBoard" title="Push visible orders to Production Board plan">
+      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="guardCc('cc_push_to_board', pushToProductionBoard)" :disabled="!canPushToBoard" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_push_to_board')" title="Push visible orders to Production Board plan">
         📤 Push to Board
       </button>
-      <button class="cc-clear-btn" style="color: #ca8a04; border-color: #ca8a04; margin-left: 8px; font-weight:600;" @click="openMovePlanDialog" title="Move visible orders to another Color Chart plan">
+      <button class="cc-clear-btn" style="color: #ca8a04; border-color: #ca8a04; margin-left: 8px; font-weight:600;" @click="guardCc('cc_move_to_plan', openMovePlanDialog)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_move_to_plan')" title="Move visible orders to another Color Chart plan">
         📥 Move to Plan
       </button>
-      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="openRescueDialog" title="Rescue lost or stuck orders">
+      <button v-if="isAdmin" class="cc-clear-btn" style="color: #dc2626; border-color: #dc2626; margin-left: 8px;" @click="guardCc('cc_rescue_orders', openRescueDialog)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_rescue_orders')" title="Rescue lost or stuck orders">
         🚑 Rescue Orders
       </button>
-      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="syncAllPlanCodes" title="Recalculate Plan Codes for all existing sheets">
+      <button class="cc-clear-btn" style="color: #7c3aed; border-color: #7c3aed; margin-left: 8px; font-weight:600;" @click="guardCc('cc_sync_plan_codes', syncAllPlanCodes)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_sync_plan_codes')" title="Recalculate Plan Codes for all existing sheets">
         📂 Sync Plan Codes
       </button>
       <button v-if="hasRecentlyReset" class="cc-clear-btn" style="color: #ca8a04; border-color: #ca8a04; margin-left: 8px; font-weight:600;" @click="restoreWhiteOrders" title="Restore accidentally cleared white orders">
         🛠️ Restore Whites
       </button>
-      <button class="cc-clear-btn" style="background-color: #10b981; color: white; border: none; margin-left: auto;" @click="goToConfirmedOrders" title="View Confirmed Orders Page">
+      <button class="cc-clear-btn" style="background-color: #10b981; color: white; border: none; margin-left: auto;" @click="guardCc('cc_confirmed_orders', goToConfirmedOrders)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_confirmed_orders')" title="View Confirmed Orders Page">
           ✅ Confirmed Orders
       </button>
-      <button v-if="canAccessDashboard" class="cc-clear-btn" style="background-color: #f59e0b; color: white; border: none; margin-left: 8px;" @click="goToSequenceApprovals" title="View Sequence Approval Dashboard">
+      <button v-if="canAccessDashboard" class="cc-clear-btn" style="background-color: #f59e0b; color: white; border: none; margin-left: 8px;" @click="guardCc('cc_approval_dashboard', goToSequenceApprovals)" :style="boardActionFrozenStyle(colorChartBoardAccess, 'cc_approval_dashboard')" title="View Sequence Approval Dashboard">
           📋 Approval Dashboard
       </button>
     </div>
@@ -661,6 +663,55 @@ import {
   buildMaintenanceData,
   getMaintenanceRecordsForDate,
 } from "./maintenance_utils.js";
+import {
+  boardActionFrozenStyle,
+  isBoardActionFrozen,
+} from "./board_access_ui.js";
+
+const COLOR_CHART_BOARD_SLUG = "color-chart";
+const colorChartBoardAccess = ref({
+  unlimited: true,
+  allowed_units: [],
+  loaded: false,
+  permitted: true,
+  frozen_actions: {},
+});
+
+function freezeCc(action) {
+  return isBoardActionFrozen(colorChartBoardAccess.value, action);
+}
+
+function guardCc(action, fn) {
+  if (freezeCc(action)) {
+    frappe.msgprint(__("This Color Chart action is frozen for your access."));
+    return;
+  }
+  if (typeof fn === "function") fn();
+}
+
+async function loadColorChartBoardAccess() {
+  await new Promise((resolve) => {
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: COLOR_CHART_BOARD_SLUG },
+      callback: (r) => {
+        const scope = (r && r.message) || { unlimited: true, allowed_units: [] };
+        colorChartBoardAccess.value = { ...scope, loaded: true };
+        resolve();
+      },
+      error: () => {
+        colorChartBoardAccess.value = {
+          unlimited: true,
+          allowed_units: [],
+          loaded: true,
+          permitted: true,
+          frozen_actions: {},
+        };
+        resolve();
+      },
+    });
+  });
+}
 
 // Color groups for keyword-based matching
 // Check MOST SPECIFIC (multi-word) first, then SINGLE-WORD catch-all groups
@@ -5022,6 +5073,7 @@ watch(filterWeek, async () => {
 });
 
 onMounted(async () => {
+  await loadColorChartBoardAccess();
   // 1. Read URL Params
   const params = new URLSearchParams(window.location.search);
   const dateParam = params.get('date');

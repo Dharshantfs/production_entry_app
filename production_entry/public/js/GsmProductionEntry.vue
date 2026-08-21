@@ -298,7 +298,7 @@
               <strong>{{ shift }}</strong> not started for {{ formatPlannedDate(runDate) }} · Unit {{ headerUnit }}.
               Change Run Date or Shift above, then click Start Shift.
             </span>
-            <button type="button" class="gpe-btn primary" @click="openShiftDialog">Start Shift</button>
+            <button type="button" class="gpe-btn primary" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_start_shift')" @click="guardedStartShift">Start Shift</button>
           </div>
           <div class="gpe-tags" v-if="!selectionLocked && headerTags.length">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
@@ -319,7 +319,8 @@
                   type="button"
                   class="gpe-btn"
                   :disabled="!canOpenMixingSheet"
-                  @click="openMixingDialog"
+                  :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_mixing_sheet')"
+                  @click="guardedMixingSheet"
                 >Mixing Sheet</button>
               </div>
               <div v-if="shiftOpened && sessionSprList.length" class="gpe-wastage-recycle-btns">
@@ -426,7 +427,7 @@
             <button v-else type="button" class="gpe-btn primary" :title="addRollDisabledHint" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_add_row')" @click="guardedAddRollRow">
               {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
             </button>
-            <button type="button" class="gpe-btn" @click="guardedRemoveTopRow">Remove Top Row</button>
+            <button type="button" class="gpe-btn" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_remove_row')" @click="guardedRemoveTopRow">Remove Top Row</button>
             <button
               type="button"
               class="gpe-btn gpe-btn-warn"
@@ -455,7 +456,7 @@
                 <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
-            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="guardedShaftDetails">Shaft Details</button>
+            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_shaft_details')" @click="guardedShaftDetails">Shaft Details</button>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_submit')" @click="guardedSubmitEntry">Submit Entry</button>
           </div>
         </div>
@@ -3227,9 +3228,13 @@ const fabricUnitOptions = computed(() => unitOptions.value);
 const freezeGsmUnit = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_unit"));
 const freezeGsmDate = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_date"));
 const freezeGsmShift = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_shift"));
+const freezeGsmStartShift = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_start_shift"));
+const freezeGsmMixingSheet = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_mixing_sheet"));
 const freezeGsmAddRow = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_add_row"));
+const freezeGsmRemoveRow = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_remove_row"));
 const freezeGsmSubmit = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_submit"));
 const freezeGsmTools = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_tools"));
+const freezeGsmShaftDetails = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_shaft_details"));
 const freezeGsmSummary = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_summary"));
 const freezeGsmShiftEntries = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_shift_entries"));
 const freezeGsmClearEntries = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_clear_entries"));
@@ -7340,7 +7345,16 @@ function guardedAddRollRow() {
   if (!canAddRow.value || addRollInProgress.value) return;
   addRollRow();
 }
+function guardedStartShift() {
+  if (freezeGsmStartShift.value) { frappe.msgprint(__("Start Shift is disabled for your access.")); return; }
+  openShiftDialog();
+}
+function guardedMixingSheet() {
+  if (freezeGsmMixingSheet.value) { frappe.msgprint(__("Mixing Sheet is disabled for your access.")); return; }
+  openMixingDialog();
+}
 function guardedRemoveTopRow() {
+  if (freezeGsmRemoveRow.value) { frappe.msgprint(__("Remove Top Row is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Remove Top Row"); return; }
   if (!rollLines.value.length) return;
   removeTopRow();
@@ -7356,6 +7370,7 @@ function guardedToolsToggle() {
   toolsMenuOpen.value = !toolsMenuOpen.value;
 }
 function guardedShaftDetails() {
+  if (freezeGsmShaftDetails.value) { frappe.msgprint(__("Shaft Details is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Shaft Details"); return; }
   openShaftDetails();
 }

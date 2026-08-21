@@ -7,7 +7,7 @@
  "field_order": [
   "board",
   "w_cut_d_cut_company",
-  "column_break_freeze",
+  "section_freeze_pb",
   "freeze_maintenance",
   "freeze_transfer",
   "freeze_despatch",
@@ -16,18 +16,56 @@
   "freeze_sync_spr",
   "freeze_merge",
   "freeze_reorder",
-  "section_break_gsm",
+  "column_break_pb_2",
+  "freeze_production_plan",
+  "freeze_spr_wo",
+  "section_freeze_cc",
+  "freeze_cc_kanban",
+  "freeze_cc_matrix",
+  "freeze_cc_unit",
+  "freeze_cc_plan",
+  "freeze_cc_clear",
+  "freeze_cc_emergency_reset",
+  "freeze_cc_sort_info",
+  "column_break_cc_2",
+  "freeze_cc_auto_alloc",
+  "freeze_cc_pull_orders",
+  "freeze_cc_push_to_board",
+  "freeze_cc_move_to_plan",
+  "freeze_cc_rescue_orders",
+  "freeze_cc_sync_plan_codes",
+  "freeze_cc_confirmed_orders",
+  "freeze_cc_approval_dashboard",
+  "section_freeze_gsm",
   "freeze_gsm_unit",
   "freeze_gsm_date",
   "freeze_gsm_shift",
+  "freeze_gsm_start_shift",
+  "freeze_gsm_mixing_sheet",
   "freeze_gsm_add_row",
+  "freeze_gsm_remove_row",
   "column_break_gsm_2",
   "freeze_gsm_submit",
   "freeze_gsm_tools",
+  "freeze_gsm_shaft_details",
   "freeze_gsm_summary",
   "freeze_gsm_shift_entries",
   "freeze_gsm_clear_entries",
-  "freeze_gsm_prev_shift"
+  "freeze_gsm_prev_shift",
+  "section_freeze_logistics",
+  "freeze_logistics_transfer",
+  "freeze_logistics_despatch",
+  "freeze_logistics_filters",
+  "freeze_logistics_transfer_approvals",
+  "freeze_logistics_despatch_approvals",
+  "section_freeze_transfer_appr",
+  "freeze_transfer_approve",
+  "freeze_transfer_reject",
+  "freeze_transfer_refresh",
+  "section_freeze_despatch_appr",
+  "freeze_despatch_approve",
+  "freeze_despatch_reject",
+  "freeze_despatch_refresh"
  ],
  "fields": [
   {
@@ -35,7 +73,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Board (Page ID)",
-   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning\ngsm-production-entry|GSM Production Entry",
+   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning\ngsm-production-entry|GSM Production Entry\nlogistics-kanban|Logistics Kanban\ntransfer-approval-dashboard|Transfer Approval\ndespatch-approval-dashboard|Despatch Approval",
    "reqd": 1
   },
   {
@@ -49,95 +87,231 @@
    "options": "JVE\nVTP\nBoth"
   },
   {
-   "fieldname": "column_break_freeze",
-   "fieldtype": "Column Break",
-   "label": "Freeze toolbar (visible but disabled)"
+   "depends_on": "eval:['production-board','production-table','printing-order-board','lamination-board','slitting-board','rewinding-board','sheet-cutting-board','printed-bopp-film-board','box-bag-board','w-cut-d-cut-board'].includes(((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')))",
+   "fieldname": "section_freeze_pb",
+   "fieldtype": "Section Break",
+   "label": "Production Board / Table — Freeze (- PB)"
   },
   {
    "default": "0",
    "fieldname": "freeze_maintenance",
    "fieldtype": "Check",
    "in_list_view": 1,
-   "label": "Maintenance"
+   "label": "Maintenance - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_transfer",
    "fieldtype": "Check",
    "in_list_view": 1,
-   "label": "Transfer"
+   "label": "Transfer - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_despatch",
    "fieldtype": "Check",
    "in_list_view": 1,
-   "label": "Despatch"
+   "label": "Despatch - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_arrangement",
    "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Arrangement"
+   "label": "Arrangement - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_assign_shift",
    "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Assign Shift"
+   "label": "Assign Shift - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_sync_spr",
    "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Sync SPR"
+   "label": "Sync SPR - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_merge",
    "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Merge"
+   "label": "Merge - PB"
   },
   {
    "default": "0",
    "fieldname": "freeze_reorder",
    "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Reorder"
+   "label": "Reorder - PB"
   },
   {
-   "fieldname": "section_break_gsm",
+   "fieldname": "column_break_pb_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:['production-board','production-table'].includes(((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')))",
+   "description": "Freeze Production Plan column (View / create PP) on Production Table.",
+   "fieldname": "freeze_production_plan",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Production Plan - PB"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:['production-board','production-table'].includes(((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')))",
+   "description": "Freeze SPR / WO column (New SPR / View SPR) on Production Table.",
+   "fieldname": "freeze_spr_wo",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "SPR / WO - PB"
+  },
+  {
+   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'color-chart'",
+   "fieldname": "section_freeze_cc",
    "fieldtype": "Section Break",
-   "label": "GSM Production Entry — Freeze",
-   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'gsm-production-entry'"
+   "label": "Color Chart — Freeze (- CC)"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_kanban",
+   "fieldtype": "Check",
+   "label": "Kanban - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_matrix",
+   "fieldtype": "Check",
+   "label": "Matrix - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_unit",
+   "fieldtype": "Check",
+   "label": "Unit - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_plan",
+   "fieldtype": "Check",
+   "label": "Plan - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_clear",
+   "fieldtype": "Check",
+   "label": "Clear - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_emergency_reset",
+   "fieldtype": "Check",
+   "label": "Emergency Reset - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_sort_info",
+   "fieldtype": "Check",
+   "label": "Sort Info - CC"
+  },
+  {
+   "fieldname": "column_break_cc_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_auto_alloc",
+   "fieldtype": "Check",
+   "label": "Auto Alloc - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_pull_orders",
+   "fieldtype": "Check",
+   "label": "Pull Orders - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_push_to_board",
+   "fieldtype": "Check",
+   "label": "Push to Board - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_move_to_plan",
+   "fieldtype": "Check",
+   "label": "Move to Plan - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_rescue_orders",
+   "fieldtype": "Check",
+   "label": "Rescue Orders - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_sync_plan_codes",
+   "fieldtype": "Check",
+   "label": "Sync Plan Codes - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_confirmed_orders",
+   "fieldtype": "Check",
+   "label": "Confirmed Orders - CC"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_cc_approval_dashboard",
+   "fieldtype": "Check",
+   "label": "Approval Dashboard - CC"
+  },
+  {
+   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'gsm-production-entry'",
+   "fieldname": "section_freeze_gsm",
+   "fieldtype": "Section Break",
+   "label": "GSM Production Entry — Freeze (- GSM)"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_unit",
    "fieldtype": "Check",
-   "label": "Unit Selection"
+   "label": "Unit - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_date",
    "fieldtype": "Check",
-   "label": "Planned Date"
+   "label": "Planned Date - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_shift",
    "fieldtype": "Check",
-   "label": "Shift Selection"
+   "label": "Shift - GSM"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_gsm_start_shift",
+   "fieldtype": "Check",
+   "label": "Start Shift - GSM"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_gsm_mixing_sheet",
+   "fieldtype": "Check",
+   "label": "Mixing Sheet - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_add_row",
    "fieldtype": "Check",
-   "label": "Add Roll Row"
+   "label": "Add Roll Row - GSM"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_gsm_remove_row",
+   "fieldtype": "Check",
+   "label": "Remove Top Row - GSM"
   },
   {
    "fieldname": "column_break_gsm_2",
@@ -147,41 +321,131 @@
    "default": "0",
    "fieldname": "freeze_gsm_submit",
    "fieldtype": "Check",
-   "label": "Submit Entry"
+   "label": "Submit Entry - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_tools",
    "fieldtype": "Check",
-   "label": "Tools Menu"
+   "label": "Tools - GSM"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_gsm_shaft_details",
+   "fieldtype": "Check",
+   "label": "Shaft Details - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_summary",
    "fieldtype": "Check",
-   "label": "Summary Tab"
+   "label": "Summary Tab - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_shift_entries",
    "fieldtype": "Check",
-   "label": "Shift Entries Tab"
+   "label": "Shift Entries Tab - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_clear_entries",
    "fieldtype": "Check",
-   "label": "Clear Entries"
+   "label": "Clear Entries - GSM"
   },
   {
    "default": "0",
    "fieldname": "freeze_gsm_prev_shift",
    "fieldtype": "Check",
-   "label": "Prev Shift Tab"
+   "label": "Prev Shift Tab - GSM"
+  },
+  {
+   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'logistics-kanban'",
+   "fieldname": "section_freeze_logistics",
+   "fieldtype": "Section Break",
+   "label": "Logistics Kanban — Freeze (- LK)"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_logistics_transfer",
+   "fieldtype": "Check",
+   "label": "Transfer Mode - LK"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_logistics_despatch",
+   "fieldtype": "Check",
+   "label": "Despatch Mode - LK"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_logistics_filters",
+   "fieldtype": "Check",
+   "label": "Filters / Apply - LK"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_logistics_transfer_approvals",
+   "fieldtype": "Check",
+   "label": "Transfer Approvals Link - LK"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_logistics_despatch_approvals",
+   "fieldtype": "Check",
+   "label": "Despatch Approvals Link - LK"
+  },
+  {
+   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'transfer-approval-dashboard'",
+   "fieldname": "section_freeze_transfer_appr",
+   "fieldtype": "Section Break",
+   "label": "Transfer Approval — Freeze (- TA)"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_transfer_approve",
+   "fieldtype": "Check",
+   "label": "Approve - TA"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_transfer_reject",
+   "fieldtype": "Check",
+   "label": "Reject - TA"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_transfer_refresh",
+   "fieldtype": "Check",
+   "label": "Refresh - TA"
+  },
+  {
+   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'despatch-approval-dashboard'",
+   "fieldname": "section_freeze_despatch_appr",
+   "fieldtype": "Section Break",
+   "label": "Despatch Approval — Freeze (- DA)"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_despatch_approve",
+   "fieldtype": "Check",
+   "label": "Approve - DA"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_despatch_reject",
+   "fieldtype": "Check",
+   "label": "Reject - DA"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_despatch_refresh",
+   "fieldtype": "Check",
+   "label": "Refresh - DA"
   }
  ],
  "istable": 1,
- "modified": "2026-07-15 16:00:00.000000",
+ "modified": "2026-08-21 15:10:00.000000",
  "module": "Production Planning",
  "name": "Production Board Access Board",
  "owner": "Administrator",

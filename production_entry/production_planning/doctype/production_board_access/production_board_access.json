@@ -91,7 +91,7 @@
    "fieldtype": "Table",
    "label": "Allowed Boards",
    "options": "Production Board Access Board",
-   "description": "One row per board (page id). Table views inherit board access automatically. Tick Freeze columns to show buttons but block clicks for operators."
+   "description": "One row per board (page id). Table views inherit board access automatically. Freeze checkboxes are marked - PB / - CC / - GSM / - LK / - TA / - DA for the matching screen."
   }
  ],
  "links": [],
