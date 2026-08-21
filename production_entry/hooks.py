@@ -119,15 +119,10 @@ after_migrate = ["production_entry.install.after_migrate"]
 # permission_query_conditions = {
 # 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
 # }
-
-has_permission = {
-	"Page": "production_entry.production_planning.board_access.page_has_permission",
-}
-
-# Inject board-access pages into desk boot (Awesome Bar / page routes).
-# Register both hook names — Frappe versions differ on which runs.
-extend_bootinfo = "production_entry.production_planning.board_access.extend_bootinfo"
-boot_session = "production_entry.production_planning.board_access.extend_bootinfo"
+#
+# has_permission = {
+# 	"Event": "frappe.desk.doctype.event.event.has_permission",
+# }
 
 # DocType Class
 # ---------------

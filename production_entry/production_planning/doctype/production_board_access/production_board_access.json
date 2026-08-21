@@ -16,11 +16,7 @@
   "section_break_units",
   "allowed_units",
   "section_break_boards",
-  "allowed_boards",
-  "section_break_color_chart",
-  "allowed_color_chart",
-  "section_break_gsm",
-  "allowed_gsm"
+  "allowed_boards"
  ],
  "fields": [
   {
@@ -79,51 +75,27 @@
    "label": "Allowed units (workstations)"
   },
   {
-   "description": "Workstations this user may view. Many users can share the same unit (e.g. Unit 1 day shift + Unit 1 night shift). Same list applies to board and table views.",
    "fieldname": "allowed_units",
    "fieldtype": "Table MultiSelect",
    "label": "Allowed Units",
-   "options": "Production Board Access Unit"
+   "options": "Production Board Access Unit",
+   "description": "Workstations this user may view. Many users can share the same unit (e.g. Unit 1 day shift + Unit 1 night shift). Same list applies to board and table views."
   },
   {
    "fieldname": "section_break_boards",
    "fieldtype": "Section Break",
-   "label": "Production boards & frozen actions"
+   "label": "Boards & frozen actions"
   },
   {
-   "description": "Kanban / process boards only (not Color Chart or GSM). Tick Freeze columns to show buttons but block clicks. Production Plan and SPR / WO freeze the Production Table columns (read-only).",
    "fieldname": "allowed_boards",
    "fieldtype": "Table",
-   "label": "Allowed Production Boards",
-   "options": "Production Board Access Board"
-  },
-  {
-   "fieldname": "section_break_color_chart",
-   "fieldtype": "Section Break",
-   "label": "Color Chart access"
-  },
-  {
-   "description": "Add one row to grant Color Chart access. Tick Freeze checkboxes to disable the matching Color Chart buttons / Unit / Plan controls (visible but read-only).",
-   "fieldname": "allowed_color_chart",
-   "fieldtype": "Table",
-   "label": "Color Chart",
-   "options": "Production Board Access Color Chart"
-  },
-  {
-   "fieldname": "section_break_gsm",
-   "fieldtype": "Section Break",
-   "label": "GSM Production Entry access"
-  },
-  {
-   "description": "Add one row to grant GSM Production Entry access. Tick Freeze checkboxes to disable the matching GSM controls.",
-   "fieldname": "allowed_gsm",
-   "fieldtype": "Table",
-   "label": "GSM Production Entry",
-   "options": "Production Board Access GSM"
+   "label": "Allowed Boards",
+   "options": "Production Board Access Board",
+   "description": "One row per board (page id). Table views inherit board access automatically. Tick Freeze columns to show buttons but block clicks for operators."
   }
  ],
  "links": [],
- "modified": "2026-08-20 16:00:00.000000",
+ "modified": "2026-06-17 12:00:00.000000",
  "module": "Production Planning",
  "name": "Production Board Access",
  "naming_rule": "By fieldname",

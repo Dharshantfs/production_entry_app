@@ -16,12 +16,7 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 DOCTYPE_ACCESS = "Production Board Access"
-CHILD_DOCTYPES = (
-	"Production Board Access Unit",
-	"Production Board Access Board",
-	"Production Board Access Color Chart",
-	"Production Board Access GSM",
-)
+CHILD_DOCTYPES = ("Production Board Access Unit", "Production Board Access Board")
 DATE_MODES = ("Today", "Last 24 Hours", "Last N Days", "Unlimited")
 
 BOARD_SLUGS = (
@@ -41,8 +36,7 @@ BOARD_SLUGS = (
 	"gsm-production-entry",
 )
 
-# Boards shown in Production Board Access "Allowed Production Boards" picker.
-# Color Chart + GSM live in their own child tables — do not list here.
+# Boards shown in Production Board Access picker (table pages inherit via alias — do not list here).
 BOARD_PICKER_SLUGS = (
 	"production-board",
 	"printing-order-board",
@@ -53,11 +47,13 @@ BOARD_PICKER_SLUGS = (
 	"printed-bopp-film-board",
 	"box-bag-board",
 	"w-cut-d-cut-board",
+	"color-chart",
 	"confirm-orders",
 	"planning",
 	"logistics-kanban",
 	"despatch-approval-dashboard",
 	"transfer-approval-dashboard",
+	"gsm-production-entry",
 )
 
 BOARD_PICKER_LABELS = {
@@ -78,29 +74,6 @@ BOARD_PICKER_LABELS = {
 	"transfer-approval-dashboard": "Transfer Approval",
 	"gsm-production-entry": "GSM Production Entry",
 }
-
-# Slugs managed via dedicated child tables (not Allowed Production Boards).
-_DEDICATED_BOARD_SLUGS = frozenset({"color-chart", "gsm-production-entry"})
-
-
-def _all_managed_page_slugs() -> set[str]:
-	"""Every Page route controlled by Production Board Access (incl. table aliases)."""
-	out: set[str] = set()
-	for s in BOARD_SLUGS + BOARD_PICKER_SLUGS:
-		out |= _equivalent_board_slugs(s)
-	out |= set(_DEDICATED_BOARD_SLUGS)
-	# Ensure companion table pages are included even if not listed above.
-	for s in list(out):
-		out |= _equivalent_board_slugs(s)
-	return out
-
-
-def _user_allowed_page_slugs(scope: dict) -> set[str]:
-	allowed: set[str] = set()
-	for s in scope.get("allowed_boards") or []:
-		allowed |= _equivalent_board_slugs(s)
-	return allowed
-
 
 # Table / companion pages — access granted automatically when matching board is allowed.
 _TABLE_PAGE_SUFFIXES = ("-order-table",)
@@ -234,195 +207,6 @@ def _access_docname_for_user(user: str) -> str | None:
 	)
 
 
-def page_has_permission(doc, ptype=None, user=None, debug=False, **kwargs):
-	"""Gate Page read by Production Board Access when the user has a restricted scope.
-
-	- Allowed board / Color Chart / GSM rows → grant that page
-	- Other managed boards (e.g. GSM when not granted) → deny
-	- Non-board pages → fall through to normal Page roles
-	"""
-	if ptype and ptype not in ("read", "select", "write", "share", "print", "email", "report"):
-		return None
-	if ptype in ("write", "share", "print", "email", "report"):
-		return None
-
-	name = doc if isinstance(doc, str) else getattr(doc, "name", None)
-	slug = _normalize_board_slug(name)
-	if not slug:
-		return None
-
-	user = user or frappe.session.user
-	if not user or user in ("Guest",):
-		return None
-
-	try:
-		scope = get_user_board_scope(user)
-	except Exception:
-		return None
-
-	if scope.get("unlimited"):
-		return None
-
-	managed = _all_managed_page_slugs()
-	if slug not in managed and not (_equivalent_board_slugs(slug) & managed):
-		return None
-
-	allowed = _user_allowed_page_slugs(scope)
-	if _equivalent_board_slugs(slug) & allowed:
-		return True
-	# Explicit deny so empty-role Pages (e.g. GSM) do not leak to every operator.
-	return False
-
-
-def extend_bootinfo(bootinfo):
-	"""Show only granted boards in desk search / workspace shortcuts / sidebar links."""
-	try:
-		scope = get_user_board_scope()
-	except Exception:
-		return
-
-	# Always expose scope for desk UI (Production Queuing launcher, etc.).
-	try:
-		bootinfo["production_board_access"] = {
-			"unlimited": bool(scope.get("unlimited")),
-			"allowed_boards": list(scope.get("allowed_boards") or []),
-			"allowed_units": list(scope.get("allowed_units") or []),
-		}
-	except Exception:
-		pass
-
-	if scope.get("unlimited"):
-		return
-
-	page_info = bootinfo.get("page_info")
-	if page_info is None:
-		return
-
-	managed = _all_managed_page_slugs()
-	allowed = _user_allowed_page_slugs(scope)
-
-	# Strip managed pages the user was not given (fixes GSM showing for everyone).
-	for key in list(page_info.keys()):
-		norm = _normalize_board_slug(key)
-		if not norm:
-			continue
-		if norm in managed or (_equivalent_board_slugs(norm) & managed):
-			if not (_equivalent_board_slugs(norm) & allowed):
-				page_info.pop(key, None)
-
-	for slug in sorted(allowed):
-		norm = _normalize_board_slug(slug)
-		if not norm or norm in page_info:
-			continue
-		if not frappe.db.exists("Page", norm):
-			continue
-		title = (
-			frappe.db.get_value("Page", norm, "title")
-			or BOARD_PICKER_LABELS.get(norm)
-			or norm.replace("-", " ").title()
-		)
-		page_info[norm] = {"title": title, "route": norm}
-
-	_filter_boot_workspace_links(bootinfo, allowed, managed)
-
-
-def _link_slug(row) -> str:
-	"""Extract page slug from a workspace link/shortcut row (dict or object)."""
-	if isinstance(row, dict):
-		link_type = (row.get("type") or row.get("link_type") or "").strip()
-		link_to = row.get("link_to") or row.get("link") or ""
-	else:
-		link_type = (getattr(row, "type", None) or getattr(row, "link_type", None) or "").strip()
-		link_to = getattr(row, "link_to", None) or getattr(row, "link", None) or ""
-	if link_type and link_type not in ("Page", "page"):
-		# shortcut child uses type=Page
-		if str(link_type).lower() != "page":
-			return ""
-	return _normalize_board_slug(link_to)
-
-
-def _keep_workspace_row(row, allowed: set[str], managed: set[str]) -> bool:
-	slug = _link_slug(row)
-	if not slug:
-		return True
-	if slug not in managed and not (_equivalent_board_slugs(slug) & managed):
-		return True
-	return bool(_equivalent_board_slugs(slug) & allowed)
-
-
-def _filter_boot_workspace_links(bootinfo, allowed: set[str], managed: set[str]) -> None:
-	"""Hide board shortcuts/links the operator was not given."""
-	# workspaces may be dict {name: ws} or list
-	workspaces = bootinfo.get("workspaces")
-	items = []
-	if isinstance(workspaces, dict):
-		items = list(workspaces.values())
-	elif isinstance(workspaces, list):
-		items = workspaces
-
-	for ws in items:
-		if not isinstance(ws, dict):
-			continue
-		for key in ("shortcuts", "links"):
-			rows = ws.get(key)
-			if not isinstance(rows, list):
-				continue
-			ws[key] = [r for r in rows if _keep_workspace_row(r, allowed, managed)]
-
-	# Sidebar items (v15/v16 variants)
-	for key in ("workspace_sidebar_item", "sidebar_items"):
-		rows = bootinfo.get(key)
-		if not isinstance(rows, list):
-			continue
-		bootinfo[key] = [r for r in rows if _keep_workspace_row(r, allowed, managed)]
-
-
-@frappe.whitelist()
-def get_board_launcher_links():
-	"""Return only boards granted by Production Board Access (for Production Queuing UI)."""
-	scope = get_user_board_scope()
-	catalog = [
-		{"slug": "production-board", "label": "Production Board", "desc": "Fabric units Unit 1–4"},
-		{"slug": "lamination-board", "label": "Lamination Board", "desc": "TNSPL Lamination"},
-		{"slug": "printing-order-board", "label": "Printing Order Board", "desc": "Printing"},
-		{"slug": "slitting-board", "label": "Slitting Board", "desc": "Slitting"},
-		{"slug": "rewinding-board", "label": "Rewinding Board", "desc": "Rewinding"},
-		{"slug": "sheet-cutting-board", "label": "Sheet Cutting Board", "desc": "Sheet cutting"},
-		{"slug": "printed-bopp-film-board", "label": "Printed BOPP Film Board", "desc": "BOPP film"},
-		{"slug": "box-bag-board", "label": "Box Bag Board", "desc": "Box bag"},
-		{"slug": "w-cut-d-cut-board", "label": "W CUT / D CUT Board", "desc": "Bag making"},
-		{"slug": "color-chart", "label": "Color Chart", "desc": "Color planning"},
-		{"slug": "production-table", "label": "Production Table", "desc": "Table view"},
-		{"slug": "gsm-production-entry", "label": "GSM Production Entry", "desc": "Shift entry"},
-		{"slug": "logistics-kanban", "label": "Logistics Kanban", "desc": "Transfer / despatch"},
-	]
-	if scope.get("unlimited"):
-		return {"unlimited": True, "boards": catalog}
-	allowed = _user_allowed_page_slugs(scope)
-	boards = []
-	seen = set()
-	for row in catalog:
-		slug = row["slug"]
-		if not (_equivalent_board_slugs(slug) & allowed):
-			continue
-		# Prefer kanban/board link over its companion table page.
-		if slug == "production-table" and ("production-board" in allowed):
-			continue
-		if slug.endswith("-order-table"):
-			board_twin = slug.replace("-order-table", "-board")
-			if board_twin in allowed or any(
-				board_twin in _equivalent_board_slugs(a) for a in allowed
-			):
-				continue
-		if slug == "printed-bopp-film-table" and ("printed-bopp-film-board" in allowed):
-			continue
-		if slug in seen:
-			continue
-		seen.add(slug)
-		boards.append(row)
-	return {"unlimited": False, "boards": boards}
-
-
 @frappe.whitelist()
 def get_production_board_user_context(board_slug: str | None = None):
 	"""Return board access scope for the session user (page gate + Vue)."""
@@ -462,73 +246,18 @@ def get_production_board_user_context(board_slug: str | None = None):
 	}
 
 
-def _frozen_actions_from_color_chart_row(row) -> dict:
-	from frappe.utils import cint
-
-	return {
-		"cc_unit": bool(cint(getattr(row, "freeze_cc_unit", 0))),
-		"cc_plan": bool(cint(getattr(row, "freeze_cc_plan", 0))),
-		"cc_clear": bool(cint(getattr(row, "freeze_cc_clear", 0))),
-		"cc_emergency_reset": bool(cint(getattr(row, "freeze_cc_emergency_reset", 0))),
-		"cc_sort_info": bool(cint(getattr(row, "freeze_cc_sort_info", 0))),
-		"cc_auto_alloc": bool(cint(getattr(row, "freeze_cc_auto_alloc", 0))),
-		"cc_pull_orders": bool(cint(getattr(row, "freeze_cc_pull_orders", 0))),
-		"cc_push_to_board": bool(cint(getattr(row, "freeze_cc_push_to_board", 0))),
-		"cc_move_to_plan": bool(cint(getattr(row, "freeze_cc_move_to_plan", 0))),
-		"cc_rescue_orders": bool(cint(getattr(row, "freeze_cc_rescue_orders", 0))),
-		"cc_sync_plan_codes": bool(cint(getattr(row, "freeze_cc_sync_plan_codes", 0))),
-		"cc_confirmed_orders": bool(cint(getattr(row, "freeze_cc_confirmed_orders", 0))),
-		"cc_approval_dashboard": bool(cint(getattr(row, "freeze_cc_approval_dashboard", 0))),
-	}
-
-
-def _frozen_actions_from_gsm_row(row) -> dict:
-	from frappe.utils import cint
-
-	return {
-		"gsm_unit": bool(cint(getattr(row, "freeze_gsm_unit", 0))),
-		"gsm_date": bool(cint(getattr(row, "freeze_gsm_date", 0))),
-		"gsm_shift": bool(cint(getattr(row, "freeze_gsm_shift", 0))),
-		"gsm_start_shift": bool(cint(getattr(row, "freeze_gsm_start_shift", 0))),
-		"gsm_mixing_sheet": bool(cint(getattr(row, "freeze_gsm_mixing_sheet", 0))),
-		"gsm_add_row": bool(cint(getattr(row, "freeze_gsm_add_row", 0))),
-		"gsm_remove_row": bool(cint(getattr(row, "freeze_gsm_remove_row", 0))),
-		"gsm_submit": bool(cint(getattr(row, "freeze_gsm_submit", 0))),
-		"gsm_tools": bool(cint(getattr(row, "freeze_gsm_tools", 0))),
-		"gsm_shaft_details": bool(cint(getattr(row, "freeze_gsm_shaft_details", 0))),
-		"gsm_summary": bool(cint(getattr(row, "freeze_gsm_summary", 0))),
-		"gsm_shift_entries": bool(cint(getattr(row, "freeze_gsm_shift_entries", 0))),
-		"gsm_clear_entries": bool(cint(getattr(row, "freeze_gsm_clear_entries", 0))),
-		"gsm_prev_shift": bool(cint(getattr(row, "freeze_gsm_prev_shift", 0))),
-	}
-
-
 def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
-	"""Per-board toolbar freeze flags from the matching child table."""
+	"""Per-board toolbar freeze flags from Allowed Boards child rows."""
 	from frappe.utils import cint
 
 	doc = frappe.get_doc(DOCTYPE_ACCESS, access_name)
-	slug = _normalize_board_slug(board_slug)
 	requested = _equivalent_board_slugs(board_slug)
-
-	if slug == "color-chart" or ("color-chart" in requested):
-		rows = doc.get("allowed_color_chart") or []
-		if rows:
-			return _frozen_actions_from_color_chart_row(rows[0])
-		return {}
-
-	if slug == "gsm-production-entry" or ("gsm-production-entry" in requested):
-		rows = doc.get("allowed_gsm") or []
-		if rows:
-			return _frozen_actions_from_gsm_row(rows[0])
-		return {}
-
 	for row in doc.get("allowed_boards") or []:
 		row_slug = _normalize_board_slug(row.board)
 		if not row_slug:
 			continue
 		if requested & _equivalent_board_slugs(row_slug):
-			return {
+			result = {
 				"maintenance": bool(cint(getattr(row, "freeze_maintenance", 0))),
 				"transfer": bool(cint(getattr(row, "freeze_transfer", 0))),
 				"despatch": bool(cint(getattr(row, "freeze_despatch", 0))),
@@ -537,9 +266,21 @@ def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
 				"sync_spr": bool(cint(getattr(row, "freeze_sync_spr", 0))),
 				"merge": bool(cint(getattr(row, "freeze_merge", 0))),
 				"reorder": bool(cint(getattr(row, "freeze_reorder", 0))),
-				"production_plan": bool(cint(getattr(row, "freeze_production_plan", 0))),
-				"spr_wo": bool(cint(getattr(row, "freeze_spr_wo", 0))),
 			}
+			if _normalize_board_slug(board_slug) == "gsm-production-entry":
+				result.update({
+					"gsm_unit": bool(cint(getattr(row, "freeze_gsm_unit", 0))),
+					"gsm_date": bool(cint(getattr(row, "freeze_gsm_date", 0))),
+					"gsm_shift": bool(cint(getattr(row, "freeze_gsm_shift", 0))),
+					"gsm_add_row": bool(cint(getattr(row, "freeze_gsm_add_row", 0))),
+					"gsm_submit": bool(cint(getattr(row, "freeze_gsm_submit", 0))),
+					"gsm_tools": bool(cint(getattr(row, "freeze_gsm_tools", 0))),
+					"gsm_summary": bool(cint(getattr(row, "freeze_gsm_summary", 0))),
+					"gsm_shift_entries": bool(cint(getattr(row, "freeze_gsm_shift_entries", 0))),
+					"gsm_clear_entries": bool(cint(getattr(row, "freeze_gsm_clear_entries", 0))),
+					"gsm_prev_shift": bool(cint(getattr(row, "freeze_gsm_prev_shift", 0))),
+				})
+			return result
 	return {}
 
 
@@ -676,13 +417,8 @@ def _scope_from_access_doc(access_name: str) -> dict:
 	allowed_boards = []
 	for row in doc.get("allowed_boards") or []:
 		b = _normalize_board_slug(row.board)
-		if b and b not in _DEDICATED_BOARD_SLUGS:
+		if b:
 			allowed_boards.append(b)
-	# Dedicated tables: presence of any row grants that page.
-	if doc.get("allowed_color_chart"):
-		allowed_boards.append("color-chart")
-	if doc.get("allowed_gsm"):
-		allowed_boards.append("gsm-production-entry")
 	allowed_boards = _expand_allowed_boards(allowed_boards)
 
 	allowed_units: list[str] = []
@@ -974,13 +710,12 @@ def _is_board_picker_page(name: str) -> bool:
 	slug = _normalize_board_slug(name)
 	if not slug or _is_table_page_slug(slug):
 		return False
-	if slug in _DEDICATED_BOARD_SLUGS:
-		return False
 	if slug in BOARD_PICKER_SLUGS:
 		return True
 	if slug.endswith("-board"):
 		return True
 	if slug in (
+		"color-chart",
 		"confirm-orders",
 		"planning",
 		"logistics-kanban",

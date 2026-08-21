@@ -3,12 +3,7 @@
 import frappe
 
 
-_CHILD = (
-	"production_board_access_unit",
-	"production_board_access_board",
-	"production_board_access_color_chart",
-	"production_board_access_gsm",
-)
+_CHILD = ("production_board_access_unit", "production_board_access_board")
 
 
 def execute():
