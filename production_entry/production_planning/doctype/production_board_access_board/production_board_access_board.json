@@ -73,7 +73,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Board (Page ID)",
-   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning\ngsm-production-entry|GSM Production Entry\nlogistics-kanban|Logistics Kanban\ntransfer-approval-dashboard|Transfer Approval\ndespatch-approval-dashboard|Despatch Approval",
+   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nslitting-order-table|Slitting Order Table\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning\ngsm-production-entry|GSM Production Entry\nlogistics-kanban|Logistics Kanban\ntransfer-approval-dashboard|Transfer Approval\ndespatch-approval-dashboard|Despatch Approval\nproduction-learning|Production Learning",
    "reqd": 1
   },
   {

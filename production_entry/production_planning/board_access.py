@@ -24,6 +24,7 @@ BOARD_SLUGS = (
 	"printing-order-board",
 	"lamination-board",
 	"slitting-board",
+	"slitting-order-table",
 	"rewinding-board",
 	"sheet-cutting-board",
 	"printed-bopp-film-board",
@@ -37,14 +38,16 @@ BOARD_SLUGS = (
 	"logistics-kanban",
 	"transfer-approval-dashboard",
 	"despatch-approval-dashboard",
+	"production-learning",
 )
 
-# Boards shown in Production Board Access picker (table pages inherit via alias — do not list here).
+# Boards shown in Production Board Access picker.
 BOARD_PICKER_SLUGS = (
 	"production-board",
 	"printing-order-board",
 	"lamination-board",
 	"slitting-board",
+	"slitting-order-table",
 	"rewinding-board",
 	"sheet-cutting-board",
 	"printed-bopp-film-board",
@@ -57,6 +60,7 @@ BOARD_PICKER_SLUGS = (
 	"logistics-kanban",
 	"transfer-approval-dashboard",
 	"despatch-approval-dashboard",
+	"production-learning",
 )
 
 BOARD_PICKER_LABELS = {
@@ -64,6 +68,7 @@ BOARD_PICKER_LABELS = {
 	"printing-order-board": "Printing Order Board",
 	"lamination-board": "Lamination Board",
 	"slitting-board": "Slitting Board",
+	"slitting-order-table": "Slitting Order Table",
 	"rewinding-board": "Rewinding Board",
 	"sheet-cutting-board": "Sheet Cutting Board",
 	"printed-bopp-film-board": "Printed BOPP Film Board",
@@ -76,6 +81,7 @@ BOARD_PICKER_LABELS = {
 	"logistics-kanban": "Logistics Kanban",
 	"transfer-approval-dashboard": "Transfer Approval",
 	"despatch-approval-dashboard": "Despatch Approval",
+	"production-learning": "Production Learning",
 }
 
 # Table / companion pages — access granted automatically when matching board is allowed.

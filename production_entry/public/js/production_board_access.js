@@ -5,6 +5,7 @@ const BOARD_SELECT_FALLBACK =
 	"printing-order-board|Printing Order Board\n" +
 	"lamination-board|Lamination Board\n" +
 	"slitting-board|Slitting Board\n" +
+	"slitting-order-table|Slitting Order Table\n" +
 	"rewinding-board|Rewinding Board\n" +
 	"sheet-cutting-board|Sheet Cutting Board\n" +
 	"printed-bopp-film-board|Printed BOPP Film Board\n" +
@@ -16,7 +17,8 @@ const BOARD_SELECT_FALLBACK =
 	"gsm-production-entry|GSM Production Entry\n" +
 	"logistics-kanban|Logistics Kanban\n" +
 	"transfer-approval-dashboard|Transfer Approval\n" +
-	"despatch-approval-dashboard|Despatch Approval";
+	"despatch-approval-dashboard|Despatch Approval\n" +
+	"production-learning|Production Learning";
 
 function normalizeBoardSlug(raw) {
 	const s = String(raw || "").trim().toLowerCase();
