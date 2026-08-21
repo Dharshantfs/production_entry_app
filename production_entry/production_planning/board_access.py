@@ -405,12 +405,17 @@ def get_board_launcher_links():
 		slug = row["slug"]
 		if not (_equivalent_board_slugs(slug) & allowed):
 			continue
-		# Prefer kanban over table twin when both granted
-		if slug.endswith("-table") and slug.replace("-table", "-board") in {
-			_normalize_board_slug(x) for x in allowed
-		}:
-			# keep production-table if explicitly wanted — still show when production-board also allowed
-			pass
+		# Prefer kanban/board link over its companion table page.
+		if slug == "production-table" and ("production-board" in allowed):
+			continue
+		if slug.endswith("-order-table"):
+			board_twin = slug.replace("-order-table", "-board")
+			if board_twin in allowed or any(
+				board_twin in _equivalent_board_slugs(a) for a in allowed
+			):
+				continue
+		if slug == "printed-bopp-film-table" and ("printed-bopp-film-board" in allowed):
+			continue
 		if slug in seen:
 			continue
 		seen.add(slug)
