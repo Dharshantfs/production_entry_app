@@ -82,6 +82,26 @@ BOARD_PICKER_LABELS = {
 # Slugs managed via dedicated child tables (not Allowed Production Boards).
 _DEDICATED_BOARD_SLUGS = frozenset({"color-chart", "gsm-production-entry"})
 
+
+def _all_managed_page_slugs() -> set[str]:
+	"""Every Page route controlled by Production Board Access (incl. table aliases)."""
+	out: set[str] = set()
+	for s in BOARD_SLUGS + BOARD_PICKER_SLUGS:
+		out |= _equivalent_board_slugs(s)
+	out |= set(_DEDICATED_BOARD_SLUGS)
+	# Ensure companion table pages are included even if not listed above.
+	for s in list(out):
+		out |= _equivalent_board_slugs(s)
+	return out
+
+
+def _user_allowed_page_slugs(scope: dict) -> set[str]:
+	allowed: set[str] = set()
+	for s in scope.get("allowed_boards") or []:
+		allowed |= _equivalent_board_slugs(s)
+	return allowed
+
+
 # Table / companion pages — access granted automatically when matching board is allowed.
 _TABLE_PAGE_SUFFIXES = ("-order-table",)
 _TABLE_PAGE_EXACT = frozenset({"production-table", "printed-bopp-film-table"})
@@ -215,13 +235,14 @@ def _access_docname_for_user(user: str) -> str | None:
 
 
 def page_has_permission(doc, ptype=None, user=None, debug=False, **kwargs):
-	"""Allow Page read when Production Board Access grants that board/page slug.
+	"""Gate Page read by Production Board Access when the user has a restricted scope.
 
-	Returns True to grant, None to fall back to standard Page role checks.
+	- Allowed board / Color Chart / GSM rows → grant that page
+	- Other managed boards (e.g. GSM when not granted) → deny
+	- Non-board pages → fall through to normal Page roles
 	"""
 	if ptype and ptype not in ("read", "select", "write", "share", "print", "email", "report"):
 		return None
-	# Only elevate read/select for desk navigation; leave write to roles.
 	if ptype in ("write", "share", "print", "email", "report"):
 		return None
 
@@ -239,21 +260,22 @@ def page_has_permission(doc, ptype=None, user=None, debug=False, **kwargs):
 	except Exception:
 		return None
 
-	# Privileged / unlimited users already pass via System Manager roles.
 	if scope.get("unlimited"):
 		return None
 
-	allowed = set(_normalize_board_slug(s) for s in (scope.get("allowed_boards") or []) if s)
-	if not allowed:
+	managed = _all_managed_page_slugs()
+	if slug not in managed and not (_equivalent_board_slugs(slug) & managed):
 		return None
 
+	allowed = _user_allowed_page_slugs(scope)
 	if _equivalent_board_slugs(slug) & allowed:
 		return True
-	return None
+	# Explicit deny so empty-role Pages (e.g. GSM) do not leak to every operator.
+	return False
 
 
 def extend_bootinfo(bootinfo):
-	"""Expose Production Board Access pages in desk search / page_info."""
+	"""Show only granted boards in desk search / workspace shortcuts."""
 	try:
 		scope = get_user_board_scope()
 	except Exception:
@@ -262,13 +284,21 @@ def extend_bootinfo(bootinfo):
 	if scope.get("unlimited"):
 		return
 
-	allowed = scope.get("allowed_boards") or []
-	if not allowed:
-		return
-
 	page_info = bootinfo.get("page_info")
 	if page_info is None:
 		return
+
+	managed = _all_managed_page_slugs()
+	allowed = _user_allowed_page_slugs(scope)
+
+	# Strip managed pages the user was not given (fixes GSM showing for everyone).
+	for key in list(page_info.keys()):
+		norm = _normalize_board_slug(key)
+		if not norm:
+			continue
+		if norm in managed or (_equivalent_board_slugs(norm) & managed):
+			if not (_equivalent_board_slugs(norm) & allowed):
+				page_info.pop(key, None)
 
 	for slug in allowed:
 		norm = _normalize_board_slug(slug)
