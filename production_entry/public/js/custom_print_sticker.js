@@ -1052,7 +1052,9 @@ function _wastage_label_date(doc) {
 }
 
 function _wastage_width_display(row) {
-    var w = row.width_inch != null && row.width_inch !== "" ? row.width_inch : row.width;
+    var w = row.width_inch != null && row.width_inch !== ""
+        ? row.width_inch
+        : (row.width != null && row.width !== "" ? row.width : row.width_inches);
     var ws = String(w == null ? "" : w).trim();
     if (!ws) {
         return "";
@@ -1060,6 +1062,10 @@ function _wastage_width_display(row) {
     var lower = ws.toLowerCase();
     if (lower.indexOf("inch") !== -1) {
         return ws;
+    }
+    var n = parseFloat(ws);
+    if (Number.isFinite(n) && n === Math.round(n)) {
+        ws = String(Math.round(n));
     }
     return ws + " Inches";
 }
@@ -1076,7 +1082,7 @@ function _wastage_resolve_order(row, doc) {
     var items = doc.items || [];
     for (var i = 0; i < items.length; i++) {
         var it = items[i];
-        if (job && String(it.job || "") !== job) {
+        if (job && String(it.job || it.job_id || "") !== job) {
             continue;
         }
         var pc = String(it.party_code || it.custom_party_code || "").trim();
@@ -1153,9 +1159,36 @@ function _wastage_label_html(row, frm, table_field) {
         if (!color && specs.color) color = specs.color;
         if (!gsm && specs.gsm) gsm = String(specs.gsm);
     }
+    if (!quality || !color || !gsm) {
+        var job = String(row.job_id || row.job || "").trim();
+        var items = doc.items || [];
+        for (var si = 0; si < items.length; si++) {
+            var it = items[si];
+            if (job && String(it.job || it.job_id || "") !== job) {
+                continue;
+            }
+            if (!quality) quality = String(it.quality || "").trim();
+            if (!color) color = String(it.color || "").trim();
+            if (!gsm && it.gsm != null && it.gsm !== "") gsm = String(it.gsm);
+            if (quality && color && gsm) break;
+        }
+    }
+    if (!quality) quality = "NON WOVEN FABRIC";
 
     var runDate = _wastage_label_date(doc);
     var widthDisplay = _wastage_width_display(row);
+    if (!widthDisplay) {
+        var jobW = String(row.job_id || row.job || "").trim();
+        var itemsW = doc.items || [];
+        for (var wi = 0; wi < itemsW.length; wi++) {
+            var itW = itemsW[wi];
+            if (jobW && String(itW.job || itW.job_id || "") !== jobW) {
+                continue;
+            }
+            widthDisplay = _wastage_width_display(itW);
+            if (widthDisplay) break;
+        }
+    }
     var netRaw =
         row.net_wastage != null && row.net_wastage !== ""
             ? row.net_wastage
@@ -1173,7 +1206,7 @@ function _wastage_label_html(row, frm, table_field) {
     function esc(s) { return frappe.utils.escape_html(String(s == null ? "" : s)); }
     function rowHtml(lbl, val) {
         if (val === "" || val === null || val === undefined) return "";
-        return "<tr><td class=\"lbl\">" + esc(lbl) + "</td><td class=\"colon\">:</td><td class=\"val\">" + esc(val) + "</td></tr>";
+        return '<tr><td><span class="lbl">' + esc(lbl) + '</span></td><td class="colon">:</td><td><span class="val">' + esc(val) + "</span></td></tr>";
     }
 
     var body = [
@@ -1185,47 +1218,159 @@ function _wastage_label_html(row, frm, table_field) {
         rowHtml("Net Weight", netKg.toFixed(2) + " Kgs"),
     ].join("");
 
-    var btmRows = "";
-    if (batch) {
-        btmRows += '<div class="btm-line"><span class="lbl">BATCH No</span><span class="colon">:</span><span class="batch-val">' + esc(batch) + "</span></div>";
-    }
+    var btmHtml = '<div class="btm-info-row">' +
+        '<span class="lbl">BATCH No: </span><span class="val-large">' + esc(batch) + '</span>';
     if (orderCode) {
-        btmRows += '<div class="btm-line"><span class="lbl">Order</span><span class="colon">:</span><span class="val">' + esc(orderCode) + "</span></div>";
+        btmHtml += '<span class="lbl" style="margin-left:24px;">Order: </span><span class="val-large">' + esc(orderCode) + '</span>';
     }
+    btmHtml += '</div>';
 
     return '<html><head><title>Wastage Label Preview</title><style>' +
         '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
-        'body { font-family: Arial, sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; }' +
+        'body { font-family: "Arial", sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; font-size: 1.05em; }' +
         '.btn-panel { padding: 10px; background: #eee; }' +
-        '.sticker { width: 4in; height: 4in; margin: 16px auto; border: 2px solid #000; background: #fff; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
-        '.inner { border: 1px solid #000; margin: 8px; padding: 8px 10px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; }' +
-        '.hdr { font-size: 26px; font-weight: 900; color: #c1121f; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 6px; }' +
-        'table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }' +
-        'td { padding: 4px 6px; vertical-align: middle; }' +
-        'td.lbl { width: 42%; font-weight: 700; color: #333; }' +
-        'td.colon { width: 4%; text-align: center; font-weight: 700; }' +
-        'td.val { font-weight: 700; color: #000; }' +
-        '.foot { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 4px; }' +
-        '.btm-block { width: 100%; border-top: 2px dashed #666; padding-top: 6px; margin-top: 4px; text-align: center; }' +
-        '.btm-line { font-size: 14px; font-weight: 700; margin: 2px 0; }' +
-        '.btm-line .batch-val { font-size: 16px; font-weight: 900; }' +
-        '.btm-line .colon { margin: 0 4px; }' +
-        '#barcode { max-width: 100%; height: 55px; }' +
+        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 1px solid black; background: white; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
+        '.inner-border { border: 2px solid black; margin: 6px; padding: 6px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }' +
+        '.header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 4px; margin-top: 10px; }' +
+        '.wastage-header { font-size: 24px; font-weight: 900; color: #d32f2f; letter-spacing: 1px; margin-top: 2px; }' +
+        '.table-container { flex-grow: 1; display: flex; flex-direction: column; justify-content: center; margin: 4px 0; }' +
+        'table { width: 95%; border-collapse: collapse; margin: 0 auto; }' +
+        'td { padding: 6px 0; vertical-align: middle; border: none; text-align: left; }' +
+        'td:nth-child(1) { width: 42%; padding-left: 15px; }' +
+        'td.colon { width: 6%; text-align: center; font-weight: bold; font-size: 15px; }' +
+        'td:nth-child(3) { width: 52%; }' +
+        '.lbl { font-size: 13px; font-weight: 900; color: #333; }' +
+        '.val { font-size: 14px; font-weight: 900; color: #000; margin-left: 2px; }' +
+        '.val-large { font-size: 14px; font-weight: 900; color: #000; }' +
+        '.btm-info-row { border-top: 2px dashed #666; padding-top: 8px; padding-bottom: 6px; margin: 0 10px; text-align: center; white-space: nowrap; overflow: hidden; }' +
+        '.barcode-container { display: flex; justify-content: center; align-items: center; padding: 6px 0 4px 0; }' +
+        '#barcode { max-width: 95%; height: auto; }' +
         '</style></head><body>' +
-        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px;font-weight:bold;cursor:pointer;">PRINT</button>' +
-        '<button onclick="window.close()" style="padding:10px 20px;margin-left:10px;font-weight:bold;cursor:pointer;">CLOSE</button></div>' +
-        '<div class="sticker"><div class="inner">' +
-        '<div><div class="hdr">' + esc(title) + '</div><table>' + body + '</table></div>' +
-        '<div class="foot">' +
-        (btmRows ? '<div class="btm-block">' + btmRows + '</div>' : '') +
-        (barcode ? '<svg id="barcode"></svg>' : '<div style="height:20px;"></div>') +
-        '</div></div></div>' +
+        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px; font-weight:bold; cursor:pointer;">PRINT</button>' +
+        '<button onclick="window.close()" style="padding:10px 20px; margin-left:10px;">CLOSE</button></div>' +
+        '<div class="sticker"><div class="inner-border">' +
+        '<div class="header"><div class="wastage-header">' + esc(title) + '</div></div>' +
+        '<div class="table-container"><table>' + body + '</table></div>' +
+        btmHtml +
+        '<div class="barcode-container">' + (barcode ? '<svg id="barcode"></svg>' : '') + '</div>' +
+        '</div></div>' +
         '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"><\/script>' +
         (barcode
-            ? ('<script>try{JsBarcode("#barcode",' + JSON.stringify(barcode) + ',{format:"CODE128",displayValue:true,fontSize:12,textMargin:0,height:55,width:2,margin:0});}catch(e){}<\/script>')
+            ? ('<script>try{JsBarcode("#barcode",' + JSON.stringify(barcode) + ',{format:"CODE128",displayValue:true,fontSize:12,textMargin:1,height:28,width:1.6,margin:0});}catch(e){}<\/script>')
             : '') +
         '</body></html>';
 }
 
 frappe.generate_wastage_sticker_flow = frappe.print_wastage_label_flow;
 frappe.print_patty_wastage_label = frappe.print_wastage_label_flow;
+
+// ===== QC / APPROVAL LABEL (desk SPR + GSM Production Entry) =====
+
+function _approval_operator_ids(frm, options) {
+    var f = frm || {};
+    var doc = f.doc || {};
+    options = options || {};
+    var operatorId = String(
+        options.operator || doc.custom_operator || doc.operator || doc.custom_shift_operator || ""
+    ).trim();
+    var supervisorId = String(
+        options.supervisor || doc.custom_supervisor || doc.supervisor || doc.custom_shift_supervisor || ""
+    ).trim();
+    return { operatorId: operatorId, supervisorId: supervisorId };
+}
+
+function _approval_label_html(d) {
+    function esc(s) { return frappe.utils.escape_html(String(s == null ? "" : s)); }
+    return '<html><head><title>Approval Label</title><style>' +
+        '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
+        'body { font-family: "Arial", sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; }' +
+        '.btn-panel { padding: 10px; background: #eee; }' +
+        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 1px solid black; background: white; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
+        '.inner-border { border: 2px solid black; margin: 6px; padding: 6px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }' +
+        '.batch-row { display: flex; justify-content: center; align-items: center; border-bottom: 2px dashed #666; padding-bottom: 6px; margin: 15px 10px 4px 10px; }' +
+        '.batch-no { font-size: 18px; font-weight: 900; color: #000; }' +
+        '.table-container { flex-grow: 1; display: flex; flex-direction: column; justify-content: center; margin: 4px 0; }' +
+        'table { width: 95%; border-collapse: collapse; margin: 0 auto; }' +
+        'td { padding: 18px 0; vertical-align: middle; border: 1px solid #ddd; text-align: left; }' +
+        'td:nth-child(1) { width: 42%; padding-left: 10px; font-weight: 900; color: #333; font-size: 14px; background: #f9f9f9; }' +
+        'td:nth-child(2) { width: 58%; padding-left: 10px; font-weight: 900; color: #000; font-size: 14px; }' +
+        '.footer { font-size: 10px; color: #999; margin-top: auto; padding-bottom: 2px; }' +
+        '</style></head><body>' +
+        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px; font-weight:bold; cursor:pointer;">PRINT</button>' +
+        '<button onclick="window.close()" style="padding:10px 20px; margin-left:10px;">CLOSE</button></div>' +
+        '<div class="sticker"><div class="inner-border">' +
+        '<div class="batch-row"><span class="batch-no">BATCH No : ' + esc(d.batch_no) + '</span></div>' +
+        '<div class="table-container"><table>' +
+        '<tr><td>Entered By</td><td>' + esc(d.entered_by) + '</td></tr>' +
+        '<tr><td>Checked By</td><td>' + esc(d.checked_by) + '</td></tr>' +
+        '<tr><td>Verified By</td><td>' + esc(d.verified_by) + '</td></tr>' +
+        '<tr><td>Despatched By</td><td>' + esc(d.despatched_by) + '</td></tr>' +
+        '</table></div>' +
+        '<div class="footer">Approval Label - System Generated</div>' +
+        '</div></div></body></html>';
+}
+
+function _open_approval_label_window(html) {
+    var printWindow = window.open("", "_blank", "height=500,width=500");
+    if (printWindow) {
+        printWindow.document.write(html);
+        printWindow.document.close();
+    }
+}
+
+frappe.generate_approval_label = function (row_name, frm, options) {
+    var f = frm || (typeof cur_frm !== "undefined" ? cur_frm : null);
+    options = options || {};
+    if (!f || !f.doc) {
+        return;
+    }
+
+    var row = null;
+    if (row_name) {
+        row = (typeof locals !== "undefined" && locals && (locals["Shaft Production Run Item"] || {})[row_name])
+            || (f.doc.items || []).find(function (r) { return r && r.name === row_name; });
+    }
+    var raw_batch = String(options.batch_no || (row && row.batch_no) || "").trim();
+    if (!raw_batch) {
+        frappe.msgprint(__("Batch No is required for the QC label."));
+        return;
+    }
+
+    var ids = _approval_operator_ids(f, options);
+    var emp_ids = [];
+    if (ids.operatorId) emp_ids.push(ids.operatorId);
+    if (ids.supervisorId && ids.supervisorId !== ids.operatorId) emp_ids.push(ids.supervisorId);
+
+    function finish_generation(names_map) {
+        var entered = names_map[ids.operatorId] || ids.operatorId || "";
+        var htmlContent = _approval_label_html({
+            company: "JAYASHREE SPUN BOND",
+            batch_no: raw_batch,
+            entered_by: String(entered || "").toUpperCase(),
+            checked_by: "",
+            verified_by: "",
+            despatched_by: ""
+        });
+        _open_approval_label_window(htmlContent);
+    }
+
+    if (emp_ids.length > 0) {
+        frappe.call({
+            method: "frappe.client.get_list",
+            args: {
+                doctype: "Employee",
+                filters: { name: ["in", emp_ids] },
+                fields: ["name", "employee_name"]
+            },
+            callback: function (r) {
+                var names_map = {};
+                (r.message || []).forEach(function (emp) {
+                    names_map[emp.name] = emp.employee_name;
+                });
+                finish_generation(names_map);
+            }
+        });
+    } else {
+        finish_generation({});
+    }
+};

@@ -4178,7 +4178,9 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 		if flt(logical.get("wastage") or 0) <= 0:
 			continue
 		row_dict = dict(logical)
+		jid = _cstr(row_dict.get("job_id") or "")
 		row_dict["parentfield"] = field
+		row_dict["name"] = f"preview::{jid}" if jid else ""
 		preview_rows.append(_gsm_enrich_child_row_from_spr(spr, row_dict, "Running Patty Wastage Row"))
 
 	if not preview_rows:

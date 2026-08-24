@@ -664,7 +664,14 @@
                     :disabled="!isRowLabelReady(row)"
                     :title="isRowLabelReady(row) ? 'Print production label' : 'Save Row first'"
                     @click="printLabel(row)"
-                  >Label</button>
+                  >Production Label</button>
+                  <button
+                    type="button"
+                    class="gpe-btn sm gpe-btn-qc"
+                    :disabled="!isRowLabelReady(row)"
+                    :title="isRowLabelReady(row) ? 'Print QC approval label' : 'Save Row first'"
+                    @click="printQcLabel(row)"
+                  >QC Label</button>
                   <button
                     v-if="row.is_mix_roll_row"
                     type="button"
@@ -1787,6 +1794,7 @@ import {
   gsmOpenTensileTesting,
   gsmBackfillShaftNumbers,
   gsmPrintRollLabel,
+  gsmPrintQcLabel,
   gsmPrintBundleLabel,
   gsmToggleBundleSeOnSubmit,
   openSprForm,
@@ -5740,14 +5748,18 @@ async function resolveSprItemRowName(row) {
   }
 }
 
+function sprNameForRow(row) {
+  return row.is_mix_roll_row
+    ? row.spr_name || activeMixRoll.value?.spr_name
+    : sprNameForPp(row.pp_id);
+}
+
 async function printLabel(row) {
   if (!isRowLabelReady(row)) {
     frappe.msgprint(__("Save Row first to enable the label."));
     return;
   }
-  const sprName = row.is_mix_roll_row
-    ? row.spr_name || activeMixRoll.value?.spr_name
-    : sprNameForPp(row.pp_id);
+  const sprName = sprNameForRow(row);
   if (!sprName) {
     frappe.msgprint(__("Create SPRs first."));
     return;
@@ -5771,6 +5783,32 @@ async function printLabel(row) {
   } catch (e) {
     console.error(e);
     frappe.msgprint(__("Could not open label print."));
+  }
+}
+
+async function printQcLabel(row) {
+  if (!isRowLabelReady(row)) {
+    frappe.msgprint(__("Save Row first to enable the QC label."));
+    return;
+  }
+  const sprName = sprNameForRow(row);
+  if (!sprName) {
+    frappe.msgprint(__("Create SPRs first."));
+    return;
+  }
+  let itemName = row.spr_item_name || (await resolveSprItemRowName(row));
+  if (!itemName && !row.batch_no) {
+    frappe.msgprint(__("Save Row first to enable the QC label."));
+    return;
+  }
+  try {
+    await gsmPrintQcLabel(sprName, itemName, row, {
+      operator: operator.value,
+      supervisor: supervisor.value,
+    });
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint(__("Could not open QC label print."));
   }
 }
 
@@ -9713,7 +9751,8 @@ onUnmounted(() => {
   font-weight: 600;
   color: #64748b;
 }
-.gpe-btn-label {
+.gpe-btn-label,
+.gpe-btn-qc {
   font-size: 13px;
   padding: 6px 10px;
 }
@@ -9775,7 +9814,9 @@ onUnmounted(() => {
 }
 .gpe-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+  min-width: 220px;
 }
 .gpe-wo-link {
   color: #4f46e5;

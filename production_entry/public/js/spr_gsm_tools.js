@@ -205,6 +205,33 @@ export async function gsmPrintBundleLabel(sprName, gridRow = null) {
 	frappe.msgprint(__("Bundle label print module could not be loaded."));
 }
 
+/** Print QC / approval label — same format as desk SPR approval label. */
+export async function gsmPrintQcLabel(sprName, sprItemRowName, gridRow = null, extra = {}) {
+	if (!sprName) {
+		frappe.msgprint(__("Create SPRs first."));
+		return;
+	}
+	const options = {
+		operator: extra.operator || "",
+		supervisor: extra.supervisor || "",
+		batch_no: (gridRow && gridRow.batch_no) || extra.batch_no || "",
+	};
+	if (!sprItemRowName && !options.batch_no) {
+		frappe.msgprint(__("Save Row first to enable the QC label."));
+		return;
+	}
+	try {
+		if (production_entry.spr_label && typeof production_entry.spr_label.print_qc === "function") {
+			await production_entry.spr_label.print_qc(sprName, sprItemRowName, options);
+			return;
+		}
+		frappe.msgprint(__("QC label print helper not loaded."));
+	} catch (e) {
+		console.error("gsmPrintQcLabel", e);
+		frappe.msgprint(__("Could not open QC label print."));
+	}
+}
+
 /** Print wastage label — shared desk SPR wastage print functions only. */
 export async function gsmPrintWastageLabel(sprName, childRowName, tableField, rowData) {
 	if (!production_entry.spr_label || typeof production_entry.spr_label.print_wastage !== "function") {

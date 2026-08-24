@@ -182,14 +182,53 @@ production_entry.spr_label.print_roll = async function (sprName, rowName) {
 	frappe.msgprint(__("Label print helper not loaded."));
 };
 
+/** QC / approval label — same 4x4 approval sticker as desk SPR. */
+production_entry.spr_label.print_qc = async function (sprName, rowName, options = {}) {
+	const spr = String(sprName || "").trim();
+	const row = String(rowName || "").trim();
+	if (!spr) {
+		frappe.msgprint(__("SPR is required to print the QC label."));
+		return;
+	}
+	if (typeof frappe.generate_approval_label !== "function") {
+		try {
+			await import("./custom_print_sticker.js");
+		} catch (e) {
+			/* already bundled on GSM / SPR */
+		}
+	}
+	const doc = await production_entry.spr_label.load_spr_doc(spr);
+	if (!doc) {
+		frappe.msgprint(__("Could not load SPR for QC label print."));
+		return;
+	}
+	if (row) {
+		production_entry.spr_label.sync_item_row_locals(doc, row);
+	}
+	const frm = production_entry.spr_label.build_frm(doc);
+	if (typeof frappe.generate_approval_label === "function") {
+		frappe.generate_approval_label(row, frm, options);
+		return;
+	}
+	frappe.msgprint(__("QC label print helper not loaded."));
+};
+
 /** Running patty / roll waste labels — desk SPR flow with GSM-safe doc load. */
 production_entry.spr_label.print_wastage = async function (sprName, childRowName, tableField, rowData) {
 	const spr = String(sprName || "").trim();
 	const child = String(childRowName || "").trim();
 	tableField = tableField || "custom_running_patty_wastage";
-	if (!spr || !child) {
+	const hasRowData = rowData && typeof rowData === "object";
+	if (!spr || (!child && !hasRowData)) {
 		frappe.msgprint(__("SPR and wastage row are required."));
 		return;
+	}
+	if (typeof frappe.print_wastage_row_direct !== "function") {
+		try {
+			await import("./custom_print_sticker.js");
+		} catch (e) {
+			/* already bundled on GSM / SPR */
+		}
 	}
 	const doc = await production_entry.spr_label.load_spr_doc(spr, {
 		forceRefresh: true,
@@ -199,8 +238,10 @@ production_entry.spr_label.print_wastage = async function (sprName, childRowName
 		frappe.msgprint(__("Could not load SPR for wastage label print."));
 		return;
 	}
-	let wastageRow = production_entry.spr_label.sync_child_row_locals(doc, child, tableField);
-	if (!wastageRow && rowData && typeof rowData === "object") {
+	let wastageRow = child
+		? production_entry.spr_label.sync_child_row_locals(doc, child, tableField)
+		: null;
+	if (!wastageRow && hasRowData) {
 		wastageRow = rowData;
 	}
 	const frm = production_entry.spr_label.build_frm(doc);
@@ -208,15 +249,13 @@ production_entry.spr_label.print_wastage = async function (sprName, childRowName
 		frappe.print_wastage_row_direct(wastageRow, frm, tableField);
 		return;
 	}
-	for (const fnName of _WASTAGE_LABEL_FN_CANDIDATES) {
-		if (typeof frappe[fnName] === "function") {
-			frappe[fnName](child, frm, tableField);
-			return;
+	if (child) {
+		for (const fnName of _WASTAGE_LABEL_FN_CANDIDATES) {
+			if (typeof frappe[fnName] === "function") {
+				frappe[fnName](child, frm, tableField);
+				return;
+			}
 		}
-	}
-	if (wastageRow && typeof frappe.print_wastage_row_direct === "function") {
-		frappe.print_wastage_row_direct(wastageRow, frm, tableField);
-		return;
 	}
 	frappe.msgprint(
 		__(

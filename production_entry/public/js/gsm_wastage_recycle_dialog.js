@@ -315,10 +315,14 @@ function _rollNoFromBatch(batchNo) {
 }
 
 function _normalizePattyRow(row) {
+	const jobId = _val(row, "job_id", "job");
+	const batchNo = _val(row, "batch_no", "batch", "source_roll");
+	const printKey = _val(row, "name") || (jobId ? `preview::${jobId}` : "") || batchNo;
 	const normalized = {
 		...row,
-		batch_no: _val(row, "batch_no", "batch", "source_roll"),
-		roll_number: _val(row, "roll_number", "roll_no") || _rollNoFromBatch(_val(row, "batch_no", "batch", "source_roll")),
+		name: printKey,
+		batch_no: batchNo,
+		roll_number: _val(row, "roll_number", "roll_no") || _rollNoFromBatch(batchNo),
 		quality: _val(row, "quality"),
 		color: _val(row, "color"),
 		gsm: _val(row, "gsm"),
@@ -335,8 +339,15 @@ function _normalizePattyRow(row) {
 		available_kg: _val(row, "available_kg", "available", "available_qty", "wastage", "net_wastage"),
 		spr_item_name: _val(row, "spr_item_name", "source_roll_waste_row"),
 		source_roll: _val(row, "source_roll", "batch_no", "batch"),
+		order_code: _val(row, "order_code", "party_code"),
+		party_code: _val(row, "party_code", "order_code"),
+		job_id: jobId,
 	};
 	return normalized;
+}
+
+function _printRowKey(row) {
+	return String(row?.name || row?.job_id || row?.batch_no || "").trim();
 }
 
 function _deskTableHtml(cols, rows, opts = {}) {
@@ -360,6 +371,7 @@ function _deskTableHtml(cols, rows, opts = {}) {
 		body = rows
 			.map((raw) => {
 				const row = _normalizePattyRow(raw);
+				const printKey = _printRowKey(row);
 				const cells = cols
 					.map((c) => {
 						let v = _cellValue(row, c.field);
@@ -370,12 +382,14 @@ function _deskTableHtml(cols, rows, opts = {}) {
 						return `<td class="${cls}">${_esc(v)}</td>`;
 					})
 					.join("");
-				const printBtn = showPrint
+				const printBtn = showPrint && printKey
 					? `<td class="gwm-print-col"><button type="button" class="btn btn-xs btn-default gwm-print-btn" data-row="${_esc(
-							row.name
+							printKey
 					  )}">${__("Print Label")}</button></td>`
-					: "";
-				return `<tr data-row-name="${_esc(row.name)}">${cells}${printBtn}</tr>`;
+					: showPrint
+						? `<td class="gwm-print-col"></td>`
+						: "";
+				return `<tr data-row-name="${_esc(printKey)}">${cells}${printBtn}</tr>`;
 			})
 			.join("");
 	}
@@ -390,6 +404,7 @@ function _dataCardsHtml(rows, opts = {}) {
 	const cards = rows
 		.map((raw) => {
 			const row = _normalizePattyRow(raw);
+			const printKey = _printRowKey(row);
 			const title =
 				kind === "roll"
 					? _val(row, "batch_no") || __("Roll Waste")
@@ -400,7 +415,7 @@ function _dataCardsHtml(rows, opts = {}) {
 					: row.net_wastage
 						? `${_fmtNum(row.net_wastage)} Kg`
 						: __("Patty Wastage");
-			const printAttr = row.name ? `data-row="${_esc(row.name)}"` : "";
+			const printAttr = printKey ? `data-row="${_esc(printKey)}"` : "";
 			return `<div class="gwm-data-card">
 				<div class="gwm-data-card-head">
 					<strong>${_esc(title)}</strong>
@@ -418,7 +433,7 @@ function _dataCardsHtml(rows, opts = {}) {
 					${row.recycled ? `<div class="gwm-kv"><span>${__("Recycled")}</span><strong>${_esc(_fmtNum(row.recycled))} Kg</strong></div>` : ""}
 				</div>
 				${
-					opts.showPrint && row.name
+					opts.showPrint && printKey
 						? `<div class="gwm-card-foot"><button type="button" class="btn btn-xs btn-default gwm-print-btn" ${printAttr}>${__(
 								"Print Label"
 						  )}</button></div>`
@@ -627,7 +642,17 @@ function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 15000) {
 async function _renderPattyWastageView(sprName) {
 	const ctx = await _fetchWastageContext(sprName);
 	const table = _pattyWastageTable(ctx);
-	const rows = (table.rows || []).map(_normalizePattyRow);
+	const orderCode = _cstr(ctx.order_code);
+	const rows = (table.rows || []).map((raw) => {
+		const row = _normalizePattyRow(raw);
+		if (!row.order_code && orderCode) {
+			row.order_code = orderCode;
+		}
+		if (!row.party_code && orderCode) {
+			row.party_code = orderCode;
+		}
+		return row;
+	});
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
 	const isPreview = table.source === "gsm_preview_from_roll_lines";
 	const hint = isPreview
@@ -639,11 +664,11 @@ async function _renderPattyWastageView(sprName) {
 				<div class="gwm-card">
 					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${hint}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
-					${_dataCardsHtml(rows, { kind: "patty", showPrint: !isPreview })}
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
 				</div>
 				<div class="gwm-card" style="margin-top:12px;">
 					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(pattyCols, rows, { showPrint: !isPreview })}
+					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
 				</div>
 			</div>`
 			: `<div class="gwm-empty">${__(
@@ -701,7 +726,13 @@ function _rowDataFromPrintBtn($btn, rows) {
 	if (!rowName) {
 		return null;
 	}
-	return (rows || []).find((r) => r && r.name === rowName) || null;
+	return (
+		(rows || []).find((r) => r && String(r.name || "").trim() === rowName) ||
+		(rows || []).find((r) => r && `preview::${String(r.job_id || "").trim()}` === rowName) ||
+		(rows || []).find((r) => r && String(r.job_id || "").trim() === rowName) ||
+		(rows || []).find((r) => r && String(r.batch_no || "").trim() === rowName) ||
+		null
+	);
 }
 
 async function _bindWastagePrint($wrapper, sprName, tableField, rows) {

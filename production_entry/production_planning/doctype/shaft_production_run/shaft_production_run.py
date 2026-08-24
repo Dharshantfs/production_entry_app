@@ -11728,6 +11728,11 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 				getattr(job_row, "no_of_shafts", 0) or getattr(job_row, "no_of_shaft", 0)
 			)
 
+		party_code = _cstr(
+			getattr(rolls[0], "party_code", None)
+			or (getattr(job_row, "party_code", None) if job_row else None)
+			or ""
+		)
 		out[jid] = {
 			"job_id": jid,
 			"quality": _cstr(specs.get("quality") or getattr(job_row, "quality", None) or ""),
@@ -11739,6 +11744,8 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			"wastage": flt(wastage_total, 3),
 			"wastage_qty": flt(wastage_total, 3),
 			"net_wastage": flt(wastage_total, 3),
+			"order_code": party_code,
+			"party_code": party_code,
 		}
 	return out
 
