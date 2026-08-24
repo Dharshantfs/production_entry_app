@@ -654,10 +654,11 @@ async function _renderPattyWastageView(sprName) {
 		return row;
 	});
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
-	const isPreview = table.source === "gsm_preview_from_roll_lines";
+	const isPreview =
+		table.source === "gsm_preview_from_spr" || table.source === "gsm_preview_from_roll_lines";
 	const hint = isPreview
-		? __("Calculated from saved GSM roll lines — not written to desk SPR.")
-		: __("Saved on SPR.");
+		? __("Same formula as desk Shaft Production Run (unit trim width × GSM × meters). Not saved on SPR yet.")
+		: __("Saved on Shaft Production Run.");
 	const content =
 		rows.length > 0
 			? `<div class="gwm-shell">

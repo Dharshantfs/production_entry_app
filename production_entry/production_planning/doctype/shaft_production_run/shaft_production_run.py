@@ -11658,13 +11658,154 @@ def _spr_existing_patty_rows(spr, field: str) -> list[dict]:
 	)
 
 
+def _spr_patty_unit_text(spr) -> str:
+	return _cstr(spr.get("custom_unit") or spr.get("unit") or "").upper()
+
+
+def _spr_patty_is_valid_unit(spr) -> bool:
+	unit = _spr_patty_unit_text(spr)
+	return any(u in unit for u in ("UNIT 1", "UNIT 2", "UNIT 3", "UNIT 4"))
+
+
+def _spr_patty_row_keys(row) -> list[str]:
+	if row is None:
+		return []
+	if isinstance(row, dict):
+		return list(row.keys())
+	if hasattr(row, "as_dict"):
+		try:
+			return list((row.as_dict() or {}).keys())
+		except Exception:
+			pass
+	return []
+
+
+def _spr_patty_unit_base_width_inch(spr, gsm=0) -> float:
+	"""Desk wastage_automation.js: Unit 1/2 = 10\", Unit 3 = 12\", Unit 4 = 15/14 by GSM."""
+	unit = _spr_patty_unit_text(spr)
+	if "UNIT 3" in unit:
+		return 12.0
+	if "UNIT 4" in unit:
+		return 15.0 if flt(gsm) < 80 else 14.0
+	if "UNIT 1" in unit or "UNIT 2" in unit:
+		return 10.0
+	return 0.0
+
+
+def _spr_patty_machine_width_inch(spr) -> float:
+	doc = spr.as_dict() if hasattr(spr, "as_dict") else {}
+	for key, val in (doc or {}).items():
+		if isinstance(val, (list, dict, tuple)):
+			continue
+		kl = _cstr(key).lower()
+		if ("machine" in kl and "width" in kl) or kl in (
+			"total_machine_width",
+			"custom_machine_width",
+			"machine_width",
+		):
+			try:
+				w = flt(val or 0)
+			except Exception:
+				continue
+			if w > 0:
+				return w
+	return 63.0
+
+
+def _spr_patty_parse_combo_inches(raw) -> float:
+	text = _cstr(raw)
+	if not text:
+		return 0.0
+	total = 0.0
+	for token in re.split(r"[+,]", text):
+		digits = re.sub(r"[^\d.]", "", token or "")
+		n = flt(digits or 0)
+		if n > 0:
+			total += n
+	return total
+
+
+def _spr_patty_combination_total_inch(job_row, item_row=None) -> float:
+	"""Same field discovery as desk wastage_automation.js — never use production roll width_inch."""
+	combination_total = 0.0
+	if job_row:
+		combo_val = None
+		for key in _spr_patty_row_keys(job_row):
+			kl = _cstr(key).lower()
+			if "combin" in kl or "combo" in kl or kl == "combination_inches":
+				combo_val = _spr_row_get(job_row, key)
+				break
+		combination_total = _spr_patty_parse_combo_inches(combo_val)
+		# Leftover uses combination inches only — not production/sticker width_inch.
+		if combination_total <= 0:
+			for key in _spr_patty_row_keys(job_row):
+				kl = _cstr(key).lower()
+				if kl in ("combined_width", "total_width", "width"):
+					combination_total = flt(_spr_row_get(job_row, key) or 0)
+					if combination_total > 0:
+						break
+	if combination_total <= 0 and item_row:
+		combination_total = flt(
+			getattr(item_row, "width", 0)
+			or getattr(item_row, "job_width", 0)
+			or getattr(item_row, "custom_width", 0)
+			or 0
+		)
+	return combination_total
+
+
+def _spr_patty_trim_width_inch(spr, job_row, gsm, item_row=None) -> float:
+	"""Unit trim width + leftover (machine width − combination), same as desk client script."""
+	width = _spr_patty_unit_base_width_inch(spr, gsm)
+	machine = _spr_patty_machine_width_inch(spr)
+	combo = _spr_patty_combination_total_inch(job_row, item_row)
+	extra = max(0.0, machine - combo) if machine > 0 and combo > 0 else 0.0
+	return flt(width + extra)
+
+
+def _spr_patty_job_row(spr, jid):
+	found = _spr_shaft_job_for_roll(spr, jid)
+	if found:
+		return found
+	want = _cstr(jid)
+	if not want:
+		return None
+	for sj in spr.shaft_jobs or []:
+		cands = (
+			_cstr(_spr_job_id(sj)),
+			_cstr(getattr(sj, "job", None)),
+			_cstr(getattr(sj, "idx", None)),
+			_cstr(getattr(sj, "name", None)),
+			_cstr(getattr(sj, "work_order", None)),
+		)
+		if want in cands:
+			return sj
+	return None
+
+
+def _spr_patty_tail_weight_kg(gsm, width_inch, meter) -> float:
+	"""One-shaft patty tail: (GSM × width_inch × meter × 0.0254) / 1000."""
+	g, w, m = flt(gsm), flt(width_inch), flt(meter)
+	if g <= 0 or w <= 0 or m <= 0:
+		return 0.0
+	return flt((g * w * m * 0.0254) / 1000.0, 3)
+
+
 def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
-	"""Derive running patty wastage per job from saved roll lines (GSM parity with desk)."""
+	"""Running patty wastage — same concept as desk wastage_automation.js, not roll-width GSM-diff."""
+	if not _spr_patty_is_valid_unit(spr):
+		return {}
+
 	job_rolls: dict[str, list] = {}
 	for it in spr.items or []:
 		if not _spr_is_real_roll_item_row(it):
 			continue
-		jid = _cstr(getattr(it, "job", None) or getattr(it, "job_id", None))
+		jid = _cstr(
+			getattr(it, "job", None)
+			or getattr(it, "job_id", None)
+			or getattr(it, "custom_job", None)
+			or getattr(it, "work_order", None)
+		)
 		if not jid:
 			continue
 		job_rolls.setdefault(jid, []).append(it)
@@ -11673,60 +11814,55 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 
 	out: dict[str, dict] = {}
 	for jid, rolls in job_rolls.items():
-		job_row = None
-		for sj in spr.shaft_jobs or []:
-			if _cstr(_spr_job_id(sj)) == jid:
-				job_row = sj
-				break
+		item_row = rolls[0]
+		job_row = _spr_patty_job_row(spr, jid)
 
-		specs = _gsm_resolve_item_row_display_specs(rolls[0])
-		wastage_total = 0.0
-		for r in rolls:
-			sticker_gsm = flt(getattr(r, "gsm", 0) or specs.get("gsm") or 0)
-			produced_gsm = flt(getattr(r, "produced_gsm", 0) or 0)
-			net_w = flt(getattr(r, "net_weight", 0) or 0)
-			gross_w = flt(getattr(r, "gross_weight", 0) or 0)
-			polybag = flt(getattr(r, "custom_polybag_kgs", 0) or 0)
-			if net_w <= 0:
-				continue
-			if produced_gsm <= 0:
-				produced_gsm = sticker_gsm
-			if sticker_gsm <= 0:
-				sticker_gsm = produced_gsm
-			roll_waste = 0.0
-			if sticker_gsm > 0 and produced_gsm > 0:
-				roll_waste = abs(produced_gsm - sticker_gsm) / sticker_gsm * net_w
-			trim_waste = max(0.0, gross_w - net_w - polybag)
-			if roll_waste <= 0 and trim_waste > 0:
-				roll_waste = trim_waste
-			wastage_total += roll_waste
-
-		if wastage_total <= 0:
-			continue
-
-		width = flt(getattr(rolls[0], "width_inch", 0) or 0)
-		meter = flt(
-			getattr(rolls[0], "produced_length_mtrs", 0)
-			or getattr(rolls[0], "meter_roll", 0)
+		specs = _gsm_resolve_item_row_display_specs(item_row)
+		gsm = cint(
+			(_spr_row_get(job_row, "gsm") if job_row else 0)
+			or specs.get("gsm")
+			or getattr(item_row, "gsm", 0)
 			or 0
 		)
-		max_shaft = max(
-			cint(getattr(r, "custom_no_of_shaft", 0) or getattr(r, "no_of_shaft", 0) or 0) for r in rolls
-		)
+		meter = 0.0
 		if job_row:
-			width = width or flt(
-				getattr(job_row, "width_inch", 0)
-				or getattr(job_row, "combined_width", 0)
-				or getattr(job_row, "sticker_width", 0)
+			for key in _spr_patty_row_keys(job_row):
+				kl = _cstr(key).lower()
+				if "meter" in kl or kl in ("meter_roll", "meter__roll", "meter_per_roll"):
+					meter = flt(_spr_row_get(job_row, key) or 0)
+					if meter > 0:
+						break
+		if meter <= 0:
+			meter = flt(
+				getattr(item_row, "meter_roll", 0)
+				or getattr(item_row, "produced_length_mtrs", 0)
+				or getattr(item_row, "length", 0)
+				or getattr(item_row, "custom_meter_roll", 0)
+				or 0
 			)
-			meter = meter or flt(
-				getattr(job_row, "meter_roll", 0)
-				or getattr(job_row, "meter__roll", 0)
-				or getattr(job_row, "produced_length_mtrs", 0)
-			)
-			max_shaft = max_shaft or cint(
-				getattr(job_row, "no_of_shafts", 0) or getattr(job_row, "no_of_shaft", 0)
-			)
+		shafts = 0
+		if job_row:
+			for key in _spr_patty_row_keys(job_row):
+				if "shaft" in _cstr(key).lower():
+					shafts = cint(_spr_row_get(job_row, key) or 0)
+					if shafts > 0:
+						break
+		if shafts <= 0:
+			shafts = max(
+				cint(getattr(r, "custom_no_of_shaft", 0) or getattr(r, "no_of_shaft", 0) or 0)
+				for r in rolls
+			) or 1
+
+		width = _spr_patty_trim_width_inch(spr, job_row, gsm, item_row)
+		if width <= 0:
+			ic = _cstr(getattr(item_row, "item_code", "") or "")
+			if len(ic) == 16:
+				mm = flt(ic[12:16])
+				if mm > 0:
+					width = mm / 25.4
+		tail = _spr_patty_tail_weight_kg(gsm, width, meter)
+		if tail <= 0:
+			continue
 
 		party_code = _cstr(
 			getattr(rolls[0], "party_code", None)
@@ -11735,15 +11871,18 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 		)
 		out[jid] = {
 			"job_id": jid,
-			"quality": _cstr(specs.get("quality") or getattr(job_row, "quality", None) or ""),
-			"color": _cstr(specs.get("color") or getattr(job_row, "color", None) or ""),
-			"gsm": cint(specs.get("gsm") or getattr(rolls[0], "gsm", 0) or 0),
+			"quality": _cstr(specs.get("quality") or (getattr(job_row, "quality", None) if job_row else "") or ""),
+			"color": _cstr(specs.get("color") or (getattr(job_row, "color", None) if job_row else "") or ""),
+			"gsm": gsm,
 			"width_inch": width,
+			"width": width,
 			"meter_per_roll": meter,
-			"no_of_shafts": max_shaft,
-			"wastage": flt(wastage_total, 3),
-			"wastage_qty": flt(wastage_total, 3),
-			"net_wastage": flt(wastage_total, 3),
+			"no_of_shafts": shafts,
+			"wastage": tail,
+			"wastage_qty": tail,
+			"net_wastage": tail,
+			"recycled": 0,
+			"recycled_qty": 0,
 			"order_code": party_code,
 			"party_code": party_code,
 		}

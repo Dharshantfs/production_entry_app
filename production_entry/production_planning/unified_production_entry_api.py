@@ -3859,8 +3859,12 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 	items = list(getattr(spr_doc, "items", None) or [])
 	job_items = [it for it in items if _cstr(getattr(it, "job", "")) == job_id] if job_id else items
 
+	is_patty_wastage = "patty" in child_doctype.lower() or "patty" in _cstr(
+		out.get("parentfield") or ""
+	).lower()
 	width = flt(_gsm_pick_row_val(out, "width_inch", "width", "w") or 0)
-	if width <= 0:
+	# Patty width is unit trim (10/12/14/15), not the production roll width.
+	if width <= 0 and not is_patty_wastage:
 		for it in job_items:
 			width = flt(getattr(it, "width_inch", 0) or 0)
 			if width > 0:
@@ -3888,9 +3892,6 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 				break
 
 	batch_no = _cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll", "source_batch") or "")
-	is_patty_wastage = "patty" in child_doctype.lower() or "patty" in _cstr(
-		out.get("parentfield") or ""
-	).lower()
 	if not batch_no:
 		if is_patty_wastage:
 			for it in job_items:
@@ -4152,7 +4153,7 @@ def _gsm_patty_rows_have_saved_wastage(rows) -> bool:
 
 
 def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | None:
-	"""Read-only patty preview from saved roll lines — never written to SPR."""
+	"""Read-only patty preview using the desk SPR formula when child rows are empty."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_spr_compute_patty_wastage_by_job,
 		_spr_patty_wastage_fieldname,
@@ -4181,6 +4182,12 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 		jid = _cstr(row_dict.get("job_id") or "")
 		row_dict["parentfield"] = field
 		row_dict["name"] = f"preview::{jid}" if jid else ""
+		try:
+			row_dict = _gsm_write_child_row("Running Patty Wastage Row", row_dict)
+			row_dict["parentfield"] = field
+			row_dict["name"] = f"preview::{jid}" if jid else ""
+		except Exception:
+			pass
 		preview_rows.append(_gsm_enrich_child_row_from_spr(spr, row_dict, "Running Patty Wastage Row"))
 
 	if not preview_rows:
@@ -4193,7 +4200,7 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 		"columns": columns,
 		"rows": preview_rows,
 		"configured": True,
-		"source": "gsm_preview_from_roll_lines",
+		"source": "gsm_preview_from_spr",
 		"read_only": True,
 	}
 
