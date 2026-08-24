@@ -1778,6 +1778,7 @@ import {
   submitGsmMixRollSpr,
   mixRollItemOptions,
   mixRollWidthOptions,
+  nextMixRollCombinationSlot,
   mapMixRollLineFromServer,
   buildMixRollSavePayload,
   recalcMixRollRow,
@@ -4198,10 +4199,12 @@ async function addMixRollRow() {
     frappe.msgprint(__("Start mix roll production first."));
     return;
   }
-  const items = mixRollItemOptions(activeMixRoll.value);
-  const widths = mixRollWidthOptions(activeMixRoll.value);
-  const itemCode = items[0]?.item_code || "";
-  const widthInch = widths[0] || 0;
+  const existing = (mixRollLines.value || []).filter(
+    (r) => !activeMixRoll.value.spr_name || r.spr_name === activeMixRoll.value.spr_name
+  );
+  const slot = nextMixRollCombinationSlot(activeMixRoll.value, existing);
+  const itemCode = slot.itemCode || mixRollItemOptions(activeMixRoll.value)[0]?.item_code || "";
+  const widthInch = slot.widthInch || mixRollWidthOptions(activeMixRoll.value)[0] || 0;
   if (!itemCode) {
     frappe.msgprint(__("No item codes on this mix row."));
     return;
@@ -4256,6 +4259,9 @@ async function addMixRollRow() {
     line.gsm = activeMixRoll.value.gsm || line.gsm;
     line.width_inch = widthInch || line.width_inch;
     line.item_code = itemCode;
+    if (slot.itemName) {
+      line.item_name = slot.itemName;
+    }
     line.creation_seq = nextCreationSeq();
     mixRollLines.value = [line, ...mixRollLines.value];
     rollLines.value = sortRollLinesLifo([line, ...rollLines.value]);

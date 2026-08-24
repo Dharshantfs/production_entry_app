@@ -115,9 +115,77 @@ export function mixRollItemOptions(mixRow) {
 }
 
 export function mixRollWidthOptions(mixRow) {
-  const shaft = String(mixRow?.shaft || "");
+  const shaft = String(mixRow?.shaft || mixRow?.combination || "");
   const widths = shaft.match(/\d+(?:\.\d+)?/g) || [];
   return widths.map((w) => sprFlt(w)).filter((w) => w > 0);
+}
+
+function _mixWidthClose(a, b) {
+  return Math.abs(sprFlt(a) - sprFlt(b)) < 0.15;
+}
+
+function _itemCodeWidthInch(itemCode) {
+  const code = String(itemCode || "").trim();
+  if (code.length < 4) {
+    return 0;
+  }
+  const mm = sprFlt(code.slice(-4));
+  return mm > 0 ? mm / 25.4 : 0;
+}
+
+/**
+ * Next combination segment for Mix Roll "Add Roll Row".
+ * Combination 46+42+38 → first row 46", second 42", third 38", fourth 46" again.
+ * Picks the leftmost width that currently has the fewest rows (so a deleted 46" is filled before a second 42").
+ */
+export function nextMixRollCombinationSlot(mixRow, existingRows = []) {
+  const widths = mixRollWidthOptions(mixRow);
+  const items = mixRollItemOptions(mixRow);
+  const fallbackItem = items[0] || {};
+  if (!widths.length) {
+    return {
+      index: 0,
+      widthInch: sprFlt(fallbackItem.width_inch) || 0,
+      itemCode: fallbackItem.item_code || "",
+      itemName: fallbackItem.item_name || "",
+    };
+  }
+
+  const counts = widths.map(() => 0);
+  for (const row of existingRows || []) {
+    const w = sprFlt(row.width_inch);
+    if (w <= 0) {
+      continue;
+    }
+    let best = -1;
+    let bestDiff = 0.15;
+    for (let i = 0; i < widths.length; i++) {
+      const d = Math.abs(widths[i] - w);
+      if (d <= bestDiff) {
+        best = i;
+        bestDiff = d;
+      }
+    }
+    if (best >= 0) {
+      counts[best] += 1;
+    }
+  }
+
+  const min = Math.min(...counts);
+  const index = counts.findIndex((c) => c === min);
+  const widthInch = widths[index];
+  let item = items[index];
+  if (!item && items.length) {
+    item =
+      items.find((it) => _mixWidthClose(_itemCodeWidthInch(it.item_code), widthInch)) ||
+      items[0];
+  }
+  return {
+    index,
+    widthInch,
+    itemCode: item?.item_code || fallbackItem.item_code || "",
+    itemName: item?.item_name || fallbackItem.item_name || "",
+  };
 }
 
 export function normalizeSpiDiameterCbm(line = {}) {
