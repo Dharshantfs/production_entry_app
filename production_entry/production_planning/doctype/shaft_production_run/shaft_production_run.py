@@ -825,13 +825,13 @@ def _spr_rm_wip_shortage_tolerance(required_qty: float) -> float:
 
 
 def _spr_wip_topup_bump_qty(shortage_qty: float) -> float:
-	"""Round micro WIP gaps up so auto RM->WIP transfer still posts (e.g. 0.009 -> 0.01 Kg)."""
+	"""Round WIP gaps up to stock precision so extra production RM still posts (e.g. 0.0004 -> 0.001 Kg)."""
 	qty = flt(shortage_qty)
 	if qty <= 0:
 		return 0.0
-	tol = _spr_rm_wip_shortage_tolerance(qty)
-	if qty <= tol:
-		qty = tol
+	min_qty = 10 ** (-_spr_rm_stock_qty_precision())
+	if qty < min_qty:
+		qty = min_qty
 	return _spr_round_rm_stock_qty(qty)
 
 
@@ -3861,19 +3861,18 @@ class ShaftProductionRun(Document):
 	def _spr_prune_wip_topup_when_rm_transferred(
 		self, wo_doc, shortages: list[tuple[str, str, float, float, float]]
 	) -> list[tuple[str, str, float, float, float]]:
-		"""Drop WIP top-up only for micro-shortages when that RM is already on WO transfer."""
+		"""Keep extra-production / stock-precision WIP gaps even when WO already shows RM transferred."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		if not wo_doc or not shortages:
 			return []
 		out = []
+		min_qty = 10 ** (-_spr_rm_stock_qty_precision())
 		for item_code, wh, req, avl, short_qty in shortages:
 			ic = _cstr(item_code).strip()
 			if not ic:
 				continue
-			req_tol = _spr_rm_wip_shortage_tolerance(flt(req))
-			if _spr_wo_rm_transfer_remaining(wo_doc, ic) <= req_tol:
-				if flt(short_qty) <= req_tol:
-					continue
+			if _spr_round_rm_stock_qty(short_qty) < min_qty:
+				continue
 			out.append((item_code, wh, req, avl, short_qty))
 		return out
 
@@ -3936,7 +3935,6 @@ class ShaftProductionRun(Document):
 			req = flt(d.get("transfer_qty") or d.get("qty"))
 			if req <= 0:
 				continue
-			tol = _spr_rm_wip_shortage_tolerance(req)
 			batch_no = _cstr(d.get("batch_no")).strip()
 			if batch_no:
 				avl = _spr_batch_available_qty(ic, wip_wh, batch_no)
@@ -3946,7 +3944,8 @@ class ShaftProductionRun(Document):
 			if req <= avl:
 				continue
 			gap = req - avl
-			if gap > tol:
+			# Never cap extra production or 0.001 Kg ledger gaps — transfer RM instead.
+			if gap >= 10 ** (-_spr_rm_stock_qty_precision()):
 				continue
 			cap = _spr_floor_rm_stock_qty(avl)
 			if cap <= 0:
@@ -3980,10 +3979,6 @@ class ShaftProductionRun(Document):
 			qty = _spr_wip_topup_bump_qty(sq)
 			if not code or qty <= 0:
 				continue
-			tol = _spr_rm_wip_shortage_tolerance(qty)
-			if _spr_wo_rm_transfer_remaining(wo_doc, code) > tol:
-				# Normal RM->WIP shortage path should handle items still to transfer on the WO.
-				continue
 			if max_topup > 0 and qty > max_topup:
 				qty = max_topup
 			out[code] = out.get(code, 0.0) + qty
@@ -4002,9 +3997,6 @@ class ShaftProductionRun(Document):
 			required = _spr_round_rm_stock_qty(d.get("qty") or d.get("transfer_qty"))
 			wh = _cstr(d.get("s_warehouse"))
 			if not ic or required <= 0 or not wh:
-				continue
-			tol = _spr_rm_wip_shortage_tolerance(required)
-			if _spr_wo_rm_transfer_remaining(wo_doc, ic) > tol:
 				continue
 			available = _spr_round_rm_stock_qty(
 				frappe.db.get_value("Bin", {"item_code": ic, "warehouse": wh}, "actual_qty") or 0
@@ -4025,11 +4017,24 @@ class ShaftProductionRun(Document):
 			topup = self._spr_wip_topup_from_manufacture_se(mfg_se, wo_doc)
 		if not topup:
 			return
-		transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
+		fg_hint = max(flt(sum(flt(v) for v in topup.values())), 1.0)
+		transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup, chunk_total_qty=fg_hint)
 		if not transfer:
 			return
+		if cint(frappe.db.get_value("Stock Entry", transfer, "docstatus")) != 1:
+			skip_cap_flag_backup = frappe.flags.get("spr_skip_wo_transfer_qty_validation")
+			try:
+				se_doc = frappe.get_doc("Stock Entry", transfer)
+				frappe.flags.spr_skip_wo_transfer_qty_validation = True
+				se_doc.flags.ignore_validate_work_order = True
+				se_doc.flags.ignore_permissions = True
+				se_doc.flags.ignore_validate = True
+				se_doc.submit()
+			except Exception:
+				return
+			finally:
+				frappe.flags.spr_skip_wo_transfer_qty_validation = skip_cap_flag_backup
 		if cint(frappe.db.get_value("Stock Entry", transfer, "docstatus")) == 1:
-			# Force stock ledger sync: recompute bin actual_qty for transferred items
 			self._force_sync_stock_bins_after_transfer(transfer, wo_doc)
 			frappe.db.savepoint(mfg_submit_savepoint)
 			raise _SprWipTopupRetry()
@@ -4084,8 +4089,8 @@ class ShaftProductionRun(Document):
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "SPR force bin sync (SE)")
 
-	def _create_wip_topup_mtfm_for_manufacture(self, wo_doc, short_by_item: dict) -> str:
-		"""One RM->WIP transfer when Manufacture cannot consume WIP (batch/ledger gap after WO transfer)."""
+	def _create_wip_topup_mtfm_for_manufacture(self, wo_doc, short_by_item: dict, chunk_total_qty: float = 0) -> str:
+		"""One RM->WIP transfer when Manufacture cannot consume WIP (extra production or ledger gap)."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		if not wo_doc or not short_by_item:
 			return ""
@@ -4101,7 +4106,7 @@ class ShaftProductionRun(Document):
 			return ""
 		se, _wip_b = self._new_mtfm_stock_entry_shell(
 			wo_doc,
-			0.001,
+			flt(chunk_total_qty) or max(sum(flt(v) for v in short_by_item.values()), 1.0),
 			today(),
 			nowtime(),
 			short_by_item=short_by_item,
@@ -4194,17 +4199,14 @@ class ShaftProductionRun(Document):
 			required = _spr_round_rm_stock_qty(d.get("transfer_qty") or d.get("qty"))
 			if required <= 0:
 				continue
-			tol = _spr_rm_wip_shortage_tolerance(required)
-			if _spr_wo_rm_transfer_remaining(wo_doc, ic) > tol:
-				continue
 			available = _spr_round_rm_stock_qty(_spr_rm_available_qty(ic, wip_wh))
-			shortage = required - available
-			if shortage <= tol:
+			shortage = _spr_round_rm_stock_qty(required - available)
+			if shortage <= 0:
 				continue
 			bump = _spr_wip_topup_bump_qty(shortage)
 			item_src = self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
 			rm_wh, rm_avl = _spr_find_rm_warehouse_with_stock(company, ic, wip_wh, item_src, bump)
-			if rm_avl <= _spr_rm_wip_shortage_tolerance(bump):
+			if _spr_round_rm_stock_qty(rm_avl) < bump:
 				continue
 			if not rm_wh:
 				rm_wh = item_src or _spr_company_rm_warehouse(company, wip_wh) or _("RM warehouse")
@@ -5229,14 +5231,10 @@ class ShaftProductionRun(Document):
 	def _mtfm_fg_qty_for_shortage_transfer(
 		self, wo_doc, short_by_item: dict, chunk_total_qty: float
 	) -> float:
-		"""Cap MTFM fg_completed_qty so over-produced SPR runs do not exceed WO transfer allowance."""
+		"""FG qty for extra-production / WIP top-up MTFM — must cover the RM shortage, not WO remaining."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		chunk_total_qty = flt(chunk_total_qty)
-		remaining_fg, _allowed_total, _already, _over_pct = self._wo_allowed_remaining_qty(wo_doc)
 		wo_base = flt(getattr(wo_doc, "qty", 0))
-		cap = remaining_fg if remaining_fg > 0 else wo_base
-		if cap <= 0:
-			cap = chunk_total_qty or 1.0
 
 		fg_from_short = 0.0
 		bom_no = _cstr(getattr(wo_doc, "bom_no", None))
@@ -5247,12 +5245,7 @@ class ShaftProductionRun(Document):
 				if full_need > 0 and flt(short_qty) > 0:
 					fg_from_short = max(fg_from_short, (flt(short_qty) / full_need) * wo_base)
 
-		target = chunk_total_qty if chunk_total_qty > 0 else cap
-		if fg_from_short > 0:
-			target = min(target, flt(fg_from_short) * 1.02)
-		target = min(target, cap)
-		if target <= 0:
-			target = min(chunk_total_qty, cap) if cap > 0 else (chunk_total_qty or 1.0)
+		target = max(chunk_total_qty, flt(fg_from_short) * 1.05, 1.0)
 		return max(flt(target), 0.001)
 
 	def _prune_short_by_item_to_wo_transfer_remaining(self, wo_doc, short_by_item: dict) -> dict:
@@ -5399,12 +5392,20 @@ class ShaftProductionRun(Document):
 
 		for ic in list(short_by_item.keys()):
 			qty = _spr_round_rm_stock_qty(short_by_item.get(ic))
-			tol = _spr_rm_wip_shortage_tolerance(qty)
-			if qty <= tol:
+			if qty <= 0:
 				short_by_item.pop(ic, None)
 				continue
 			short_by_item[ic] = qty
-		short_by_item = self._prune_short_by_item_to_wo_transfer_remaining(wo_doc, dict(short_by_item))
+		original_short = dict(short_by_item)
+		pruned = self._prune_short_by_item_to_wo_transfer_remaining(wo_doc, dict(short_by_item))
+		merged = dict(pruned)
+		for ic, qty in original_short.items():
+			if ic in merged:
+				continue
+			if flt(qty) > 0:
+				merged[ic] = _spr_wip_topup_bump_qty(qty)
+		short_by_item = merged
+		ignore_wo_transfer = len(merged) > len(pruned)
 		if not short_by_item:
 			return self._find_recent_spr_wo_mtfm_transfer(wo_id) or ""
 
@@ -5417,7 +5418,9 @@ class ShaftProductionRun(Document):
 			short_by_item=short_by_item,
 		)
 		se.from_bom = 0
-		if not self._append_mtfm_shortage_lines(se, wo_doc, dict(short_by_item), wip_wh):
+		if not self._append_mtfm_shortage_lines(
+			se, wo_doc, dict(short_by_item), wip_wh, ignore_wo_transfer=ignore_wo_transfer
+		):
 			return self._find_recent_spr_wo_mtfm_transfer(wo_id) or ""
 		return self._spr_insert_shortage_transfer_draft(se)
 

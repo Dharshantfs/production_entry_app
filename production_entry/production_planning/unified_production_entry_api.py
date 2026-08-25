@@ -910,6 +910,8 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 		fields.append("custom_party_code")
 	if frappe.db.has_column("Shaft Production Run", "custom_label"):
 		fields.append("custom_label")
+	if frappe.db.has_column("Shaft Production Run", "is_mix_roll"):
+		fields.append("is_mix_roll")
 	rows = frappe.get_all(
 		"Shaft Production Run",
 		filters=filters,
@@ -919,6 +921,8 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	)
 	out = []
 	for row in rows or []:
+		if cint(row.get("is_mix_roll")):
+			continue
 		pp_id = _cstr(row.get("production_plan")).strip()
 		order_code = _cstr(row.get("custom_order_code") or row.get("custom_party_code") or "")
 		if not order_code and pp_id:
@@ -1102,6 +1106,11 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			continue
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		is_mix_roll = spr_doc_is_mix_roll(spr)
+		if is_mix_roll:
+			# Mix rolls stay in the mix workspace. Do not inject them into the
+			# main GSM grid on resume — that re-checks mix after the operator
+			# removed it from this shift (or after another shift was closed).
+			continue
 		for line in _gsm_serialize_spr_roll_lines_for_grid(spr):
 			line["is_mix_roll_row"] = 1 if is_mix_roll else 0
 			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))

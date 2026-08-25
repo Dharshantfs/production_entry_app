@@ -184,6 +184,10 @@
               <span>{{ mix.gsm }} GSM · {{ mix.shaft || "—" }}</span>
               <span class="gpe-muted">Chart: {{ formatMixPlanningKey(mix.planning_date_key) }}</span>
               <span v-if="mix.spr_name" class="gpe-muted">SPR: {{ mix.spr_name }}</span>
+              <span
+                v-if="mix.spr_shift && mix.spr_shift !== shift"
+                class="gpe-muted"
+              >Opened on {{ mix.spr_shift }}{{ mix.spr_run_date ? " · " + mix.spr_run_date : "" }}</span>
             </div>
             <button
               type="button"
@@ -194,7 +198,7 @@
           </div>
           <div v-if="shiftOpened && activeMixRoll" class="gpe-mix-active-banner">
             Active: <strong>{{ activeMixRoll.label }}</strong>
-            <button type="button" class="gpe-link-btn" @click="clearActiveMixRoll">Clear</button>
+            <button type="button" class="gpe-link-btn" @click="clearActiveMixRoll">Remove from this shift</button>
           </div>
         </div>
 
@@ -275,6 +279,12 @@
               <span class="gpe-batch-badge">{{ shift }} · {{ shiftBatchPrefix }}</span>
             </div>
             <button
+              type="button"
+              class="gpe-btn gpe-hide-session-btn"
+              :title="sessionHeaderCollapsed ? 'Show session details' : 'Hide session details to see more roll rows'"
+              @click="sessionHeaderCollapsed = !sessionHeaderCollapsed"
+            >{{ sessionHeaderCollapsed ? "Show session" : "Hide session" }}</button>
+            <button
               v-if="shiftOpened"
               type="button"
               class="gpe-btn gpe-btn-warn gpe-close-shift-btn"
@@ -285,6 +295,7 @@
             </button>
           </div>
           <div v-if="shiftResumeBanner" class="gpe-resume-banner">{{ shiftResumeBanner }}</div>
+          <div v-show="!sessionHeaderCollapsed">
           <div v-if="shiftOpened && shiftOpenedBy" class="gpe-shift-opened-by">
             Opened by {{ shiftOpenedBy }}
           </div>
@@ -396,10 +407,11 @@
               <button type="button" class="gpe-link-btn" @click="clearSelection">Clear</button>
             </div>
           </div>
+          </div>
         </div>
 
-        <div class="gpe-entry-workspace">
-        <div class="gpe-metrics gpe-metrics-compact">
+        <div class="gpe-entry-workspace" :class="{ 'gpe-session-collapsed': sessionHeaderCollapsed }">
+        <div v-show="!sessionHeaderCollapsed" class="gpe-metrics gpe-metrics-compact">
           <div class="gpe-metric slate">Board plan (Kg)<br /><strong>{{ formatKg(boardDayTotalKg) }}</strong></div>
           <div class="gpe-metric blue">Total Entry (Kg)<br /><strong>{{ formatKg(metrics.totalGross) }}</strong></div>
           <div class="gpe-metric green">Net Production (Kg)<br /><strong>{{ formatKg(metrics.totalNet) }}</strong></div>
@@ -474,6 +486,9 @@
               <button type="button" class="gpe-btn" :disabled="mixRollBusy || !activeMixRoll?.spr_name" @click="addMixRollRow">
                 {{ mixRollBusy ? "…" : "Add Roll Row" }}
               </button>
+              <button type="button" class="gpe-btn gpe-btn-warn" :disabled="mixRollBusy" @click="clearActiveMixRoll">
+                Remove from this shift
+              </button>
             </div>
           </div>
           <div class="gpe-grid-wrap gpe-mix-grid-wrap">
@@ -499,10 +514,12 @@
                   <td>
                     <input v-model="row.gross_weight" type="text" class="gpe-inp" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
                   </td>
-                  <td class="gpe-actions">
+                  <td>
+                    <div class="gpe-actions">
                     <button v-if="!row.row_locked" type="button" class="gpe-btn gpe-btn-sm" @click="saveMixRollRow(row)">Save</button>
                     <button v-else type="button" class="gpe-btn gpe-btn-sm" @click="editRow(row)">Edit</button>
                     <button type="button" class="gpe-btn gpe-btn-sm" @click="removeMixRollRow(row)">Remove</button>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -550,11 +567,11 @@
             </thead>
             <tbody>
               <tr
-                v-for="(row, idx) in rollLines"
+                v-for="(row, idx) in fabricRollLines"
                 :key="row._id"
                 :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked, 'gpe-row-wasted': row.is_wasted }]"
               >
-                <td class="gpe-sticky-col gpe-sticky-0">{{ rollLines.length - idx }}</td>
+                <td class="gpe-sticky-col gpe-sticky-0">{{ fabricRollLines.length - idx }}</td>
                 <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code }}</td>
                 <td class="gpe-num">{{ row.job_id || row.job || "—" }}</td>
                 <td>{{ row.quality }}</td>
@@ -562,7 +579,8 @@
                 <td class="gpe-num">{{ row.gsm }}</td>
                 <td class="gpe-num">{{ widthDisplay(row) }}</td>
                 <td class="gpe-num">{{ row.meter_roll }}</td>
-                <td class="gpe-len-cell gpe-num">
+                <td class="gpe-num">
+                  <div class="gpe-len-cell">
                   <input
                     v-model.number="row.produced_length_mtrs"
                     type="number"
@@ -572,6 +590,7 @@
                     @input="onRowEdit(row)"
                   />
                   <span class="gpe-unit-suffix">MTR</span>
+                  </div>
                 </td>
                 <td class="gpe-num">{{ row.produced_gsm }}</td>
                 <td class="gpe-num">{{ row.batch_no }}</td>
@@ -645,7 +664,8 @@
                     </option>
                   </select>
                 </td>
-                <td class="gpe-actions">
+                <td>
+                  <div class="gpe-actions">
                   <button
                     v-if="!row.row_locked"
                     type="button"
@@ -678,6 +698,7 @@
                     class="gpe-btn sm"
                     @click="removeMixRollRow(row)"
                   >Remove</button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -1494,9 +1515,13 @@
           </p>
           <div class="gpe-submit-summary-totals">
             <span><strong>{{ submitConfirmRolls.length }}</strong> roll(s)</span>
-            <span>Net <strong>{{ formatKg(metrics.totalNet) }}</strong> Kg</span>
-            <span>Gross <strong>{{ formatKg(metrics.totalGross) }}</strong> Kg</span>
+            <span>Net <strong>{{ formatKg(submitConfirmNetKg) }}</strong> Kg</span>
+            <span>Gross <strong>{{ formatKg(submitConfirmGrossKg) }}</strong> Kg</span>
           </div>
+          <p v-if="submitIncompleteRolls.length" class="gpe-hint gpe-submit-skip-hint">
+            {{ submitIncompleteRolls.length }} grid row(s) not included (missing produced length, gross weight, or Save Row):
+            {{ submitIncompleteRolls.map((r) => r.batch_no || r._id).join(", ") }}
+          </p>
           <h4 class="gpe-submit-section-title">Orders</h4>
           <table class="gpe-confirm-grid">
             <thead>
@@ -2246,6 +2271,9 @@ const mixRollLoading = ref(false);
 const mixRollBusy = ref(false);
 const activeMixRoll = ref(null);
 const mixRollLines = ref([]);
+const dismissedMixSprs = ref([]);
+const persistedActiveMixSpr = ref("");
+const sessionHeaderCollapsed = ref(false);
 const shiftLoading = ref(false);
 const selectedShiftEntry = ref(null);
 const summaryShiftDate = ref(frappe.datetime.get_today());
@@ -3575,6 +3603,10 @@ const metrics = computed(() => {
 });
 
 const sessionRollCount = computed(() => {
+  const grid = rollLines.value.filter((r) => !r.is_wasted && !r.is_mix_roll_row && !r.is_bundle_row).length;
+  if (grid > 0) {
+    return grid;
+  }
   if (selectedEntries.value.length) {
     let total = 0;
     const seen = new Set();
@@ -3797,7 +3829,7 @@ const submitSprList = computed(() => {
     if (r.is_bundle_row || r.is_wasted) {
       continue;
     }
-    if (r.pp_id && r.row_locked && r.batch_no) {
+    if (r.pp_id && r.batch_no && isCompleteGsmRoll(r)) {
       ppWithRolls.add(r.pp_id);
     }
   }
@@ -3892,8 +3924,33 @@ const canConfirmShiftOpen = computed(() => {
   return true;
 });
 
+function isCompleteGsmRoll(r) {
+  return (
+    !!r &&
+    !r.is_bundle_row &&
+    !r.is_wasted &&
+    !!r.batch_no &&
+    sprFlt(r.produced_length_mtrs) > 0 &&
+    sprNormalizeGrossWeightInput(r.gross_weight) > 0
+  );
+}
+
+const fabricRollLines = computed(() => (rollLines.value || []).filter((r) => !r.is_mix_roll_row));
+
 const submitConfirmRolls = computed(() =>
-  rollLines.value.filter((r) => !r.is_bundle_row && !r.is_wasted && r.row_locked && r.batch_no)
+  rollLines.value.filter((r) => isCompleteGsmRoll(r))
+);
+
+const submitIncompleteRolls = computed(() =>
+  fabricRollLines.value.filter((r) => !r.is_wasted && !r.is_bundle_row && !isCompleteGsmRoll(r))
+);
+
+const submitConfirmNetKg = computed(() =>
+  submitConfirmRolls.value.reduce((s, r) => s + sprFlt(r.net_weight), 0)
+);
+
+const submitConfirmGrossKg = computed(() =>
+  submitConfirmRolls.value.reduce((s, r) => s + sprNormalizeGrossWeightInput(r.gross_weight), 0)
 );
 
 const submitOrderSummary = computed(() => {
@@ -4008,18 +4065,22 @@ async function restoreActiveMixRollFromSession() {
     return;
   }
   const mixRow = rollLines.value.find((r) => r.is_mix_roll_row && r.spr_name);
-  let mixMeta = null;
-  if (mixRow?.spr_name) {
-    mixMeta = mixRollCandidates.value.find((m) => m.spr_name === mixRow.spr_name);
+  const savedSpr = _cstr(persistedActiveMixSpr.value);
+  const sprName = _cstr(mixRow?.spr_name || savedSpr);
+  if (!sprName || dismissedMixSprs.value.includes(sprName)) {
+    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+    mixRollLines.value = [];
+    persistedActiveMixSpr.value = "";
+    return;
   }
+  let mixMeta = mixRollCandidates.value.find((m) => m.spr_name === sprName);
   if (!mixMeta) {
-    mixMeta = mixRollCandidates.value.find(
-      (m) => m.spr_name && !m._submitted && cint(m.spr_docstatus) !== 1
-    );
-  }
-  if (!mixMeta && mixRow?.spr_name) {
+    if (!mixRow) {
+      persistedActiveMixSpr.value = "";
+      return;
+    }
     mixMeta = {
-      spr_name: mixRow.spr_name,
+      spr_name: sprName,
       label: mixRow.party_code || "Mix Roll",
       gsm: mixRow.gsm,
       color_transition: mixRow.color || "",
@@ -4027,18 +4088,30 @@ async function restoreActiveMixRollFromSession() {
       date_key: "",
     };
   }
-  if (!mixMeta?.spr_name) {
+  const sprDate = _cstr(mixMeta.spr_run_date).slice(0, 10);
+  const run = _cstr(runDate.value).slice(0, 10);
+  if (sprDate && run && sprDate !== run) {
+    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+    mixRollLines.value = [];
+    persistedActiveMixSpr.value = "";
+    return;
+  }
+  if (mixMeta.spr_shift && _cstr(mixMeta.spr_shift) !== _cstr(shift.value)) {
+    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+    mixRollLines.value = [];
+    persistedActiveMixSpr.value = "";
     return;
   }
   if (!(await isMixSprDraft(mixMeta.spr_name))) {
-    // Submitted mix SPR — drop orphan mix rows from this shift grid and do not reopen workspace.
     rollLines.value = rollLines.value.filter(
       (r) => !(r.is_mix_roll_row && r.spr_name === mixMeta.spr_name)
     );
     mixRollLines.value = mixRollLines.value.filter((r) => r.spr_name !== mixMeta.spr_name);
+    persistedActiveMixSpr.value = "";
     return;
   }
   activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name };
+  persistedActiveMixSpr.value = mixMeta.spr_name;
   if (!mixRollLines.value.length) {
     await refreshMixRollLinesFromSpr();
   }
@@ -4130,6 +4203,8 @@ async function startMixRollProduction(mix) {
       unit: headerUnit.value || filterUnit.value,
     });
     activeMixRoll.value = { ...mix, ...(res.mix || {}), spr_name: res.spr_name };
+    dismissedMixSprs.value = dismissedMixSprs.value.filter((n) => n !== res.spr_name);
+    persistedActiveMixSpr.value = res.spr_name;
     const rows = (res.roll_lines || []).map((line) =>
       mapMixRollLineFromServer({ ...line, spr_name: res.spr_name }, activeMixRoll.value)
     );
@@ -4145,8 +4220,15 @@ async function startMixRollProduction(mix) {
 }
 
 function clearActiveMixRoll() {
+  const spr = _cstr(activeMixRoll.value?.spr_name);
+  if (spr && !dismissedMixSprs.value.includes(spr)) {
+    dismissedMixSprs.value = [...dismissedMixSprs.value, spr];
+  }
   activeMixRoll.value = null;
+  persistedActiveMixSpr.value = "";
   mixRollLines.value = [];
+  rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+  scheduleAutosave();
 }
 
 async function removeMixRollRow(row) {
@@ -4480,7 +4562,6 @@ const canSubmitEntry = computed(() => {
   return submitConfirmRolls.value.every(
     (r) =>
       (r.is_mix_roll_row ? r.spr_name : sprNameForPp(r.pp_id)) &&
-      r.row_locked &&
       r.batch_no &&
       sprNormalizeGrossWeightInput(r.gross_weight) > 0
   );
@@ -5187,6 +5268,7 @@ async function clearGridEntries() {
       rollLines.value = [];
       mixRollLines.value = [];
       activeMixRoll.value = null;
+      persistedActiveMixSpr.value = "";
       sessionJobApiBaseline.value = {};
       forceNewSprSession.value = false;
       resetBatchSeriesCache();
@@ -5296,6 +5378,14 @@ async function openSubmitConfirmDialog() {
         : __("Create SPRs, enter rolls, and Save Row on each line before submit.")
     );
     return;
+  }
+  const unsaved = submitConfirmRolls.value.filter((r) => !r.row_locked);
+  for (const row of unsaved) {
+    try {
+      await saveRow(row);
+    } catch (e) {
+      console.error(e);
+    }
   }
   submitDialogPhase.value = "review";
   submitSuccessResult.value = null;
@@ -6512,6 +6602,11 @@ function applyResumePayload(msg, options = {}) {
   } else {
     rollLines.value = sortRollLinesLifo(serverRows);
   }
+  if (dismissedMixSprs.value.length) {
+    rollLines.value = rollLines.value.filter(
+      (r) => !r.is_mix_roll_row || !dismissedMixSprs.value.includes(_cstr(r.spr_name))
+    );
+  }
   rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
   if (shiftOpened.value) {
     if (msg.selection_locked != null) {
@@ -6854,6 +6949,7 @@ function clearGsmAfterClose() {
   rollLines.value = [];
   mixRollLines.value = [];
   activeMixRoll.value = null;
+  persistedActiveMixSpr.value = "";
   mixRollCandidates.value = [];
   sessionSprs.value = {};
   sessionJobApiBaseline.value = {};
@@ -7850,6 +7946,9 @@ function persistDraft() {
       maxRollSuffix: maxRollSuffix.value,
       creationSeq: creationSeq.value,
       batchContextKey: currentBatchContextKey(),
+      sessionHeaderCollapsed: sessionHeaderCollapsed.value,
+      dismissedMixSprs: dismissedMixSprs.value,
+      activeMixSpr: activeMixRoll.value?.spr_name || persistedActiveMixSpr.value || "",
     };
     if (shiftOpened.value) {
       payload.selectedEntries = selectedEntries.value;
@@ -7884,6 +7983,15 @@ function restoreDraft(options = {}) {
     }
     if (d.shift) {
       shift.value = d.shift;
+    }
+    if (typeof d.sessionHeaderCollapsed === "boolean") {
+      sessionHeaderCollapsed.value = d.sessionHeaderCollapsed;
+    }
+    if (Array.isArray(d.dismissedMixSprs)) {
+      dismissedMixSprs.value = d.dismissedMixSprs.filter(Boolean);
+    }
+    if (d.activeMixSpr && !dismissedMixSprs.value.includes(d.activeMixSpr)) {
+      persistedActiveMixSpr.value = d.activeMixSpr;
     }
     if (d.filterDate) {
       filterDate.value = d.filterDate;
@@ -8311,8 +8419,11 @@ onUnmounted(() => {
 .gpe-session-head-row .gpe-session-title {
   margin: 0;
 }
-.gpe-close-shift-btn {
+.gpe-hide-session-btn {
   margin-left: auto;
+}
+.gpe-close-shift-btn {
+  margin-left: 0;
 }
 .gpe-shift-status-strip {
   display: flex;
@@ -9698,6 +9809,9 @@ onUnmounted(() => {
   box-shadow: inset -8px 0 12px -8px rgba(15, 23, 42, 0.12);
   -webkit-overflow-scrolling: touch;
 }
+.gpe-session-collapsed .gpe-grid-wrap-entry {
+  min-height: 68vh;
+}
 .gpe-grid-entry {
   width: max-content;
   min-width: 100%;
@@ -9713,6 +9827,7 @@ onUnmounted(() => {
 .gpe-grid-entry tbody td {
   font-size: 19px;
   font-weight: 600;
+  vertical-align: middle;
 }
 .gpe-grid-entry td.gpe-num,
 .gpe-grid-entry th.gpe-num {
@@ -9746,6 +9861,8 @@ onUnmounted(() => {
 }
 .gpe-len-cell {
   display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
 }
@@ -9756,17 +9873,24 @@ onUnmounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: #64748b;
+  line-height: 1;
 }
 .gpe-btn-label,
 .gpe-btn-qc {
-  font-size: 13px;
-  padding: 6px 10px;
+  font-size: 12px;
+  padding: 6px 8px;
+  white-space: nowrap;
 }
 .gpe-grid-wrap {
   overflow: auto;
   max-height: 420px;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
+}
+.gpe-grid-wrap.gpe-grid-wrap-entry {
+  max-height: none;
+  min-height: 200px;
+  flex: 1 1 auto;
 }
 .gpe-grid {
   width: 100%;
@@ -9820,9 +9944,20 @@ onUnmounted(() => {
 }
 .gpe-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 4px;
-  min-width: 220px;
+  min-width: 0;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.gpe-grid-entry td.gpe-actions .gpe-btn,
+.gpe-grid-entry td.gpe-actions .gpe-btn.sm {
+  font-size: 12px;
+  padding: 6px 8px;
+  min-height: 32px;
+  white-space: nowrap;
 }
 .gpe-wo-link {
   color: #4f46e5;
