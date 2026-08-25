@@ -4910,12 +4910,12 @@ function spr_register_spr_page_buttons(frm) {
 		}
 	});
 	addInner(function () {
-		if (!frm.is_new() && cint(frm.doc.docstatus) === 1 && frm.doc.manufacturing_entries) {
+		if (!frm.is_new() && cint(frm.doc.docstatus) < 2) {
 			frm.page.add_inner_button(
 				__('SPR — Sync Batches'),
 				function () {
 					frappe.confirm(
-						__('Create Batch masters from roll lines and assign them to Manufacture entry FG rows?'),
+						__('Post any missing Manufacture rows and activate empty roll batches from this SPR?'),
 						function () {
 							frappe.call({
 								method:

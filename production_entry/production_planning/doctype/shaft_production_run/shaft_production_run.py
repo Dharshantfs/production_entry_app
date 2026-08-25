@@ -6913,7 +6913,15 @@ class ShaftProductionRun(Document):
 			extra_se = created_entries_by_wo.get(wo_id) or []
 			need_rows = self._spr_rows_needing_manufacture(wo_doc, rows, extra_se_names=extra_se)
 			if need_rows:
-				missing.append(f"{wo_id} ({len(need_rows)} roll(s))")
+				need_batches = [
+					_cstr(r.get("batch_no")).strip()
+					for r in need_rows
+					if _cstr(r.get("batch_no")).strip()
+				]
+				detail = f"{wo_id} ({len(need_rows)} roll(s))"
+				if need_batches:
+					detail += ": " + ", ".join(need_batches[:8])
+				missing.append(detail)
 				if extra_se:
 					hints.append(
 						_("WO {0}: Manufacture entry {1} was created but {2} roll batch(es) were not recognised.").format(
@@ -7185,10 +7193,8 @@ class ShaftProductionRun(Document):
 			)
 			if not missing_rows:
 				continue
-			# Main loop already submitted manufacture — never backfill (MTFM commit would
-			# persist those entries then post duplicates).
-			if existing_this_pass:
-				continue
+			# Leftover rolls (often 1 extra-production row after the first chunk) still need
+			# their own Manufacture entry. extra_se_names keeps already-posted batches out.
 			self._spr_run_backfill_manufacture_for_wo(
 				wo_id,
 				wo_doc,
@@ -7201,8 +7207,8 @@ class ShaftProductionRun(Document):
 	def _spr_sync_backfill_missing_manufacture(self) -> list[str]:
 		"""Create/submit missing Manufacture entries for SPR rolls with auto RM transfer. Never throws.
 
-		When called from Sync Batch: if Manufacture STE already exists, only repair serial/batch
-		bundles on those entries — never create a duplicate Manufacture STE.
+		Repairs serial/batch bundles on existing Manufacture entries, then posts leftover rolls
+		that are not yet on those entries (no duplicate batches).
 		"""
 		submitted_drafts = self._spr_submit_all_draft_manufactures_for_spr() or []
 		existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
@@ -7216,15 +7222,6 @@ class ShaftProductionRun(Document):
 						frappe.get_traceback(),
 						f"SPR sync bundle repair:{self.name}:{se_name}",
 					)
-			merged = [
-				x.strip()
-				for x in _cstr(self.get("manufacturing_entries")).split(",")
-				if x and x.strip()
-			]
-			merged = sorted(set(merged + all_existing))
-			if merged:
-				self.db_set("manufacturing_entries", ", ".join(merged))
-			return []
 
 		wo_rows: dict[str, list] = defaultdict(list)
 		for r in self.items or []:
@@ -7232,10 +7229,24 @@ class ShaftProductionRun(Document):
 			if wo and flt(self._row_fg_qty(r)) > 0:
 				wo_rows[wo].append(r)
 		if not wo_rows:
-			return submitted_drafts
+			if all_existing:
+				merged = [
+					x.strip()
+					for x in _cstr(self.get("manufacturing_entries")).split(",")
+					if x and x.strip()
+				]
+				merged = sorted(set(merged + all_existing))
+				if merged:
+					self.db_set("manufacturing_entries", ", ".join(merged))
+			return []
 
-		created_se: list[str] = list(submitted_drafts)
+		created_se: list[str] = list(all_existing)
 		created_entries_by_wo: dict[str, list] = defaultdict(list)
+		for se_name in all_existing:
+			wo = _cstr(frappe.db.get_value("Stock Entry", se_name, "work_order") or "")
+			if wo:
+				created_entries_by_wo[wo].append(se_name)
+
 		self.flags._spr_allow_manufacture_posting = True
 		try:
 			for wo_id, rows in wo_rows.items():
@@ -7243,8 +7254,8 @@ class ShaftProductionRun(Document):
 					continue
 				wo_doc = frappe.get_doc("Work Order", wo_id)
 				missing_rows = self._spr_rows_needing_manufacture(
-				wo_doc, rows, extra_se_names=created_entries_by_wo.get(wo_id) or []
-			)
+					wo_doc, rows, extra_se_names=created_entries_by_wo.get(wo_id) or []
+				)
 				if not missing_rows:
 					continue
 				se_name = self._spr_run_backfill_manufacture_for_wo(
@@ -7268,7 +7279,8 @@ class ShaftProductionRun(Document):
 			]
 			merged = sorted(set(existing + created_se))
 			self.db_set("manufacturing_entries", ", ".join(merged))
-		return created_se
+		existing_set = set(all_existing)
+		return [x for x in created_se if x not in existing_set]
 
 	def _spr_remove_bom_fg_duplicates_from_se_db(self, se, production_item: str, spr_rows: list | None = None) -> int:
 		"""After SE insert + reload, delete BOM-generated ghost FG lines from DB and in-memory se.items.
@@ -15129,8 +15141,8 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
 	spr = frappe.get_doc("Shaft Production Run", spr_name)
-	if cint(spr.docstatus) != 1:
-		frappe.throw(_("SPR {0} must be submitted.").format(spr_name))
+	if cint(spr.docstatus) == 2:
+		frappe.throw(_("Cannot sync batches on a cancelled SPR."))
 
 	frappe.db.auto_commit_on_many_writes = 1
 
@@ -15374,7 +15386,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"SPR batch sync repair:{spr_name}")
 
-	# 4) Bundle repair / legacy backfill only when no Manufacture STE exists yet.
+	# 4) Backfill leftover rolls that are not yet on a Manufacture STE (draft or submitted SPR).
 	backfill_created: list = []
 	backfill_errors: list = []
 	try:
