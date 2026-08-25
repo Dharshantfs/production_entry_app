@@ -3773,10 +3773,6 @@ class ShaftProductionRun(Document):
 								)
 					except Exception:
 						pass
-				if abs(qty) <= 1e-9:
-					roll_qty = self._spr_roll_net_weight_for_batch(bn)
-					if roll_qty > 0:
-						qty = roll_qty
 				if has_batch_qty:
 					frappe.db.sql(
 						"UPDATE `tabBatch` SET batch_qty = %s WHERE name = %s",
@@ -6609,6 +6605,9 @@ class ShaftProductionRun(Document):
 		Excess FG (e.g. BOM FG line surviving alongside SPR rolls) is silently ignored."""
 		if not wo_doc or not se_names:
 			return
+		# Leftover rolls may already have warehouse stock (auto Manufacture / Material Receipt).
+		if not self._spr_rows_needing_manufacture(wo_doc, spr_rows, extra_se_names=se_names):
+			return
 		item_code = _cstr(getattr(wo_doc, "production_item", None))
 		if not item_code:
 			return
@@ -7007,30 +7006,64 @@ class ShaftProductionRun(Document):
 					out[_cstr(batch_id)] += qty
 			except Exception:
 				pass
+		# Manufacture FG for this WO even when the Stock Entry is missing the SPR link.
+		unlinked = frappe.db.sql(
+			"""
+			SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(SUM(sed.qty), 0) AS qty
+			FROM `tabStock Entry` se
+			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+			WHERE IFNULL(se.work_order, '') = %(wo)s
+			  AND IFNULL(se.purpose, '') = 'Manufacture'
+			  AND IFNULL(se.docstatus, 0) < 2
+			  AND IFNULL(sed.is_finished_item, 0) = 1
+			  AND IFNULL(sed.batch_no, '') != ''
+			GROUP BY IFNULL(sed.batch_no, '')
+			""",
+			{"wo": wo_id},
+			as_dict=True,
+		) or []
+		for r in unlinked:
+			bn = _cstr(r.get("batch_no")).strip()
+			if not bn:
+				continue
+			qty = flt(r.get("qty"))
+			out[bn] = max(flt(out.get(bn)), qty)
+			try:
+				batch_id = frappe.db.get_value("Batch", bn, "batch_id")
+				if batch_id and _cstr(batch_id) != bn:
+					out[_cstr(batch_id)] = max(flt(out.get(_cstr(batch_id))), qty)
+			except Exception:
+				pass
 		return dict(out)
 
 	def _spr_roll_has_active_manufacture_stock(self, row, wo_doc) -> bool:
-		"""True when roll batch is active with FG stock posted — sync must not create another Manufacture STE."""
+		"""True when this roll already has Manufacture FG or warehouse stock — do not post again."""
 		rq = flt(self._row_fg_qty(row))
 		if rq <= 0 or not wo_doc:
 			return False
 		bn_raw = _cstr(row.get("batch_no")).strip()
 		if not bn_raw:
 			return False
-		item_code = _cstr(getattr(wo_doc, "production_item", None))
-		if not item_code:
-			return False
+		item_code = _cstr(getattr(wo_doc, "production_item", None) or row.get("item_code") or "")
 		try:
 			b_link = _cstr(
-				self._get_batch_link_name_for_stock_entry(bn_raw, item_code, wo_doc.company, row)
+				self._get_batch_link_name_for_stock_entry(
+					bn_raw, item_code, getattr(wo_doc, "company", None), row
+				)
 			)
 		except Exception:
 			b_link = bn_raw
 		key = b_link or bn_raw
-		if not _spr_batch_is_active(key):
-			return False
+		wo_id = _cstr(getattr(wo_doc, "name", None))
+		posted = self._spr_manufacture_batch_qty_map_for_wo(wo_id, extra_se_names=None)
+		if max(flt(posted.get(key)), flt(posted.get(bn_raw))) + 1e-6 >= rq:
+			return True
 		fg_wh = _cstr(getattr(wo_doc, "fg_warehouse", None))
-		sle_qty = _spr_batch_sle_qty(key, item_code, fg_wh) or _spr_batch_sle_qty(key, item_code, "")
+		sle_qty = _spr_batch_sle_qty(key, item_code, fg_wh)
+		if sle_qty + 1e-6 < rq:
+			sle_qty = _spr_batch_sle_qty(key, item_code, "")
+		if sle_qty + 1e-6 < rq:
+			sle_qty = _spr_batch_sle_qty(key, "", "")
 		return sle_qty + 1e-6 >= rq
 
 	def _spr_rows_needing_manufacture(
@@ -7091,6 +7124,7 @@ class ShaftProductionRun(Document):
 		created_entries: list,
 		created_entries_by_wo: dict,
 		savepoint_name: str = "spr_mfg_backfill",
+		raise_on_shortage: bool = False,
 	) -> str | None:
 		"""Transfer RM if needed, then submit one Manufacture entry for missing rows only."""
 		if not missing_rows or not wo_doc:
@@ -7131,6 +7165,8 @@ class ShaftProductionRun(Document):
 					self._raise_shortage_with_transfer_batch(shortage_events)
 					wo_doc = self._reload_work_order_doc(wo_doc)
 				except Exception:
+					if raise_on_shortage:
+						raise
 					if attempt == 0:
 						frappe.log_error(
 							frappe.get_traceback(),
@@ -7164,6 +7200,8 @@ class ShaftProductionRun(Document):
 					frappe.db.rollback(save_point=savepoint_name)
 				except Exception:
 					pass
+				if raise_on_shortage:
+					raise
 				if not hasattr(self.flags, "_spr_mfg_backfill_errors"):
 					self.flags._spr_mfg_backfill_errors = {}
 				self.flags._spr_mfg_backfill_errors[wo_id] = _cstr(exc)
@@ -7202,7 +7240,154 @@ class ShaftProductionRun(Document):
 				created_entries,
 				created_entries_by_wo,
 				savepoint_name=_spr_db_savepoint_name("spr_mfg_backfill", wo_id),
+				raise_on_shortage=False,
 			)
+
+	def _spr_auto_post_leftover_roll_stock(
+		self,
+		planned_wo_posts: list,
+		created_entries: list,
+		created_entries_by_wo: dict,
+	) -> None:
+		"""On SPR submit, auto-create Stock Entry for leftover rolls (MTFM + Manufacture, then FG receipt)."""
+		for plan in planned_wo_posts or []:
+			wo_id = _cstr(plan.get("wo_id"))
+			wo_doc = plan.get("wo_doc")
+			rows = plan.get("rows") or []
+			if not wo_id or not wo_doc:
+				continue
+			wo_doc = self._reload_work_order_doc(wo_doc)
+			existing = created_entries_by_wo.get(wo_id) or []
+			missing_rows = self._spr_rows_needing_manufacture(wo_doc, rows, extra_se_names=existing)
+			if not missing_rows:
+				continue
+
+			chunk_total = self._fg_posting_qty_for_rows(missing_rows, wo_doc)
+			preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total) if chunk_total > 0 else None
+			shortage_events = []
+			if preview_se:
+				self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
+				shortages = self._rm_shortages_for_se(preview_se, wo_doc)
+				if shortages:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total,
+							"shortages": shortages,
+						}
+					)
+				wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
+				if wip_topup:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total,
+							"shortages": wip_topup,
+							"wip_topup": True,
+						}
+					)
+			if shortage_events:
+				shortage_events = self._spr_filter_preflight_shortage_events(shortage_events)
+				try:
+					self._raise_shortage_with_transfer_batch(shortage_events, ignore_wo_transfer_prune=True)
+					wo_doc = self._reload_work_order_doc(wo_doc)
+				except Exception:
+					frappe.log_error(
+						frappe.get_traceback(),
+						f"SPR leftover auto-transfer:{self.name}:{wo_id}",
+					)
+
+			self._spr_run_backfill_manufacture_for_wo(
+				wo_id,
+				wo_doc,
+				missing_rows,
+				created_entries,
+				created_entries_by_wo,
+				savepoint_name=_spr_db_savepoint_name("spr_leftover_mfg", wo_id),
+				raise_on_shortage=False,
+			)
+			wo_doc = self._reload_work_order_doc(wo_doc)
+			existing = created_entries_by_wo.get(wo_id) or []
+			still_missing = self._spr_rows_needing_manufacture(wo_doc, rows, extra_se_names=existing)
+			if still_missing:
+				receipt_name = self._spr_auto_material_receipt_leftover_rolls(wo_doc, still_missing)
+				if receipt_name:
+					frappe.msgprint(
+						_("WO {0}: leftover roll(s) posted via Stock Entry {1}.").format(
+							wo_id, receipt_name
+						),
+						alert=True,
+					)
+
+	def _spr_auto_material_receipt_leftover_rolls(self, wo_doc, missing_rows) -> str:
+		"""Submit a Material Receipt so leftover FG batches have warehouse stock when Manufacture cannot post."""
+		if not wo_doc or not missing_rows:
+			return ""
+		fg_wh = _cstr(getattr(wo_doc, "fg_warehouse", None))
+		if not fg_wh:
+			return ""
+		company = _cstr(getattr(wo_doc, "company", None))
+		receipt = frappe.new_doc("Stock Entry")
+		receipt.company = company
+		receipt.posting_date = today()
+		receipt.posting_time = nowtime()
+		receipt.set_posting_time = 1
+		receipt.stock_entry_type = self._stock_entry_type_name_for_purpose("Material Receipt")
+		receipt.purpose = "Material Receipt"
+		receipt.remarks = _("Auto leftover FG receipt for {0}").format(self.name)
+		self._set_stock_entry_spr_link(receipt)
+		self._set_stock_entry_unit(receipt, wo_doc)
+
+		added = 0
+		batch_codes = []
+		for row in missing_rows:
+			qty = flt(self._row_fg_qty(row))
+			if qty <= 0:
+				continue
+			item_code = _cstr(row.get("item_code") or getattr(wo_doc, "production_item", None)).strip()
+			bn_raw = _cstr(row.get("batch_no")).strip()
+			if not item_code or not bn_raw:
+				continue
+			try:
+				batch_no = _cstr(
+					self._get_batch_link_name_for_stock_entry(bn_raw, item_code, company, row)
+				) or bn_raw
+			except Exception:
+				batch_no = bn_raw
+			line = {
+				"item_code": item_code,
+				"qty": qty,
+				"transfer_qty": qty,
+				"uom": frappe.db.get_value("Item", item_code, "stock_uom") or "Kg",
+				"stock_uom": frappe.db.get_value("Item", item_code, "stock_uom") or "Kg",
+				"conversion_factor": 1,
+				"t_warehouse": fg_wh,
+				"batch_no": batch_no,
+				"allow_zero_valuation_rate": 1,
+			}
+			receipt.append("items", line)
+			batch_codes.append(batch_no)
+			added += 1
+		if not added:
+			return ""
+		try:
+			receipt.flags.ignore_permissions = True
+			receipt.flags.ignore_mandatory = True
+			receipt.insert()
+			self._persist_stock_entry_spr_reference_db(receipt.name)
+			self._apply_order_code_to_submitted_stock_entry(receipt.name)
+			receipt.flags.ignore_validate = True
+			receipt.submit()
+			self._refresh_batch_qty_for_codes(batch_codes)
+			return _cstr(receipt.name)
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				f"SPR leftover FG receipt:{self.name}:{getattr(wo_doc, 'name', '')}",
+			)
+			return ""
 
 	def _spr_sync_backfill_missing_manufacture(self) -> list[str]:
 		"""Create/submit missing Manufacture entries for SPR rolls with auto RM transfer. Never throws.
@@ -7904,11 +8089,19 @@ class ShaftProductionRun(Document):
 				self._validate_rm_split_variance(
 					wo_id, total_qty, expected_rm_map, actual_rm_map, wo_doc=wo_doc
 				)
-			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
 
 		self._spr_submit_backfill_missing_manufactures(
 			planned_wo_posts, created_entries, created_entries_by_wo
 		)
+		self._spr_auto_post_leftover_roll_stock(
+			planned_wo_posts, created_entries, created_entries_by_wo
+		)
+		for plan in planned_wo_posts:
+			self._validate_fg_roll_coverage_for_wo(
+				plan.get("wo_doc"),
+				plan.get("rows") or [],
+				created_entries_by_wo.get(plan.get("wo_id"), []),
+			)
 		self._validate_all_planned_wos_manufactured(planned_wo_posts, created_entries_by_wo)
 
 		if created_entries:
@@ -15471,18 +15664,14 @@ def _spr_batch_is_active(batch_no: str) -> bool:
 
 
 def _spr_batch_sle_qty(batch_no: str, item_code: str = "", warehouse: str = "") -> float:
-	"""Sum positive SLE qty for a batch (optional item/warehouse filters).
-	Tries SLE.batch_no first (ERPNext v14 style), then falls back to
-	Serial and Batch Bundle entries (ERPNext v15 style)."""
+	"""Net warehouse qty for a batch (SLE.batch_no or Serial and Batch Bundle)."""
 	batch_no = _cstr(batch_no).strip()
 	if not batch_no:
 		return 0.0
 
-	# --- v14 path: SLE.batch_no column ---
 	clauses = [
 		"IFNULL(is_cancelled, 0) = 0",
 		"IFNULL(batch_no, '') = %s",
-		"actual_qty > 0",
 	]
 	params: list = [batch_no]
 	if item_code:
@@ -15502,29 +15691,33 @@ def _spr_batch_sle_qty(batch_no: str, item_code: str = "", warehouse: str = "") 
 		)[0][0]
 		or 0
 	)
-	if sle_qty > 0:
+	if abs(sle_qty) > 1e-9:
 		return sle_qty
 
-	# --- v15 path: Serial and Batch Bundle ---
 	if not frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
 		return 0.0
 	try:
-		bundle_clauses = ["sbe.batch_no = %s", "sbb.docstatus = 1"]
-		bundle_params: list = [batch_no]
-		if item_code:
-			bundle_clauses.append("sbb.item_code = %s")
-			bundle_params.append(_cstr(item_code).strip())
-		if warehouse:
-			bundle_clauses.append("sbe.warehouse = %s")
-			bundle_params.append(_cstr(warehouse).strip())
-		bundle_qty = frappe.db.sql(
-			f"""SELECT IFNULL(SUM(sbe.qty), 0)
-			FROM `tabSerial and Batch Entry` sbe
-			JOIN `tabSerial and Batch Bundle` sbb ON sbe.parent = sbb.name
-			WHERE {' AND '.join(bundle_clauses)}""",
-			tuple(bundle_params),
+		bundle_qty = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(
+					CASE
+						WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.qty, 0))
+						ELSE ABS(IFNULL(sbe.qty, 0))
+					END
+				), 0)
+				FROM `tabStock Ledger Entry` sle
+				INNER JOIN `tabSerial and Batch Entry` sbe
+					ON sbe.parent = sle.serial_and_batch_bundle
+				WHERE IFNULL(sle.is_cancelled, 0) = 0
+				  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+				  AND IFNULL(sbe.batch_no, '') = %s
+				""",
+				(batch_no,),
+			)[0][0]
+			or 0
 		)
-		return flt((bundle_qty or [[0]])[0][0])
+		return bundle_qty
 	except Exception:
 		return 0.0
 
