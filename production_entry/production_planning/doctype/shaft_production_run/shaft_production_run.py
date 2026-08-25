@@ -11049,6 +11049,20 @@ def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> 
 	batch_no = _cstr(payload.get("batch_no")).strip()
 	if not batch_no:
 		frappe.throw(_("Batch number is required for GSM roll import"))
+	if cint(payload.get("is_wasted")):
+		return {
+			"action": "skipped",
+			"batch_no": batch_no,
+			"reason": "already_wasted",
+		}
+	for waste in spr.get("custom_roll_waste") or []:
+		wb = _cstr(getattr(waste, "batch_no", None) or getattr(waste, "source_roll", None) or "").strip()
+		if wb and wb == batch_no:
+			return {
+				"action": "skipped",
+				"batch_no": batch_no,
+				"reason": "already_wasted",
+			}
 
 	_gsm_validate_roll_for_spr(spr, pp_id, payload)
 

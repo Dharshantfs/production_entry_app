@@ -428,6 +428,104 @@ def _gsm_validate_employee_link(employee: str, label: str):
 	return employee
 
 
+def _gsm_employee_id_and_name(employee) -> tuple[str, str]:
+	emp_id = _cstr(employee).strip()
+	if not emp_id:
+		return "", ""
+	emp_name = emp_id
+	if frappe.db.exists("Employee", emp_id):
+		emp_name = _cstr(frappe.db.get_value("Employee", emp_id, "employee_name")) or emp_id
+	return emp_id, emp_name
+
+
+def _gsm_shift_wise_set_person_fields(opts: dict, emp_id: str, id_fields: tuple, name_fields: tuple) -> None:
+	"""Write employee id/name onto whichever Shift Wise Production Entry fields exist."""
+	emp_id, emp_name = _gsm_employee_id_and_name(emp_id)
+	if not emp_id and not emp_name:
+		return
+	meta = None
+	if frappe.db.exists("DocType", _SHIFT_WISE_ENTRY_DOCTYPE):
+		try:
+			meta = frappe.get_meta(_SHIFT_WISE_ENTRY_DOCTYPE)
+		except Exception:
+			meta = None
+
+	def _field(fn: str):
+		if not meta:
+			return None
+		return meta.get_field(fn)
+
+	for fn in id_fields:
+		df = _field(fn)
+		if meta and not df:
+			continue
+		if df and df.fieldtype in ("Link", "Dynamic Link"):
+			opts[fn] = emp_id
+		else:
+			opts[fn] = emp_name or emp_id
+	for fn in name_fields:
+		df = _field(fn)
+		if meta and not df:
+			continue
+		opts[fn] = emp_name or emp_id
+
+
+def _gsm_coordinator_from_shift_sprs(run_date, shift, unit) -> str:
+	"""Best-effort coordinator from submitted SPRs for this GSM shift."""
+	if not run_date or not shift:
+		return ""
+	filters = {"docstatus": 1, "run_date": getdate(run_date), "shift": _normalize_gsm_shift_label(shift)}
+	unit = _cstr(unit).strip()
+	fields = ["name"]
+	for col in ("custom_coordinator", "coordinator", "custom_unit"):
+		if frappe.db.has_column("Shaft Production Run", col):
+			fields.append(col)
+	rows = frappe.get_all("Shaft Production Run", filters=filters, fields=fields, limit=40) or []
+	for row in rows:
+		row_unit = _cstr(row.get("custom_unit")).strip()
+		if unit and row_unit and row_unit.lower() != unit.lower():
+			continue
+		for key in ("custom_coordinator", "coordinator"):
+			val = _cstr(row.get(key)).strip()
+			if val:
+				return val
+	return ""
+
+
+def _gsm_shift_wise_route_options(doc, operator=None, supervisor=None) -> dict:
+	"""Prefill Shift Wise Production Entry from the closed GSM session."""
+	operator = _cstr(operator).strip() or _cstr(getattr(doc, "operator", "")).strip()
+	supervisor = _cstr(supervisor).strip() or _cstr(getattr(doc, "supervisor", "")).strip()
+	coordinator = _gsm_coordinator_from_shift_sprs(doc.run_date, doc.shift, doc.custom_unit)
+	opts = {
+		"posting_date": str(doc.run_date),
+		"shift": doc.shift,
+		"unit": doc.custom_unit,
+		"custom_unit": doc.custom_unit,
+		"batch_no": doc.batch_series_prefix,
+	}
+	_gsm_shift_wise_set_person_fields(
+		opts,
+		operator,
+		("operator", "custom_operator", "custom_shift_operator", "shift_operator"),
+		("operator_name", "custom_operator_name", "custom_shift_operator_name"),
+	)
+	_gsm_shift_wise_set_person_fields(
+		opts,
+		supervisor,
+		("supervisor", "custom_supervisor", "custom_shift_supervisor", "shift_supervisor"),
+		("supervisor_name", "custom_supervisor_name", "custom_shift_supervisor_name"),
+	)
+	if coordinator:
+		_gsm_shift_wise_set_person_fields(
+			opts,
+			coordinator,
+			("coordinator", "custom_coordinator"),
+			("coordinator_name", "custom_coordinator_name"),
+		)
+	return {k: v for k, v in opts.items() if v not in (None, "")}
+
+
 def _gsm_latest_closed_session(run_date, shift, unit):
 	if not _gsm_shift_session_table_exists():
 		return None
@@ -726,7 +824,7 @@ def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=
 
 
 @frappe.whitelist()
-def close_gsm_shift_session(run_date=None, shift=None, unit=None):
+def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None):
 	"""Close the open GSM shift session and return Shift Wise redirect payload."""
 	if not _gsm_shift_session_table_exists():
 		frappe.throw(_("GSM Shift Session DocType is not installed. Run bench migrate."))
@@ -745,6 +843,12 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None):
 	if not name:
 		frappe.throw(_("No open shift session found."))
 	doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, name)
+	fallback_operator = _cstr(operator).strip()
+	fallback_supervisor = _cstr(supervisor).strip()
+	if fallback_operator and not _cstr(doc.operator).strip():
+		doc.operator = fallback_operator
+	if fallback_supervisor and not _cstr(doc.supervisor).strip():
+		doc.supervisor = fallback_supervisor
 	prefix = _cstr(doc.batch_series_prefix).strip()
 	zero_prod = not _gsm_batch_prefix_has_rolls(prefix)
 	if frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE).has_field("zero_production_close"):
@@ -768,14 +872,11 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None):
 		"next_shift": next_shift,
 		"redirect": {
 			"doctype": _SHIFT_WISE_ENTRY_DOCTYPE,
-			"route_options": {
-				"posting_date": str(doc.run_date),
-				"shift": doc.shift,
-				"unit": doc.custom_unit,
-				"batch_no": doc.batch_series_prefix,
-				"operator": doc.operator,
-				"supervisor": doc.supervisor,
-			},
+			"route_options": _gsm_shift_wise_route_options(
+				doc,
+				operator=fallback_operator or doc.operator,
+				supervisor=fallback_supervisor or doc.supervisor,
+			),
 		},
 	}
 
@@ -1119,9 +1220,15 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			jid = _cstr(line.get("job_id") or "")
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
+		seen_waste_batches = set()
 		for waste in spr.get("custom_roll_waste") or []:
 			line = _gsm_serialize_roll_waste_for_grid(spr, waste, pp_id)
-			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
+			bn = _cstr(line.get("batch_no") or "").strip()
+			if bn and bn in seen_waste_batches:
+				continue
+			if bn:
+				seen_waste_batches.add(bn)
+			batch_suffix = _gsm_roll_suffix_from_batch_no(bn)
 			child_idx = cint(getattr(waste, "idx", 0) or 0)
 			staged.append((batch_suffix, child_idx, spr_name, pp_id, line, True))
 			jid = _cstr(line.get("job_id") or "")
@@ -4012,6 +4119,8 @@ def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) ->
 		if resolved_field:
 			row_dict["parentfield"] = resolved_field
 		enriched_rows.append(_gsm_enrich_child_row_from_spr(spr_doc, row_dict, child_doctype))
+	if child_doctype == "Roll Waste Row" or "roll waste" in _cstr(child_doctype).lower():
+		enriched_rows = _gsm_unique_roll_waste_row_dicts(enriched_rows)
 	return {
 		"fieldname": resolved_field or fieldname,
 		"resolved_fieldname": resolved_field or fieldname,
@@ -4222,6 +4331,22 @@ def get_gsm_spr_wastage_context(spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
 
 	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if cint(spr.docstatus) == 0:
+		waste_keys = [
+			_cstr(getattr(r, "batch_no", None) or getattr(r, "source_roll", None) or "").strip()
+			for r in spr.get("custom_roll_waste") or []
+		]
+		waste_keys = [k for k in waste_keys if k]
+		if len(waste_keys) != len(set(waste_keys)):
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				_spr_operation_lock,
+			)
+
+			with _spr_operation_lock(spr_name, "write", ttl_sec=60):
+				spr = frappe.get_doc("Shaft Production Run", spr_name)
+				if _gsm_dedupe_spr_roll_waste(spr):
+					spr.flags._spr_incremental_roll_save = True
+					spr.save()
 
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
@@ -4370,11 +4495,83 @@ def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
 	return out
 
 
+def _gsm_roll_waste_row_key(row) -> str:
+	if isinstance(row, dict):
+		return _cstr(
+			row.get("batch_no") or row.get("source_roll") or row.get("name") or ""
+		).strip()
+	return _cstr(
+		getattr(row, "batch_no", None)
+		or getattr(row, "source_roll", None)
+		or getattr(row, "name", None)
+		or ""
+	).strip()
+
+
+def _gsm_unique_roll_waste_row_dicts(rows) -> list:
+	seen = set()
+	out = []
+	for row in rows or []:
+		key = _gsm_roll_waste_row_key(row)
+		if key and key in seen:
+			continue
+		if key:
+			seen.add(key)
+		out.append(row)
+	return out
+
+
+def _gsm_find_existing_roll_waste(spr, batch_no: str = "", row_name: str = ""):
+	batch_no = _cstr(batch_no).strip()
+	row_name = _cstr(row_name).strip()
+	for row in spr.get("custom_roll_waste") or []:
+		rb = _cstr(getattr(row, "batch_no", None) or getattr(row, "source_roll", None) or "").strip()
+		if batch_no and rb == batch_no:
+			return row
+		if row_name and _cstr(getattr(row, "spr_item_name", None) or "").strip() == row_name:
+			return row
+	return None
+
+
+def _gsm_dedupe_spr_roll_waste(spr) -> int:
+	"""Drop extra custom_roll_waste rows that share the same batch / source roll."""
+	seen = set()
+	extras = []
+	for row in list(spr.get("custom_roll_waste") or []):
+		key = _cstr(getattr(row, "batch_no", None) or getattr(row, "source_roll", None) or "").strip()
+		if not key:
+			key = _cstr(getattr(row, "name", None) or "")
+		if key and key in seen:
+			extras.append(row)
+			continue
+		if key:
+			seen.add(key)
+	for row in extras:
+		spr.remove(row)
+	return len(extras)
+
+
+def _gsm_roll_waste_response(spr, waste_child, waste_row: dict, removed_names: list, already_marked: bool = False):
+	return {
+		"status": "ok",
+		"already_marked": 1 if already_marked else 0,
+		"spr_name": spr.name,
+		"batch_no": waste_row.get("batch_no")
+		or _cstr(getattr(waste_child, "batch_no", None) or ""),
+		"removed_row_name": removed_names[0] if removed_names else "",
+		"removed_row_names": removed_names,
+		"roll_waste_row_name": _cstr(getattr(waste_child, "name", "")),
+		"roll_waste": _gsm_child_row_dict(waste_child, _gsm_child_table_columns("Roll Waste Row")),
+		"total_items": len(spr.items or []),
+	}
+
+
 @frappe.whitelist()
 def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=None):
 	"""Mark a production roll as waste — append Roll Waste row and remove SPR items row."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_spr_operation_lock,
+		_gsm_publish_session_update,
 	)
 
 	spr_name = _cstr(spr_name).strip()
@@ -4398,41 +4595,41 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot mark roll waste on a submitted Shaft Production Run"))
 
-		target_item = None
+		matching_items = []
 		for row in list(spr.items or []):
-			if batch_no and _cstr(getattr(row, "batch_no", "")).strip() == batch_no:
-				target_item = row
-				break
-			if row_name and _cstr(getattr(row, "name", "")).strip() == row_name:
-				target_item = row
-				break
-		if not target_item:
+			match_batch = batch_no and _cstr(getattr(row, "batch_no", "")).strip() == batch_no
+			match_name = row_name and _cstr(getattr(row, "name", "")).strip() == row_name
+			if match_batch or match_name:
+				matching_items.append(row)
+
+		removed_dupes = _gsm_dedupe_spr_roll_waste(spr)
+		existing_waste = _gsm_find_existing_roll_waste(spr, batch_no, row_name)
+
+		removed_names = [_cstr(getattr(it, "name", "")) for it in matching_items]
+		for item in matching_items:
+			spr.remove(item)
+
+		if existing_waste:
+			if matching_items or removed_dupes:
+				spr.flags._spr_incremental_roll_save = True
+				spr.save()
+				_gsm_publish_session_update(spr)
+			waste_dict = _gsm_child_row_dict(existing_waste, _gsm_child_table_columns("Roll Waste Row"))
+			return _gsm_roll_waste_response(
+				spr, existing_waste, waste_dict, removed_names, already_marked=True
+			)
+
+		if not matching_items:
 			frappe.throw(_("Roll line not found on SPR"))
 
-		waste_row = _gsm_build_roll_waste_row_from_item(target_item, roll_payload)
+		waste_row = _gsm_build_roll_waste_row_from_item(matching_items[0], roll_payload)
 		spr.append("custom_roll_waste", waste_row)
-		spr.remove(target_item)
 		spr.flags._spr_incremental_roll_save = True
 		spr.save()
-
-		from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
-			_gsm_publish_session_update,
-		)
-
 		_gsm_publish_session_update(spr)
 
 		roll_waste_child = (spr.custom_roll_waste or [])[-1]
-		return {
-			"status": "ok",
-			"spr_name": spr_name,
-			"batch_no": waste_row.get("batch_no"),
-			"removed_row_name": _cstr(getattr(target_item, "name", "")),
-			"roll_waste_row_name": roll_waste_child.name,
-			"roll_waste": _gsm_child_row_dict(
-				roll_waste_child, _gsm_child_table_columns("Roll Waste Row")
-			),
-			"total_items": len(spr.items or []),
-		}
+		return _gsm_roll_waste_response(spr, roll_waste_child, waste_row, removed_names)
 
 
 @frappe.whitelist()

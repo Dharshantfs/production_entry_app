@@ -350,6 +350,23 @@ function _printRowKey(row) {
 	return String(row?.name || row?.job_id || row?.batch_no || "").trim();
 }
 
+function _uniqueRollWasteRows(rows) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of rows || []) {
+		const row = _normalizePattyRow(raw);
+		const key = String(row.batch_no || row.source_roll || row.name || "").trim();
+		if (key && seen.has(key)) {
+			continue;
+		}
+		if (key) {
+			seen.add(key);
+		}
+		out.push(row);
+	}
+	return out;
+}
+
 function _deskTableHtml(cols, rows, opts = {}) {
 	const showPrint = !!opts.showPrint;
 	const tableClass = opts.tableClass || "gwm-desk-table";
@@ -717,7 +734,7 @@ function _rollWasteTable(ctx) {
 	return _bestChildTable(
 		ctx,
 		"custom_roll_waste",
-		/roll.?waste|waste/i,
+		/roll.?waste/i,
 		["custom_running_patty_wastage", "custom_recycled_wastage_details"]
 	);
 }
@@ -751,14 +768,28 @@ async function _bindWastagePrint($wrapper, sprName, tableField, rows) {
 
 function _rollsForSpr(rollLines, sprRow) {
 	const ppId = sprRow.pp_id;
-	return (rollLines || []).filter(
-		(r) =>
-			r.pp_id === ppId &&
-			!r.is_wasted &&
-			!r.is_bundle_row &&
-			r.batch_no &&
-			(r.row_locked || r.spr_item_name)
-	);
+	const seen = new Set();
+	const out = [];
+	for (const r of rollLines || []) {
+		if (
+			r.pp_id !== ppId ||
+			r.is_wasted ||
+			r.is_bundle_row ||
+			!r.batch_no ||
+			!(r.row_locked || r.spr_item_name)
+		) {
+			continue;
+		}
+		const key = String(r.batch_no || "").trim();
+		if (key && seen.has(key)) {
+			continue;
+		}
+		if (key) {
+			seen.add(key);
+		}
+		out.push(r);
+	}
+	return out;
 }
 
 export async function openGsmWastageDialog(opts = {}) {
@@ -804,7 +835,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 async function _openRollWastage(sprName, sprRow, opts) {
 	const ctx = await _fetchWastageContext(sprName);
 	const wasteTable = _rollWasteTable(ctx);
-	const wasteRows = (wasteTable.rows || []).map(_normalizePattyRow);
+	const wasteRows = _uniqueRollWasteRows(wasteTable.rows || []);
 	const rollWasteCols = _apiColsToDesk(wasteTable.columns, DESK_ROLL_WASTE_COLS);
 	const rolls = _rollsForSpr(opts.rollLines, sprRow);
 	const selectRollHtml = rolls.length
@@ -866,10 +897,20 @@ async function _openRollWastage(sprName, sprRow, opts) {
 				return;
 			}
 			const selected = [];
+			const seenSel = new Set();
 			d.$wrapper.find(".gwm-roll-cb:checked").each(function () {
+				const batch = String($(this).data("batch") || "").trim();
+				const rowName = String($(this).data("row") || "").trim();
+				const key = batch || rowName;
+				if (key && seenSel.has(key)) {
+					return;
+				}
+				if (key) {
+					seenSel.add(key);
+				}
 				selected.push({
-					batch_no: $(this).data("batch"),
-					row_name: $(this).data("row"),
+					batch_no: batch,
+					row_name: rowName,
 				});
 			});
 			if (!selected.length) {
@@ -912,7 +953,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 	_bindGwmLiveRefresh(d, async (dialog) => {
 		const ctx = await _fetchWastageContext(sprName);
 		const wasteTableLive = _rollWasteTable(ctx);
-		const wasteRowsLive = (wasteTableLive.rows || []).map(_normalizePattyRow);
+		const wasteRowsLive = _uniqueRollWasteRows(wasteTableLive.rows || []);
 		const rollWasteColsLive = _apiColsToDesk(wasteTableLive.columns, DESK_ROLL_WASTE_COLS);
 		const html = `<div class="gwm-card" style="margin-top:12px;">
 			<div class="gwm-section-title">${__("Already Marked Roll Waste")}</div>
@@ -935,7 +976,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 async function _showRollWasteGrid(sprName, sprRow) {
 	const ctx = await _fetchWastageContext(sprName);
 	const table = _rollWasteTable(ctx);
-	const rows = (table.rows || []).map(_normalizePattyRow);
+	const rows = _uniqueRollWasteRows(table.rows || []);
 	const rollCols = _apiColsToDesk(table.columns, DESK_ROLL_WASTE_COLS);
 	const content = `<div class="gwm-shell">
 		<div class="gwm-card">
@@ -1075,7 +1116,7 @@ async function _openPattyStockPicker(sprName, sprRow, onDone) {
 
 async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
 	const ctx = await _fetchWastageContext(sprName);
-	const rows = ((ctx.tables || {}).custom_roll_waste || {}).rows || [];
+	const rows = _uniqueRollWasteRows(((ctx.tables || {}).custom_roll_waste || {}).rows || []);
 	if (!rows.length) {
 		frappe.msgprint(__("No roll waste rows on this SPR."));
 		return;

@@ -43,6 +43,15 @@ function make_empty_set() {
 	return { materials: {}, extras: [], rows: [], item_names: {} };
 }
 
+function set_has_materials(set) {
+	const m = set?.materials || {};
+	return !!(m.PP || m.Ink);
+}
+
+function mixing_set_label(si) {
+	return __("Set {0}", [si + 1]);
+}
+
 function make_empty_row(custom_unit) {
 	const is_printing = PRINTING_MACHINES.includes(custom_unit);
 	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
@@ -267,7 +276,7 @@ function show_dialog(ctx, existing, frm) {
 
 	d.footer.empty().append(`
 		<div style="display:flex;justify-content:space-between;width:100%;flex-wrap:wrap;gap:6px">
-			<button class="btn btn-sm btn-default" id="btn_add_set" ${readOnly ? "disabled" : ""}>➕ ${__("Add Second Raw Material Set")}</button>
+			<button class="btn btn-sm btn-default" id="btn_add_set" ${readOnly ? "disabled" : ""}>➕ ${__("Add Raw Material Set")}</button>
 			<div style="display:flex;gap:8px;flex-wrap:wrap">
 				<button class="btn btn-sm btn-warning" id="btn_print">🖨 ${__("Print Sheet")}</button>
 				${is_printing ? `<button class="btn btn-sm btn-info" id="btn_add_ink" ${readOnly ? "disabled" : ""}>➕ ${__("Add Ink")}</button>` : `<button class="btn btn-sm btn-info" id="btn_add_additive" ${readOnly ? "disabled" : ""}>➕ ${__("Add Special Item")}</button>`}
@@ -301,15 +310,17 @@ function show_dialog(ctx, existing, frm) {
 	render_all(d, ctx, state, frm);
 
 	d.footer.find("#btn_save_rm").on("click", () => save_raw_materials(d, ctx, state, frm));
-	if (state.sets.length >= 2) d.footer.find("#btn_add_set").prop("disabled", true);
 	d.footer.find("#btn_add_set").on("click", () => {
-		if (state.sets.length >= 2) {
-			frappe.msgprint(__("Maximum two raw material sets allowed."));
+		if (state.completed || ctx.read_only) return;
+		collect_row_qtys(d, state);
+		const last = state.sets[state.sets.length - 1];
+		if (!set_has_materials(last)) {
+			frappe.msgprint(__("Save raw materials on the current set first."));
 			return;
 		}
 		state.sets.push(make_empty_set());
 		render_all(d, ctx, state, frm);
-		d.footer.find("#btn_add_set").prop("disabled", true);
+		if (typeof d._mixPersist === "function") d._mixPersist();
 	});
 	d.footer.find("#btn_print").on("click", () => print_mixing_sheet(state, ctx));
 
@@ -380,6 +391,7 @@ function show_dialog(ctx, existing, frm) {
 			},
 		});
 	};
+	d._mixPersist = persist;
 
 	const on_submit_mixing = () => {
 		if (state.completed) return;
@@ -546,8 +558,14 @@ function save_raw_materials(d, ctx, state, frm) {
 		});
 	};
 
-	const last_idx = state.sets.length - 1;
-	apply_to_set(last_idx);
+	let target_idx = state.sets.length - 1;
+	for (let i = 0; i < state.sets.length; i++) {
+		if (!set_has_materials(state.sets[i])) {
+			target_idx = i;
+			break;
+		}
+	}
+	apply_to_set(target_idx);
 }
 
 function render_all(d, ctx, state, frm) {
@@ -558,12 +576,8 @@ function render_all(d, ctx, state, frm) {
 	const readOnly = !!(state.completed || ctx.read_only);
 
 	state.sets.forEach((set, si) => {
-		if (!set.materials || (!set.materials.PP && !set.materials.Ink)) {
-			$wrap.append(
-				`<div style="padding:30px;text-align:center;color:#888;font-style:italic;border:1px dashed #ccc;margin-top:20px;border-radius:4px;">
-					${__("Select raw materials, then click <b>Save Raw Materials</b> to generate the grid.")}
-				</div>`
-			);
+		if (!set_has_materials(set)) {
+			$wrap.append(render_empty_set_html(si, readOnly));
 			return;
 		}
 		if (!set.rows.length) build_rows(set, custom_unit);
@@ -600,6 +614,9 @@ function render_all(d, ctx, state, frm) {
 			frappe.show_alert({ message: __("At least one row required."), indicator: "orange" });
 		}
 	});
+	$wrap.find(".btn-del-set").on("click", function () {
+		delete_mixing_set(d, ctx, state, frm, parseInt($(this).data("set"), 10));
+	});
 }
 
 function render_set_html(set, si, ctx, state, readOnly) {
@@ -608,7 +625,7 @@ function render_set_html(set, si, ctx, state, readOnly) {
 	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
 	const m = set.materials || {};
 	const names = set.item_names || {};
-	const label = si === 0 ? __("Set 1") : __("Set 2 (Alternate)");
+	const label = mixing_set_label(si);
 
 	let rows_html = "";
 	set.rows.forEach((row, ri) => {
@@ -685,10 +702,14 @@ function render_set_html(set, si, ctx, state, readOnly) {
 		? ""
 		: `<button class="btn btn-xs btn-default btn-add-row" data-set="${si}">➕ ${__("Add Row")}</button>
 		   <button class="btn btn-xs btn-danger btn-del-row" data-set="${si}">🗑 ${__("Remove Last Row")}</button>`;
+	const delSetBtn = readOnly
+		? ""
+		: `<button class="btn btn-xs btn-danger btn-del-set" data-set="${si}" style="margin-left:auto">🗑 ${__("Delete Set")}</button>`;
 
 	return `
-		<div style="margin-top:${si > 0 ? "24px" : "0"};padding:8px 0 4px;font-weight:600;color:#5e35b1;border-bottom:2px solid #ede7f6">
-			🧪 ${__("Mixing Grid")} — ${label}
+		<div style="margin-top:${si > 0 ? "24px" : "0"};padding:8px 0 4px;font-weight:600;color:#5e35b1;border-bottom:2px solid #ede7f6;display:flex;align-items:center;gap:8px">
+			<span>🧪 ${__("Mixing Grid")} — ${label}</span>
+			${delSetBtn}
 		</div>
 		${table}
 		<div style="display:flex;gap:8px;margin-bottom:4px;align-items:center">
@@ -697,6 +718,41 @@ function render_set_html(set, si, ctx, state, readOnly) {
 				${__("Rows")}: ${set.rows.length} | ${__("Consumed")}: ${set.rows.filter((r) => r.consumed).length}
 			</span>
 		</div>`;
+}
+
+function render_empty_set_html(si, readOnly) {
+	const delSetBtn = readOnly
+		? ""
+		: `<button class="btn btn-xs btn-danger btn-del-set" data-set="${si}" style="margin-left:auto">🗑 ${__("Delete Set")}</button>`;
+	return `
+		<div style="margin-top:${si > 0 ? "24px" : "0"};padding:8px 0 4px;font-weight:600;color:#5e35b1;border-bottom:2px solid #ede7f6;display:flex;align-items:center;gap:8px">
+			<span>🧪 ${__("Mixing Grid")} — ${mixing_set_label(si)}</span>
+			${delSetBtn}
+		</div>
+		<div style="padding:30px;text-align:center;color:#888;font-style:italic;border:1px dashed #ccc;margin-top:8px;border-radius:4px;">
+			${__("Select raw materials, then click <b>Save Raw Materials</b> to generate the grid.")}
+		</div>`;
+}
+
+function delete_mixing_set(d, ctx, state, frm, si) {
+	if (state.completed || ctx.read_only) return;
+	const set = state.sets[si];
+	if (!set) return;
+	const consumed = (set.rows || []).filter((r) => r.consumed).length;
+	const msg = consumed
+		? __("Delete Mixing Grid — Set {0}? This set has {1} consumed row(s).", [si + 1, consumed])
+		: __("Delete Mixing Grid — Set {0}? The entire table will be removed.", [si + 1]);
+	frappe.confirm(msg, () => {
+		collect_row_qtys(d, state);
+		if (state.sets.length <= 1) {
+			state.sets = [make_empty_set()];
+		} else {
+			state.sets.splice(si, 1);
+		}
+		render_all(d, ctx, state, frm);
+		if (typeof d._mixPersist === "function") d._mixPersist();
+		frappe.show_alert({ message: __("Mixing set deleted."), indicator: "orange" });
+	});
 }
 
 function consume_row(ctx, state, si, ri, d, frm) {

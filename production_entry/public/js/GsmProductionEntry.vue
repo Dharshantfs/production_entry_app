@@ -6966,12 +6966,36 @@ function clearGsmAfterClose() {
   saveStatus.value = "";
 }
 
+function applyShiftWisePrefill(doctype, opts) {
+  const frm = typeof cur_frm !== "undefined" ? cur_frm : null;
+  if (!frm || frm.doctype !== doctype || !frm.is_new() || !opts) {
+    return;
+  }
+  Object.keys(opts).forEach((fname) => {
+    const val = opts[fname];
+    if (!val || !frm.fields_dict[fname]) {
+      return;
+    }
+    if (!frm.doc[fname]) {
+      frm.set_value(fname, val);
+    }
+  });
+}
+
 function redirectToShiftWise(redirect) {
   const payload = redirect || {};
   const opts = payload.route_options || {};
-  frappe.route_options = { ...opts };
   const doctype = payload.doctype || "Shift Wise Production Entry";
-  frappe.set_route("Form", doctype, "new");
+  frappe.route_options = { ...opts };
+  const afterRoute = () => {
+    setTimeout(() => applyShiftWisePrefill(doctype, opts), 350);
+  };
+  const routed = frappe.set_route("Form", doctype, "new");
+  if (routed && typeof routed.then === "function") {
+    routed.then(afterRoute);
+  } else {
+    afterRoute();
+  }
 }
 
 function dismissShiftReminder() {
@@ -7048,6 +7072,8 @@ async function closeShift() {
         run_date: runDate.value,
         shift: shift.value,
         unit: headerUnit.value,
+        operator: operator.value,
+        supervisor: supervisor.value,
       },
     });
     const nextShift = res.message?.next_shift;
