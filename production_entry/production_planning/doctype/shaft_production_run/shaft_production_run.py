@@ -843,7 +843,14 @@ def _spr_wo_rm_transfer_remaining(wo_doc, item_code: str) -> float:
 	for req in getattr(wo_doc, "required_items", None) or []:
 		if _cstr(getattr(req, "item_code", None)).strip() != item_code:
 			continue
-		return flt(getattr(req, "required_qty", 0)) - flt(getattr(req, "transferred_qty", 0))
+		required = flt(getattr(req, "required_qty", 0))
+		still = required - flt(getattr(req, "transferred_qty", 0))
+		if still <= _spr_rm_wip_shortage_tolerance(required):
+			return 0.0
+		min_qty = 10 ** (-_spr_rm_stock_qty_precision())
+		if still <= min_qty + 1e-12:
+			return 0.0
+		return still
 	return 0.0
 
 
@@ -2919,9 +2926,12 @@ class ShaftProductionRun(Document):
 		# Create/submit Manufacture entries before final submit so shortage handling can block
 		# submission and still persist a draft transfer link for operators.
 		self.flags._spr_allow_manufacture_posting = True
+		perm_backup = frappe.flags.get("ignore_permissions")
+		frappe.flags.ignore_permissions = True
 		try:
 			self.create_manufacturing_stock_entries()
 		finally:
+			frappe.flags.ignore_permissions = perm_backup
 			self.flags._spr_allow_manufacture_posting = False
 
 	def _fg_rows_missing_work_order(self) -> list[dict]:
@@ -3916,7 +3926,7 @@ class ShaftProductionRun(Document):
 		return filtered
 
 	def _spr_cap_manufacture_rm_lines_to_wip_available(self, se, wo_doc) -> bool:
-		"""Nudge consume lines only for sub-tolerance WIP/bin float drift — never cap real shortages."""
+		"""Cap consume lines for rounding/batch drift when WO RM is already transferred."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		if not se or not wip_wh or not _spr_wo_rm_fully_transferred(wo_doc):
@@ -3931,25 +3941,31 @@ class ShaftProductionRun(Document):
 			req = flt(d.get("transfer_qty") or d.get("qty"))
 			if req <= 0:
 				continue
+			wh_avl = _spr_floor_rm_stock_qty(_spr_rm_available_qty(ic, wip_wh))
 			batch_no = _cstr(d.get("batch_no")).strip()
 			if batch_no:
-				avl = _spr_batch_available_qty(ic, wip_wh, batch_no)
+				avl = _spr_floor_rm_stock_qty(_spr_batch_available_qty(ic, wip_wh, batch_no))
 			else:
-				avl = _spr_rm_available_qty(ic, wip_wh)
-			avl = _spr_floor_rm_stock_qty(avl)
-			if req <= avl:
+				avl = wh_avl
+			if req <= avl + 1e-12:
 				continue
 			gap = req - avl
-			# Never cap extra production or 0.001 Kg ledger gaps — transfer RM instead.
-			if gap >= 10 ** (-_spr_rm_stock_qty_precision()):
+			tol = _spr_rm_wip_shortage_tolerance(req)
+			if gap <= tol + 1e-12:
+				cap = _spr_floor_rm_stock_qty(avl)
+				if cap <= 0:
+					continue
+				cf = flt(d.get("conversion_factor") or 1) or 1
+				d.transfer_qty = cap
+				d.qty = flt(cap / cf, 6)
+				changed = True
 				continue
-			cap = _spr_floor_rm_stock_qty(avl)
-			if cap <= 0:
-				continue
-			cf = flt(d.get("conversion_factor") or 1) or 1
-			d.transfer_qty = cap
-			d.qty = flt(cap / cf, 6)
-			changed = True
+			# Assigned lot is short but WIP warehouse already has stock — drop the lot so FIFO can split.
+			if batch_no and req <= wh_avl + tol + 1e-12:
+				d.batch_no = ""
+				if hasattr(d, "serial_and_batch_bundle"):
+					d.serial_and_batch_bundle = None
+				changed = True
 		return changed
 
 	def _spr_wip_topup_max_kg(self) -> float:
@@ -4124,6 +4140,7 @@ class ShaftProductionRun(Document):
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		prec = _spr_rm_stock_qty_precision()
 		lines = []
+		wip_covers = True
 		for req in getattr(wo_doc, "required_items", None) or []:
 			ic = _cstr(getattr(req, "item_code", None)).strip()
 			if not ic:
@@ -4138,9 +4155,21 @@ class ShaftProductionRun(Document):
 					ic, flt(transferred, prec), flt(required, prec), flt(wip_qty, prec)
 				)
 			)
+			if required > 0 and wip_qty + _spr_rm_wip_shortage_tolerance(required) + 1e-9 < required:
+				wip_covers = False
 		err_tail = ""
 		if original_exc:
 			err_tail = _("\n\nERPNext error:\n{0}").format(_cstr(original_exc))
+		if wip_covers:
+			frappe.throw(
+				_(
+					"Could not submit Manufacture for Work Order {0}. "
+					"WIP warehouse already has enough stock (0.001 Kg WO rounding is ignored). "
+					"The Stock Entry failed — this is often a permission issue on operator logins."
+					"{1}"
+				).format(wo_id, err_tail),
+				title=_("Manufacture submit failed"),
+			)
 		frappe.throw(
 			_(
 				"Work Order {0} already shows raw materials transferred, but Work In Progress "
@@ -4149,6 +4178,7 @@ class ShaftProductionRun(Document):
 				"An automatic RM → WIP transfer could not be created or submitted. "
 				"Check RM store stock for the shortage item(s), cancel duplicate MTFM entries "
 				"if any, then submit SPR again."
+				"{2}"
 			).format(wo_id, "\n".join(lines[:15]), err_tail),
 			title=_("WIP stock mismatch"),
 		)
@@ -4680,7 +4710,8 @@ class ShaftProductionRun(Document):
 					allocs.append((_cstr(c.get("batch_no")), flt(take)))
 					remaining = flt(remaining - take)
 
-			if allocs and remaining <= 1e-6:
+			# 0.001 Kg WO/BOM rounding must not block Manufacture when lots already cover the line.
+			if allocs and remaining <= max(1e-6, _spr_rm_wip_shortage_tolerance(required)):
 				# Split one RM row across many batches when needed.
 				cf = flt(d.get("conversion_factor") or 1) or 1
 				first_bn, first_qty = allocs[0]
@@ -4943,7 +4974,7 @@ class ShaftProductionRun(Document):
 			se.flags.ignore_permissions = True
 			frappe.flags.spr_skip_wo_transfer_qty_validation = True
 			se.flags.ignore_validate_work_order = True
-			se.insert()
+			se.insert(ignore_permissions=True)
 			name = _cstr(se.name)
 			self._persist_stock_entry_spr_reference_db(name)
 			try:
@@ -5631,6 +5662,7 @@ class ShaftProductionRun(Document):
 				self._set_stock_entry_spr_link(se)
 				self._spr_ensure_manufacture_fg_bundles(se_name)
 				se.flags.ignore_duplicate_for_work_order = True
+				se.flags.ignore_permissions = True
 				se.flags.ignore_validate = True
 				se.submit()
 				if wo_id:
@@ -5863,7 +5895,11 @@ class ShaftProductionRun(Document):
 					try:
 						frappe.flags.spr_skip_wo_transfer_qty_validation = True
 						se.flags.ignore_validate_work_order = True
-						se.insert()
+						se.flags.ignore_permissions = True
+						se.flags.ignore_mandatory = True
+						se.insert(ignore_permissions=True)
+						se.flags.ignore_permissions = True
+						se.flags.ignore_validate = True
 						se.submit()
 						submitted_ses.append(f"<a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for WO {wo_name}")
 					except Exception as e:
@@ -7587,6 +7623,7 @@ class ShaftProductionRun(Document):
 					self._set_stock_entry_unit(draft_se, wo_doc)
 					self._spr_ensure_manufacture_fg_bundles(draft_se_name)
 					draft_se.flags.ignore_duplicate_for_work_order = True
+					draft_se.flags.ignore_permissions = True
 					draft_se.flags.ignore_validate = True
 					draft_se.submit()
 					self._spr_backfill_manufacture_fg_batches(draft_se.name, wo_doc, chunk_rows)
@@ -7662,7 +7699,9 @@ class ShaftProductionRun(Document):
 		self._spr_apply_stock_entry_item_accounts(se)
 		se.stock_entry_type = self._manufacture_stock_entry_type_name()
 		se.purpose = "Manufacture"
-		se.insert()
+		se.flags.ignore_permissions = True
+		se.flags.ignore_mandatory = True
+		se.insert(ignore_permissions=True)
 		self._persist_stock_entry_spr_reference_db(se.name)
 		if _cstr(se.purpose) != "Manufacture":
 			frappe.throw(
@@ -7675,6 +7714,11 @@ class ShaftProductionRun(Document):
 		# ERPNext validate() may re-add the BOM FG line during insert; strip it again so
 		# we don't end up with both a BOM FG line and the per-roll SPR FG lines.
 		self._spr_remove_bom_fg_duplicates_from_se_db(se, wo_doc.production_item, chunk_rows)
+		# Insert/reload can restore BOM RM qty and drop flags — recap 0.001 Kg drift before submit.
+		if self._spr_cap_manufacture_rm_lines_to_wip_available(se, wo_doc):
+			se.flags.ignore_permissions = True
+			se.flags.ignore_mandatory = True
+			se.save()
 		se.flags.ignore_duplicate_for_work_order = True
 		self._set_stock_entry_spr_link(se)
 		self._set_stock_entry_unit(se, wo_doc)
@@ -7690,6 +7734,7 @@ class ShaftProductionRun(Document):
 		_submit_exc: Exception | None = None
 		try:
 			se.flags.ignore_duplicate_for_work_order = True
+			se.flags.ignore_permissions = True
 			se.flags.ignore_validate = True
 			se.submit()
 			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
@@ -8400,6 +8445,7 @@ class ShaftProductionRun(Document):
 			)
 
 		se.insert(ignore_permissions=True)
+		se.flags.ignore_permissions = True
 		se.submit()
 		self._persist_stock_entry_spr_reference_db(se.name)
 		self._apply_order_code_to_submitted_stock_entry(se.name)

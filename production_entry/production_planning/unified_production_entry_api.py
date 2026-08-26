@@ -3690,6 +3690,7 @@ def submit_gsm_production_entry(
 				_gsm_apply_tolerance_override(spr_name, reason, approved)
 			doc = frappe.get_doc("Shaft Production Run", spr_name)
 			if cint(doc.docstatus) == 0:
+				doc.flags.ignore_permissions = True
 				doc.submit()
 			submitted.append(
 				{
@@ -5122,6 +5123,7 @@ def submit_gsm_mix_roll_spr(spr_name):
 	if not already:
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("SPR cannot be submitted from status {0}").format(spr.docstatus))
+		spr.flags.ignore_permissions = True
 		spr.submit()
 	_mark_mix_roll_store_submitted_for_spr(spr_name)
 	return {
