@@ -2694,6 +2694,12 @@ class ShaftProductionRun(Document):
 		if submitting:
 			self._validate_production_submit_readiness()
 
+	def submit(self):
+		"""Full SPR submit as Administrator so user roles cannot block Manufacture / Patty stock."""
+		with _spr_as_administrator():
+			self.flags.ignore_permissions = True
+			return super().submit()
+
 	def _spr_sync_patty_on_gsm_roll_save(self, submitting: bool, incremental: bool) -> None:
 		"""Disabled — GSM uses read-only patty preview; desk SPR owns saved patty rows."""
 		return
@@ -8546,7 +8552,7 @@ class ShaftProductionRun(Document):
 			)
 
 		se.insert(ignore_permissions=True)
-		se.flags.ignore_permissions = True
+		_spr_mark_stock_entry_system_flags(se)
 		se.submit()
 		self._persist_stock_entry_spr_reference_db(se.name)
 		self._apply_order_code_to_submitted_stock_entry(se.name)
@@ -11830,7 +11836,7 @@ def _gsm_batch_available_kg(batch_no: str, item_code: str = "") -> float:
 	return flt((rows[0] or {}).get("qty") or 0) if rows else 0.0
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_available_patty_stock(spr_name=None):
 	"""Patty wastage batches with positive stock — global pool (desk View Patty Stock)."""
 	_ = _cstr(spr_name).strip()
@@ -11903,12 +11909,12 @@ def get_available_patty_stock(spr_name=None):
 	return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def spr_get_available_patty_stock(spr_name=None):
 	return get_available_patty_stock(spr_name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_patty_stock_for_spr(spr_name=None):
 	return get_available_patty_stock(spr_name)
 

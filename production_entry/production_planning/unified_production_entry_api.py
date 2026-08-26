@@ -10,6 +10,7 @@ from frappe.utils import cint, flt, getdate, now_datetime
 
 from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 	_cstr,
+	_spr_exc_message,
 	_count_combination_segments,
 	_parse_combination_widths_inches,
 	_resolve_wos_for_pp_job_row,
@@ -185,7 +186,7 @@ def _match_shaft_job_for_line(spr_doc, pp_id: str, gsm=None, width_inch=None, pr
 	return None
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_current_shift():
 	return get_current_shift()
 
@@ -558,7 +559,7 @@ def _gsm_validate_reopen_reason(reopen_reason, reopen_remarks, required: bool):
 	return reopen_reason, reopen_remarks
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def check_gsm_shift_reopen_required(run_date=None, shift=None, unit=None):
 	"""Return whether opening this shift requires a re-open reason (prior Closed session exists)."""
 	if not _gsm_shift_session_table_exists():
@@ -606,7 +607,7 @@ def check_gsm_shift_reopen_required(run_date=None, shift=None, unit=None):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def preview_gsm_shift_batch_prefix(run_date=None, shift=None, unit=None):
 	"""Preview batch series prefix for a shift before opening."""
 	unit = _cstr(unit).strip()
@@ -616,7 +617,7 @@ def preview_gsm_shift_batch_prefix(run_date=None, shift=None, unit=None):
 	return _gsm_shift_batch_prefix(run_date, shift, unit)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_shift_session(run_date=None, shift=None, unit=None):
 	"""Return the Open GSM shift session for run_date + shift + unit, if any."""
 	if not _gsm_shift_session_table_exists():
@@ -641,7 +642,7 @@ def get_gsm_shift_session(run_date=None, shift=None, unit=None):
 	return {"ready": True, "session": _serialize_gsm_shift_session(doc)}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
 	"""Day/Night status chips for GSM header."""
 	if not _gsm_shift_session_table_exists():
@@ -682,7 +683,7 @@ def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
 	return {"ready": True, "shifts": out}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def open_gsm_shift_session(
 	run_date=None,
 	shift=None,
@@ -786,7 +787,7 @@ def open_gsm_shift_session(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=None):
 	"""Ensure shift can close — submitted SPRs, no draft rolls blocking."""
 	if not _gsm_shift_session_table_exists():
@@ -823,7 +824,7 @@ def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=
 	return {"ok": not errors, "errors": errors}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None):
 	"""Close the open GSM shift session and return Shift Wise redirect payload."""
 	if not _gsm_shift_session_table_exists():
@@ -881,7 +882,7 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None,
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_open_gsm_shift_for_unit(unit=None):
 	"""Return the single open GSM shift session for a unit (any run_date/shift)."""
 	if not _gsm_shift_session_table_exists():
@@ -900,7 +901,7 @@ def get_open_gsm_shift_for_unit(unit=None):
 	return {"ready": True, "session": _serialize_gsm_shift_session(row)}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_pp_orders_for_date(planned_date=None, unit=None):
 	"""PP-submitted fabric rows for GSM sidebar — supplements color chart when planned_date was missing."""
 	planned_date = getdate(planned_date) if planned_date else None
@@ -1126,7 +1127,7 @@ def _gsm_publish_session_selection_update(session_doc) -> None:
 		pass
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def save_gsm_session_job_selections(
 	run_date=None, shift=None, unit=None, entries=None, selection_locked=0
 ):
@@ -1162,7 +1163,7 @@ def save_gsm_session_job_selections(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	"""Hydrate GSM grid from server — draft SPR roll lines for an open shift session."""
 	unit = _cstr(unit).strip()
@@ -1266,7 +1267,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_session_full_state(unit=None):
 	"""Server-first GSM bootstrap — open shift session + rolls + job selections (cross-device recovery).
 
@@ -1305,7 +1306,7 @@ def get_gsm_session_full_state(unit=None):
 	return resume
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def preview_spr_batch_numbers_for_entry(
 	unit,
 	run_date,
@@ -1403,7 +1404,7 @@ def preview_spr_batch_numbers_for_entry(
 	return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=None, production_plan_item=None, job_id=None):
 	"""Order length (meters per roll) from PP shaft details for a GSM+width line."""
 	pp_id = _cstr(pp_id).strip()
@@ -1504,7 +1505,7 @@ def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=Non
 	return {"meter_roll_mtrs": fallback or 0, "source": "pp_fallback"}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def resolve_work_order_for_roll_line(
 	pp_id, gsm=None, width_inch=None, item_code=None, production_plan_item=None, job_id=None
 ):
@@ -1559,7 +1560,7 @@ def resolve_work_order_for_roll_line(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_spr_for_pp(pp_id, prefer_draft=1):
 	"""Read-only: return existing SPR for PP (never creates)."""
 	pp_id = _cstr(pp_id).strip()
@@ -1569,7 +1570,7 @@ def get_spr_for_pp(pp_id, prefer_draft=1):
 	return {"spr_name": name or ""}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_pt_line_roll_quota_status(
 	pp_id,
 	production_plan_item=None,
@@ -1730,7 +1731,7 @@ def get_pt_line_roll_quota_status(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_date=None, shift=None, force_new=0):
 	"""Return draft SPR for PP; create via create_item_spr when missing."""
 	pp_id = _cstr(pp_id).strip()
@@ -2219,7 +2220,7 @@ def _resolve_core_mm_for_fabric_width(width_inch: float) -> float:
 	return flt(best_mm) if best_mm > 0 else target_mm
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_roll_row_extras(
 	gsm=None,
 	width_inch=None,
@@ -2277,7 +2278,7 @@ def get_gsm_roll_row_extras(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_core_width_options():
 	"""Core Size options for GSM grid (falls back to paper-core Items when Core Size absent)."""
 	if frappe.db.table_exists("Core Size"):
@@ -2420,7 +2421,7 @@ def _gsm_calc_roll_net_weight_kg(gross_kg, width_inch, core_link, polybag_kgs=0)
 	return flt(net, 2)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 	"""Submitted SPRs for a shift — GSM admin Shift Entries tab."""
 	run_date = getdate(run_date)
@@ -2549,7 +2550,7 @@ def _gsm_build_shift_spr_entry(spr) -> dict:
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 	"""Consolidated shift production — submitted + draft SPRs, session status, aggregates."""
 	run_date = getdate(run_date)
@@ -3226,7 +3227,7 @@ def _gsm_manual_job_shaft_rows(pp_id: str, unit: str | None = None) -> list[dict
 	return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 	"""GSM sidebar — per PP job shaft+roll progress, remaining, per-width caps."""
 	pp_ids = _parse_json_arg(pp_ids, [])
@@ -3296,7 +3297,7 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def create_gsm_sprs_for_session(
 	run_date=None,
 	shift=None,
@@ -3371,7 +3372,7 @@ def create_gsm_sprs_for_session(
 	return {"status": "ok", "sprs": sprs_out}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_pp_shaft_details(pp_ids=None):
 	"""GSM Shaft Details popup — read PP shaft table (no SPR required)."""
 	pp_ids = _parse_json_arg(pp_ids, [])
@@ -3426,13 +3427,13 @@ def _gsm_apply_tolerance_override(spr_name: str, reason: str, approved: int):
 	spr.save(ignore_permissions=True)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 	"""GSM real-time Save Row — thin wrapper for Vue."""
 	return save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=shift)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_warehouse_bays_for_unit(unit=None):
 	"""Bay names for Production Session unit — Warehouse Bay.description like 'UNIT N%'.
 
@@ -3501,13 +3502,13 @@ def get_warehouse_bays_for_unit(unit=None):
 	return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def delete_gsm_roll_line(spr_name, batch_no=None, row_name=None):
 	"""GSM Remove Row — delete one saved roll line from draft SPR."""
 	return delete_gsm_roll_line_from_spr(spr_name, batch_no=batch_no, row_name=row_name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def delete_gsm_bundle_packaging(spr_name, bundle_batch_no, child_roll_batches=None):
 	"""GSM Remove bundle — child rolls, bundle sticker row, and -B1 summary line."""
 	return delete_gsm_bundle_packaging_from_spr(
@@ -3528,7 +3529,7 @@ def _gsm_submittable_pp_to_spr(pp_to_spr: dict, rolls_by_pp: dict) -> dict:
 	return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def submit_gsm_production_entry(
 	run_date=None,
 	shift=None,
@@ -3701,7 +3702,7 @@ def submit_gsm_production_entry(
 				}
 			)
 		except Exception as e:
-			submit_failed.append({"pp_id": pp_id, "spr_name": spr_name, "error": _cstr(e)})
+			submit_failed.append({"pp_id": pp_id, "spr_name": spr_name, "error": _spr_exc_message(e) or _cstr(e)})
 
 	status = "ok"
 	if submit_failed and submitted:
@@ -3727,7 +3728,7 @@ def submit_gsm_production_entry(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def gsm_apply_bundle_packaging(
 	shaft_production_run,
 	job_id,
@@ -4324,7 +4325,7 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_spr_wastage_context(spr_name):
 	"""Read running patty, roll waste, and recycled child tables for GSM dialogs."""
 	spr_name = _cstr(spr_name).strip()
@@ -4388,7 +4389,7 @@ def get_gsm_spr_wastage_context(spr_name):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_available_patty_stock(spr_name):
 	"""Patty stock for GSM recycle — SPR wastage rows, then computed preview from roll lines."""
 	spr_name = _cstr(spr_name).strip()
@@ -4567,7 +4568,7 @@ def _gsm_roll_waste_response(spr, waste_child, waste_row: dict, removed_names: l
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=None):
 	"""Mark a production roll as waste — append Roll Waste row and remove SPR items row."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
@@ -4633,7 +4634,7 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 		return _gsm_roll_waste_response(spr, roll_waste_child, waste_row, removed_names)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row_names=None):
 	"""Append Recycled Wastage Details from patty stock and/or roll waste selections."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
@@ -4906,7 +4907,7 @@ def _gsm_browse_scope_months(
 	return months
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_mix_rolls_for_unit(
 	unit,
 	include_submitted=0,
@@ -4973,7 +4974,7 @@ def get_gsm_mix_rolls_for_unit(
 	return {"unit": target_unit, "month": target_month, "months": sorted(scope_months), "mix_rolls": out}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def activate_gsm_mix_roll_for_session(
 	date_key,
 	mix_id=None,
@@ -5037,7 +5038,7 @@ def activate_gsm_mix_roll_for_session(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_mix_roll_spr_rolls(spr_name):
 	"""Load mix-roll SPR roll lines for GSM grid."""
 	spr_name = _cstr(spr_name).strip()
@@ -5054,7 +5055,7 @@ def get_gsm_mix_roll_spr_rolls(spr_name):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def add_gsm_mix_roll_line(spr_name, item_code=None, width_inch=None, batch_no=None, gsm=None):
 	"""Add one empty mix roll line on draft mix SPR (uses build_spr_roll_result_lines_for_job)."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
@@ -5110,7 +5111,7 @@ def add_gsm_mix_roll_line(spr_name, item_code=None, width_inch=None, batch_no=No
 		}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def submit_gsm_mix_roll_spr(spr_name):
 	"""Submit mix-roll SPR — Material Receipt path (no WO / Manufacture)."""
 	spr_name = _cstr(spr_name).strip()

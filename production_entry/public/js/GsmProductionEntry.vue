@@ -5534,6 +5534,7 @@ function closeShiftDialog() {
 async function callSubmitGsm(overrides = []) {
   return frappe.call({
     method: "production_entry.production_planning.unified_production_entry_api.submit_gsm_production_entry",
+    type: "POST",
     args: {
       run_date: runDate.value,
       shift: shift.value,
@@ -6730,11 +6731,13 @@ async function refreshSessionFromServer(options = {}) {
     }
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.get_gsm_active_shift_resume",
+      type: "POST",
       args: {
         run_date: runDate.value,
         shift: shift.value,
         unit: headerUnit.value,
       },
+      error: () => {},
     });
     const merge = options.merge !== false;
     const msg = res.message || {};
