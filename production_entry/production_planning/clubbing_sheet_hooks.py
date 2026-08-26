@@ -21,8 +21,8 @@ ROUTE_BELTS = [
 		"kozhikode", "calicut", "mahe", "kannur", "kasargod", "mangaluru",
 		"mangalore", "uduppi", "udupi",
 	],
-	["madurai", "mysore", "mysuru", "hassan", "shimoga", "dawangeree", "davangere"],
-	["madurai", "salem", "hosur", "bangalore", "bengaluru", "dawangeree", "davangere"],
+	["madurai", "mysore", "mysuru", "hassan", "shimoga", "dawangeree", "davangere", "davanagere"],
+	["madurai", "salem", "hosur", "bangalore", "bengaluru", "dawangeree", "davangere", "davanagere"],
 	["madurai", "mysore", "mysuru", "bangalore", "bengaluru"],
 	["madurai", "bangalore", "bengaluru", "tumkur", "hospet", "hospete", "koppal"],
 	["madurai", "ananthapur", "kurnool", "hyderabad", "karimnagar"],
@@ -70,7 +70,7 @@ MADURAI_DISTANCES = {
 	"Kannur": 430, "Cannanore": 430, "Kolar": 430, "Bengaluru": 445,
 	"Bangalore": 445, "Chikmagalur": 450, "Chennai": 455, "Tumkur": 475,
 	"Puttur": 480, "Kasaragod": 490, "Mangaluru": 490, "Mangalore": 490,
-	"Shimoga": 485, "Davangere": 510, "Nellore": 520, "Udupi": 530,
+	"Shimoga": 485, "Davangere": 510, "Davanagere": 510, "Nellore": 520, "Udupi": 530,
 	"Tirupati": 530, "Hubli": 600, "Dharwad": 610, "Guntur": 650,
 	"Vijayawada": 680, "Hyderabad": 770, "Warangal": 850, "Vizag": 970,
 	"Berhampur": 1520, "Brahmapur": 1520, "Bhubaneswar": 1650,
@@ -185,15 +185,16 @@ def _validate_route_belt(doc):
 	if len(items) < 2:
 		return
 	selected = _selected_cities(doc)
-	if not selected:
+	# One destination (or blank) cannot be a route conflict — same city twice is fine
+	if len(selected) <= 1:
 		return
 	is_valid = any(all(_city_in_belt(city, belt) for city in selected) for belt in ROUTE_BELTS)
 	if not is_valid and not doc.get("ignore_route_conflict"):
 		frappe.throw(
 			frappe._(
-				"Route conflict detected! The selected cities do not fall together "
+				"Route conflict detected! Cities {0} do not fall together "
 				"on any single established forward route/belt. Please verify or create separate Clubbing Sheets."
-			)
+			).format(", ".join(selected))
 		)
 
 

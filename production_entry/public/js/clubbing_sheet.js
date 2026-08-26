@@ -119,31 +119,44 @@ function show_rolls_dialog_JSB(frm, args) {
 }
 
 const ROUTE_BELTS = [
-    ["madurai", "virudhunagar", "sivakasi", "tuticorin"],
+    ["madurai", "virudhunagar", "sivakasi", "tuticorin", "thoothukudi"],
     ["madurai", "karur", "coimbatore"],
     ["madurai", "karur", "erode", "salem"],
     ["madurai", "dindigul", "karur", "salem"],
-    ["madurai", "pondicherry", "vellore", "kanchipuram", "chennai"],
-    ["madurai", "trivandrum", "changanacherry"],
+    ["madurai", "pondicherry", "puducherry", "vellore", "kanchipuram", "chennai"],
+    ["madurai", "trivandrum", "thiruvananthapuram", "changanacherry"],
     ["madurai", "kollam", "kayankulam", "pathanamthitta", "kottayam"],
-    ["madurai", "coimbatore", "palakkad", "trissur", "ernakulam"],
-    ["madurai", "coimbatore", "pallakad", "trissur", "malappuram", "kozhikode", "mahe", "kannur", "kasargod", "mangaluru", "uduppi"],
-    ["madurai", "mysore", "hassan", "shimoga", "dawangeree"],
-    ["madurai", "salem", "hosur", "bangalore", "dawangeree"],
-    ["madurai", "mysore", "bangalore"],
-    ["madurai", "bangalore", "tumkur", "hospet", "koppal"],
+    ["madurai", "coimbatore", "palakkad", "trissur", "thrissur", "ernakulam"],
+    ["madurai", "coimbatore", "pallakad", "trissur", "thrissur", "malappuram", "kozhikode", "calicut", "mahe", "kannur", "kasargod", "mangaluru", "mangalore", "uduppi", "udupi"],
+    ["madurai", "mysore", "mysuru", "hassan", "shimoga", "dawangeree", "davangere", "davanagere"],
+    ["madurai", "salem", "hosur", "bangalore", "bengaluru", "dawangeree", "davangere", "davanagere"],
+    ["madurai", "mysore", "mysuru", "bangalore", "bengaluru"],
+    ["madurai", "bangalore", "bengaluru", "tumkur", "hospet", "hospete", "koppal"],
     ["madurai", "ananthapur", "kurnool", "hyderabad", "karimnagar"],
     ["madurai", "ananthapur", "kurnool", "hyderabad", "nizambad"],
     ["madurai", "kurnool", "hyderabad", "warangal"],
-    ["madurai", "vizag", "bhuvaneswar", "cuttack"],
-    ["madurai", "brahmbur", "bhubaneswar", "cuttack"],
+    ["madurai", "vizag", "bhuvaneswar", "bhubaneswar", "cuttack"],
+    ["madurai", "brahmbur", "berhampur", "bhubaneswar", "cuttack"],
     ["madurai", "guntur", "vijayawada", "kakinada"],
     ["madurai", "kakinada", "vizag"],
-    ["madurai", "kuppam", "palamaner", "bangalore"],
-    ["madurai", "bangalore", "hospete", "vijayapura"],
-    ["madurai", "bangalore", "belgaum", "goa"],
-    ["madurai", "bangalore", "hospete", "vijayapura", "satara", "pune", "mumbai"]
+    ["madurai", "kuppam", "palamaner", "bangalore", "bengaluru"],
+    ["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura"],
+    ["madurai", "bangalore", "bengaluru", "belgaum", "goa"],
+    ["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura", "satara", "pune", "mumbai"]
 ];
+
+/** Fuzzy city↔belt match (exact / contains) — same idea as server clubbing_sheet_hooks. */
+function jsb_club_city_in_belt(city, belt) {
+    const c = String(city || "").trim().toLowerCase();
+    if (!c) return false;
+    return (belt || []).some(bc => c === bc || c.includes(bc) || bc.includes(c));
+}
+
+function jsb_club_cities_on_one_belt(cities) {
+    const list = [...cities].filter(Boolean);
+    if (list.length <= 1) return true; // same city / single destination = never a conflict
+    return ROUTE_BELTS.some(belt => list.every(city => jsb_club_city_in_belt(city, belt)));
+}
 
 const MADURAI_DISTANCES = {
     "Madurai": 0, "Melur": 30, "Usilampatti": 45, "Manamadurai": 60, "Sivaganga": 55,
@@ -164,7 +177,7 @@ const MADURAI_DISTANCES = {
     "Calicut": 360, "Villupuram": 370, "Mysuru": 370, "Mysore": 370, "Hosur": 385,
     "Pondicherry": 395, "Puducherry": 395, "Hassan": 395, "Vellore": 410, "Kanchipuram": 440,
     "Chengalpattu": 420, "Kannur": 430, "Bengaluru": 445, "Bangalore": 445, "Chennai": 455,
-    "Tumkur": 475, "Mangaluru": 490, "Mangalore": 490, "Shimoga": 485, "Davangere": 510,
+    "Tumkur": 475, "Mangaluru": 490, "Mangalore": 490, "Shimoga": 485, "Davangere": 510, "Davanagere": 510,
     "Udupi": 530, "Guntur": 650, "Vijayawada": 680, "Hyderabad": 770, "Warangal": 850,
     "Vizag": 970, "Bhubaneswar": 1650, "Cuttack": 1680, "Krishnagiri": 355, "Pune": 1250, "Mumbai": 1450,
     "Karaikudi": 95
@@ -187,7 +200,7 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260727f';
+window.JSB_CLUB_PICKER_VER = 'v20260826a';
 // Always refresh helpers even if form.on already registered (old Client Script may open picker)
 window.__JSB_CLUB_SHEET_JS__ = window.JSB_CLUB_PICKER_VER;
 
@@ -552,23 +565,7 @@ frappe.ui.form.on('Clubbing Sheet', {
         let customers = Object.keys(customer_weights);
         let full_load_customers = customers.filter(c => customer_weights[c] >= 5000);
 
-        let is_valid = true;
-        if (selected_cities.size > 0) {
-            is_valid = false;
-            for (let belt of ROUTE_BELTS) {
-                let all_in_belt = true;
-                for (let city of selected_cities) {
-                    if (!belt.includes(city)) {
-                        all_in_belt = false;
-                        break;
-                    }
-                }
-                if (all_in_belt) {
-                    is_valid = true;
-                    break;
-                }
-            }
-        }
+        let is_valid = jsb_club_cities_on_one_belt(selected_cities);
 
         if (!is_valid && !frm.doc.ignore_route_conflict) {
             frm.set_intro(__("ROUTE CONFLICT — cities do not fall on one forward route/belt. Check Ignore Route Conflict to override."), "red");
@@ -589,46 +586,28 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     toggle_loading_sequence_visibility: function (frm) {
-        let show = (frm.doc.load_type === 'Part Load' || frm.doc.load_type === 'Full Load');
-        frm.get_field('items').grid.set_column_disp('loading_sequence', show);
+        // Always show when there are items (was hidden when load_type cleared on false route conflict)
+        let show = (frm.doc.items || []).length > 0;
+        let grid = frm.get_field('items') && frm.get_field('items').grid;
+        if (grid && grid.set_column_disp) {
+            grid.set_column_disp('loading_sequence', show);
+        }
     },
 
     recalculate_load_type: function (frm) {
         let customer_weights = {};
-        let selected_cities = new Set();
         (frm.doc.items || []).forEach(i => {
             if (i.customer) {
                 customer_weights[i.customer] = (customer_weights[i.customer] || 0) + flt(i.weight_kgs);
-            }
-            if (i.party_location) {
-                selected_cities.add(i.party_location.trim().toLowerCase());
             }
         });
 
         let customers = Object.keys(customer_weights);
         let has_full_load_order = Object.values(customer_weights).some(w => w >= 5000);
 
-        let is_valid = true;
-        if (selected_cities.size > 0) {
-            is_valid = false;
-            for (let belt of ROUTE_BELTS) {
-                let all_in_belt = true;
-                for (let city of selected_cities) {
-                    if (!belt.includes(city)) {
-                        all_in_belt = false;
-                        break;
-                    }
-                }
-                if (all_in_belt) {
-                    is_valid = true;
-                    break;
-                }
-            }
-        }
-
-        if (!is_valid && !frm.doc.ignore_route_conflict) {
-            frm.set_value('load_type', '');
-        } else if (has_full_load_order) {
+        // Do NOT clear load_type on route conflict — that hid Loading Sequence column.
+        // Still warn via show_load_type_indicator; server enforces unless ignore_route_conflict.
+        if (has_full_load_order) {
             frm.set_value('load_type', 'Full Load');
         } else if (customers.length >= 1) {
             frm.set_value('load_type', 'Part Load');
