@@ -362,6 +362,12 @@ def _compact_unit_key(value) -> str:
 	return re.sub(r"[^A-Z0-9]", "", _cstr(value).upper())
 
 
+def _units_equivalent(a, b) -> bool:
+	"""True when two unit labels are the same workstation (Unit 2 vs UNIT 2)."""
+	ka, kb = _compact_unit_key(a), _compact_unit_key(b)
+	return bool(ka and kb and ka == kb)
+
+
 def _unit_value_for_doctype_field(unit_value, doctype: str, fieldname: str, meta=None) -> str:
 	"""Return a unit value that validates against the current DocType field."""
 	raw = _cstr(unit_value)
@@ -381,6 +387,10 @@ def _unit_value_for_doctype_field(unit_value, doctype: str, fieldname: str, meta
 
 	options = [_cstr(opt) for opt in _cstr(df.options).splitlines() if _cstr(opt)]
 	if not options:
+		return normalized
+	if raw in options:
+		return raw
+	if normalized in options:
 		return normalized
 
 	alias_map = {
@@ -2835,7 +2845,7 @@ class ShaftProductionRun(Document):
 		if not unit_value:
 			return
 		resolved = _spr_unit_value_for_current_field(unit_value)
-		if resolved:
+		if resolved and not _units_equivalent(unit_value, resolved):
 			try:
 				df = self.meta.get_field("custom_unit")
 				options = [_cstr(opt) for opt in _cstr(getattr(df, "options", "")).splitlines() if _cstr(opt)]
@@ -3022,8 +3032,57 @@ class ShaftProductionRun(Document):
 			)
 		return out
 
+	def _spr_backfill_missing_roll_work_orders(self) -> None:
+		"""Fill blank roll-line Work Orders from Available Jobs / item width before submit."""
+		spi_meta = frappe.get_meta("Shaft Production Run Item")
+		jobs = list(self.shaft_jobs or [])
+		for row in self.items or []:
+			if flt(self._row_fg_qty(row)) <= 0:
+				continue
+			if _cstr(row.get("work_order") or row.get("wo_id")).strip():
+				continue
+			width = _spr_roll_effective_width_inch(row)
+			job_id = _cstr(row.get("job") or row.get("job_id")).strip()
+			sj = None
+			if job_id:
+				for j in jobs:
+					if _spr_job_id(j) == job_id or _cstr(getattr(j, "job_id", None)).strip() == job_id:
+						sj = j
+						break
+			wo = _spr_bundle_wo_for_width(self, sj, width) if sj else None
+			if not wo and sj:
+				comb = getattr(sj, "combination", None) or ""
+				total = sum(_parse_combination_widths_inches(comb)) or flt(getattr(sj, "total_width", 0) or 0)
+				if width > 0 and total > 0 and abs(width - total) <= 0.75:
+					raw_wos = [
+						p.strip()
+						for p in _cstr(getattr(sj, "work_orders", None) or "").replace("\n", ",").split(",")
+						if p.strip()
+					]
+					if len(raw_wos) == 1:
+						wo = {"name": raw_wos[0]}
+			if not wo and width > 0:
+				ic = _cstr(row.get("item_code")).strip()
+				if ic:
+					_g, w_item = parse_item_code(ic)
+					if w_item:
+						width = flt(w_item)
+				for j in jobs:
+					found = _spr_bundle_wo_for_width(self, j, width)
+					if found:
+						wo = found
+						break
+			won = _cstr((wo or {}).get("name")).strip()
+			if not won:
+				continue
+			if spi_meta.has_field("work_order"):
+				row.work_order = won
+			if spi_meta.has_field("wo_id"):
+				row.wo_id = won
+
 	def _validate_no_pending_wo_width_rows(self):
 		"""Block submit with a clear list when produced widths are pending WO mapping."""
+		self._spr_backfill_missing_roll_work_orders()
 		missing = self._fg_rows_missing_work_order()
 		if not missing:
 			return
@@ -3743,10 +3802,22 @@ class ShaftProductionRun(Document):
 		if not unit_value:
 			return
 		for fn in ("unit", "custom_unit", "workstation", "custom_workstation"):
-			if meta.has_field(fn):
-				resolved = _unit_value_for_doctype_field(unit_value, "Stock Entry", fn, meta=meta)
-				if resolved:
-					se.set(fn, resolved)
+			if not meta.has_field(fn):
+				continue
+			current = _cstr(se.get(fn))
+			resolved = _unit_value_for_doctype_field(unit_value, "Stock Entry", fn, meta=meta)
+			if not resolved:
+				continue
+			if current and _units_equivalent(current, resolved):
+				df = meta.get_field(fn)
+				opts = (
+					[_cstr(o) for o in _cstr(getattr(df, "options", "")).splitlines() if _cstr(o)]
+					if df
+					else []
+				)
+				if not opts or current in opts:
+					continue
+			se.set(fn, resolved)
 
 	def _apply_unit_to_submitted_stock_entry(self, se_name: str, wo_doc=None):
 		if not se_name:
@@ -3761,6 +3832,11 @@ class ShaftProductionRun(Document):
 				if not resolved:
 					continue
 				try:
+					current = _cstr(frappe.db.get_value("Stock Entry", se_name, fn) or "")
+					if current and _units_equivalent(current, resolved):
+						continue
+					if cint(frappe.db.get_value("Stock Entry", se_name, "docstatus") or 0) == 1 and current:
+						continue
 					frappe.db.set_value("Stock Entry", se_name, fn, resolved, update_modified=False)
 				except Exception:
 					pass
