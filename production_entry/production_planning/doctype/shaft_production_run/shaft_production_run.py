@@ -45,6 +45,7 @@ from production_entry.production_planning.planning_doctypes import (
 	get_mix_roll_unit_max_shaft_inches,
 	validate_mix_shaft_width,
 	resolve_mix_roll_company_and_fg_warehouse,
+	ensure_planning_line_unit_docfield_options,
 )
 
 # Unique (company_id, 2-digit unit_no) per workstation — never reuse across units.
@@ -14302,8 +14303,10 @@ def _spr_create_and_submit_mtfm(wo_doc) -> str:
 		se.from_bom = 0
 		se.items = []
 
+	line_meta = frappe.get_meta("Stock Entry Detail")
+	has_line_work_order = line_meta.has_field("work_order")
 	for sed in se.items or []:
-		if not sed.work_order:
+		if has_line_work_order and not sed.get("work_order"):
 			sed.work_order = wo_name
 		if not sed.s_warehouse:
 			sed.s_warehouse = source_wh
@@ -14316,20 +14319,19 @@ def _spr_create_and_submit_mtfm(wo_doc) -> str:
 	if not se.items:
 		for row in wo_doc.get("required_items") or []:
 			item_src = _cstr(getattr(row, "source_warehouse", None)) or source_wh
-			se.append(
-				"items",
-				{
-					"item_code": row.item_code,
-					"qty": row.required_qty,
-					"transfer_qty": row.required_qty,
-					"uom": row.stock_uom,
-					"stock_uom": row.stock_uom,
-					"s_warehouse": item_src,
-					"t_warehouse": wip_wh,
-					"conversion_factor": 1,
-					"work_order": wo_name,
-				},
-			)
+			line = {
+				"item_code": row.item_code,
+				"qty": row.required_qty,
+				"transfer_qty": row.required_qty,
+				"uom": row.stock_uom,
+				"stock_uom": row.stock_uom,
+				"s_warehouse": item_src,
+				"t_warehouse": wip_wh,
+				"conversion_factor": 1,
+			}
+			if has_line_work_order:
+				line["work_order"] = wo_name
+			se.append("items", line)
 		for sed in se.items or []:
 			_spr_finalize_mtfm_line_qty(sed, sed.s_warehouse or source_wh, flt(sed.qty))
 
@@ -14535,17 +14537,41 @@ def _spr_list_reusable_trial_work_orders(item_code: str, order_code: str = "") -
 	return out
 
 
-@frappe.whitelist()
-def spr_get_trial_order_context(shaft_production_run):
-	_spr_require_saved(shaft_production_run)
-	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
-	unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+def _spr_apply_session_people(spr, operator=None, supervisor=None) -> None:
+	if not spr:
+		return
+	meta = frappe.get_meta("Shaft Production Run")
+	for value, candidates in (
+		(operator, ("operator", "custom_operator", "custom_shift_operator")),
+		(supervisor, ("supervisor", "custom_supervisor", "custom_shift_supervisor")),
+	):
+		val = _cstr(value).strip()
+		if not val:
+			continue
+		for key in candidates:
+			if meta.has_field(key):
+				spr.set(key, val)
+				break
+
+
+def _spr_trial_context_for_unit(unit: str, spr=None) -> dict:
+	unit = normalize_planning_unit_for_select(_cstr(unit))
+	if not unit and spr:
+		unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+	if not unit:
+		frappe.throw(_("Unit is required for Trail Order"))
 	from production_entry.production_planning.spr_unit_warehouses import (
 		resolve_spr_unit_manufacturing_warehouses,
 	)
 
 	wh_ctx = resolve_spr_unit_manufacturing_warehouses(unit)
-	company = _cstr(wh_ctx.get("company")) or _spr_company_from_doc(spr)
+	company = _cstr(wh_ctx.get("company"))
+	if not company and spr:
+		company = _spr_company_from_doc(spr)
+	if not company:
+		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
 	qualities = frappe.get_all("Quality Master", fields=["name", "quality_name"], order_by="quality_name asc") or []
 	colors = frappe.get_all("Colour Master", fields=["name", "colour_name"], order_by="colour_name asc") or []
 	return {
@@ -14562,7 +14588,50 @@ def spr_get_trial_order_context(shaft_production_run):
 	}
 
 
-@frappe.whitelist()
+def _spr_new_standalone_trial_spr(
+	unit: str,
+	order_code: str,
+	run_date=None,
+	shift=None,
+	operator=None,
+	supervisor=None,
+):
+	"""Create a dedicated draft SPR for Trail Order — never reuse an existing production SPR."""
+	ensure_planning_line_unit_docfield_options()
+	ctx = _spr_trial_context_for_unit(unit)
+	unit = ctx["custom_unit"]
+	spr = frappe.new_doc("Shaft Production Run")
+	spr.run_date = getdate(run_date) if run_date else today()
+	spr.custom_unit = unit
+	if shift:
+		spr.shift = shift
+	if ctx.get("company"):
+		spr.company = ctx["company"]
+	if frappe.get_meta("Shaft Production Run").has_field("status"):
+		spr.status = "Draft"
+	order_code = _cstr(order_code).strip()
+	if order_code:
+		if frappe.get_meta("Shaft Production Run").has_field("custom_order_code"):
+			spr.custom_order_code = order_code
+		if frappe.get_meta("Shaft Production Run").has_field("custom_party_code"):
+			spr.custom_party_code = order_code
+	_spr_apply_session_people(spr, operator, supervisor)
+	spr.insert(ignore_permissions=True)
+	return spr
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def spr_get_trial_order_context(shaft_production_run=None, unit=None):
+	spr = None
+	if _cstr(shaft_production_run).strip():
+		_spr_require_saved(shaft_production_run)
+		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+		if not unit:
+			unit = getattr(spr, "custom_unit", None)
+	return _spr_trial_context_for_unit(unit, spr)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
 def spr_resolve_trial_fabric_item(
 	quality,
 	color,
@@ -14600,14 +14669,14 @@ def spr_resolve_trial_fabric_item(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def spr_preview_trial_fabric_bom(item_code, company=None, quality=None, color=None, gsm=None):
 	from production_entry.production_planning.fabric_item_bom import preview_fabric_bom
 
 	return preview_fabric_bom(item_code, company=company, quality=quality, color=color, gsm=gsm)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def spr_create_trial_fabric_bom(
 	item_code,
 	company=None,
@@ -14630,16 +14699,22 @@ def spr_create_trial_fabric_bom(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def spr_create_trial_jobs_multi(
-	shaft_production_run,
-	order_code,
-	no_of_shafts,
-	items,
+	shaft_production_run=None,
+	order_code=None,
+	no_of_shafts=None,
+	items=None,
 	no_of_rolls=None,
 	combination_input=None,
+	create_new_spr=1,
+	run_date=None,
+	shift=None,
+	unit=None,
+	operator=None,
+	supervisor=None,
 ):
-	"""Create standalone trial Work Orders and append Available Jobs row (mirror manual job)."""
+	"""Create standalone trial Work Orders on a NEW Shaft Production Run (not an existing production SPR)."""
 	order_code = _cstr(order_code)
 	if not order_code:
 		frappe.throw(_("Order code is required for Trail Order"))
@@ -14654,8 +14729,34 @@ def spr_create_trial_jobs_multi(
 	if not items or not isinstance(items, list):
 		frappe.throw(_("Add at least one trial fabric line"))
 
-	_spr_require_saved(shaft_production_run)
-	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	unit = _cstr(unit).strip()
+	if not unit and _cstr(shaft_production_run).strip():
+		unit = _cstr(frappe.db.get_value("Shaft Production Run", shaft_production_run, "custom_unit"))
+		if not run_date:
+			run_date = frappe.db.get_value("Shaft Production Run", shaft_production_run, "run_date")
+		if not shift:
+			shift = frappe.db.get_value("Shaft Production Run", shaft_production_run, "shift")
+		if not operator:
+			for key in ("operator", "custom_operator", "custom_shift_operator"):
+				if frappe.get_meta("Shaft Production Run").has_field(key):
+					operator = frappe.db.get_value("Shaft Production Run", shaft_production_run, key)
+					if operator:
+						break
+		if not supervisor:
+			for key in ("supervisor", "custom_supervisor", "custom_shift_supervisor"):
+				if frappe.get_meta("Shaft Production Run").has_field(key):
+					supervisor = frappe.db.get_value("Shaft Production Run", shaft_production_run, key)
+					if supervisor:
+						break
+	# Trail Order always gets its own SPR so it cannot alter an in-progress production run.
+	spr = _spr_new_standalone_trial_spr(
+		unit,
+		order_code,
+		run_date=run_date,
+		shift=shift,
+		operator=operator,
+		supervisor=supervisor,
+	)
 	unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
 	from production_entry.production_planning.spr_unit_warehouses import (
 		resolve_spr_unit_manufacturing_warehouses,
@@ -14797,6 +14898,9 @@ def spr_create_trial_jobs_multi(
 		"reused_work_orders": reused_wo_names,
 		"job_id": job_id,
 		"shaft_production_run": spr.name,
+		"order_code": order_code,
+		"is_trial": 1,
+		"pp_id": spr.name,
 	}
 
 

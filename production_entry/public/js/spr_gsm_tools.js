@@ -2,6 +2,7 @@
 
 import { openSprBundlePackagingDialog } from "./spr_bundle_packaging_dialog.js";
 import { openSprManualJobDialog } from "./spr_manual_job_dialog.js";
+import { openSprTrialOrderDialog } from "./spr_trial_order_dialog.js";
 import "./spr_label.js";
 
 async function loadSprDocForGsm(sprName) {
@@ -54,16 +55,27 @@ export async function gsmOpenManualJob(ppId, _planningItemNames, _unit, _runDate
 	});
 }
 
-export async function gsmOpenTrailOrder(ppId) {
-	const sprName = await findSprForGsm(ppId, true);
-	if (!sprName) {
-		noSprMessage();
+export async function gsmOpenTrailOrder(opts, onSuccess) {
+	opts = opts && typeof opts === "object" ? opts : { ppId: opts };
+	const unit = String(opts.unit || "").trim();
+	if (!unit) {
+		frappe.msgprint(__("Open the GSM shift (unit) first."));
 		return;
 	}
-	openSprForm(sprName);
-	frappe.show_alert({
-		message: __("Open SPR → Tools → Trail Order for this run."),
-		indicator: "blue",
+	openSprTrialOrderDialog({
+		unit,
+		runDate: opts.runDate,
+		shift: opts.shift,
+		operator: opts.operator,
+		supervisor: opts.supervisor,
+		onSuccess: (result) => {
+			if (typeof onSuccess === "function") {
+				onSuccess(result);
+			}
+			if (typeof opts.onSuccess === "function") {
+				opts.onSuccess(result);
+			}
+		},
 	});
 }
 

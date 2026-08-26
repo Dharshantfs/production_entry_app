@@ -51,6 +51,7 @@ import TransferApproval from "./TransferApproval.vue";
 import LogisticsKanban from "./LogisticsKanban.vue";
 import ProductionLearning from "./ProductionLearning.vue";
 import DespatchApproval from "./DespatchApproval.vue";
+import "./spr_trial_order_dialog.js";
 import GsmProductionEntry from "./GsmProductionEntry.vue";
 import SprTransferDialog from "./SprTransferDialog.vue";
 

@@ -87,7 +87,7 @@
           <div class="gpe-order-head">
             <span class="gpe-order-code">{{ grp.orderCode }}</span>
             <button
-              v-if="grp.ppId"
+              v-if="grp.ppId && !grp.isTrial"
               type="button"
               class="gpe-link-btn"
               @click="viewPP(grp.ppId)"
@@ -211,7 +211,7 @@
               <div class="gpe-order-head">
                 <span class="gpe-order-code">{{ grp.orderCode }}</span>
                 <button
-                  v-if="grp.ppId"
+                  v-if="grp.ppId && !grp.isTrial"
                   type="button"
                   class="gpe-link-btn"
                   @click="viewPP(grp.ppId)"
@@ -3177,7 +3177,25 @@ const filteredPpIdSet = computed(
   () => new Set(filteredPpSubmittedRows.value.map((r) => r.pp_id).filter(Boolean))
 );
 
-const sidebarAllowedPpIds = computed(() => filteredPpIdSet.value);
+const sidebarAllowedPpIds = computed(() => {
+  const s = new Set(filteredPpIdSet.value);
+  for (const job of jobBoardJobs.value) {
+    if (job?.is_trial && job.pp_id) {
+      s.add(job.pp_id);
+    }
+  }
+  for (const [ppId, row] of Object.entries(sessionSprs.value || {})) {
+    if (row?.is_trial || (ppId && row?.spr_name && ppId === row.spr_name)) {
+      s.add(ppId);
+    }
+  }
+  for (const entry of selectedEntries.value) {
+    if (entry?.is_trial && entry.ppId) {
+      s.add(entry.ppId);
+    }
+  }
+  return s;
+});
 
 const mergedItemIds = computed(() => {
   const s = new Set();
@@ -3296,6 +3314,7 @@ const jobOrderGroups = computed(() => {
         ppId: job.pp_id,
         quality: orderMeta.quality || "",
         color: orderMeta.color || "",
+        isTrial: !!job.is_trial,
         dayTargetKg: dayStats.dayTargetKg,
         dayRemKg: dayStats.dayRemKg,
         jobs: [],
@@ -3873,6 +3892,9 @@ function pruneSelectedEntriesToFilter() {
   }
   const browseDate = ordersBrowseDate();
   const next = selectedEntries.value.filter((e) => {
+    if (e.is_trial || sessionSprs.value[e.ppId]?.is_trial || (e.ppId && sessionSprs.value[e.ppId]?.spr_name === e.ppId)) {
+      return true;
+    }
     if (!e.ppId || !allowedPpIds.has(e.ppId)) {
       return false;
     }
@@ -4877,8 +4899,73 @@ async function resolveToolContext() {
   return { ppId: chosen.ppId, planningNames: chosen.lineIds, orderCode: chosen.orderCode };
 }
 
+async function attachTrialSprToSession(result) {
+  const sprName = String(result?.shaft_production_run || "").trim();
+  const jobId = String(result?.job_id || "").trim();
+  const orderCode = String(result?.order_code || "").trim();
+  if (!sprName) {
+    await fetchOrders();
+    return;
+  }
+  sessionSprs.value = {
+    ...sessionSprs.value,
+    [sprName]: {
+      pp_id: sprName,
+      spr_name: sprName,
+      order_code: orderCode,
+      is_trial: 1,
+    },
+  };
+  if (jobId) {
+    const key = entryKeyJob(sprName, jobId);
+    if (!selectedEntries.value.some((e) => e.key === key || (e.ppId === sprName && String(e.jobId || e.job_id) === jobId))) {
+      selectedEntries.value = [
+        ...selectedEntries.value,
+        {
+          key,
+          ppId: sprName,
+          jobId,
+          job_id: jobId,
+          orderCode: orderCode || sprName,
+          lineId: `trial-${jobId}`,
+          quality: "",
+          color: "",
+          gsm: 0,
+          plannedDate: runDate.value,
+          is_trial: true,
+        },
+      ];
+    }
+  }
+  scheduleJobSelectionSave();
+  await loadJobBoard();
+  enrichSelectedEntriesFromBoard();
+  await fetchOrders();
+  await refreshSessionFromServer({ quiet: true, merge: true });
+}
+
 async function runTool(kind) {
   closeToolsMenu();
+  if (kind === "trail") {
+    if (!shiftOpened.value) {
+      frappe.msgprint(__("Open the shift session first."));
+      return;
+    }
+    const unit = headerUnit.value || filterUnit.value;
+    if (!unit) {
+      frappe.msgprint(__("Unit is required for Trail Order."));
+      return;
+    }
+    await gsmOpenTrailOrder({
+      unit,
+      runDate: runDate.value,
+      shift: shift.value,
+      operator: operator.value,
+      supervisor: supervisor.value,
+      onSuccess: attachTrialSprToSession,
+    });
+    return;
+  }
   const ctx = await resolveToolContext();
   if (!ctx) {
     return;
@@ -4887,8 +4974,6 @@ async function runTool(kind) {
   const onSuccess = () => fetchOrders();
   if (kind === "manual") {
     await gsmOpenManualJob(ppId, planningNames, headerUnit.value, runDate.value, shift.value, onSuccess);
-  } else if (kind === "trail") {
-    await gsmOpenTrailOrder(ppId);
   } else if (kind === "bundle") {
     await gsmOpenBundlePackaging(ppId, async (m) => {
       await handleBundleApplyResult(m, ppId);
@@ -6539,6 +6624,7 @@ function applyResumePayload(msg, options = {}) {
         spr_name: s.spr_name,
         order_code: s.order_code || "",
         label_type: s.label_type || "",
+        is_trial: cint(s.is_trial) ? 1 : 0,
       };
     }
   }

@@ -1026,14 +1026,20 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 		if cint(row.get("is_mix_roll")):
 			continue
 		pp_id = _cstr(row.get("production_plan")).strip()
+		is_trial = 0
+		if not pp_id:
+			# Standalone Trail Order SPR — key GSM session/job-board by the SPR name.
+			pp_id = row.name
+			is_trial = 1
 		order_code = _cstr(row.get("custom_order_code") or row.get("custom_party_code") or "")
-		if not order_code and pp_id:
+		if not order_code and not is_trial:
 			order_code = _gsm_order_code_for_pp(pp_id)
 		out.append(
 			{
 				"pp_id": pp_id,
 				"spr_name": row.name,
 				"order_code": order_code,
+				"is_trial": is_trial,
 				"label_type": _gsm_label_type_for_pp_spr(pp_id, row.name)
 				or _gsm_label_type_display(row.get("custom_label") or ""),
 			}
@@ -2812,7 +2818,9 @@ def _gsm_job_quality_color(pp_id: str, job_id: str, shaft_row: dict | None = Non
 	color = _cstr(shaft_row.get("color") or "").strip()
 
 	if "spr_doc" not in cache:
-		spr_name = _find_spr_for_pp(pp_id, prefer_draft=False) or _find_draft_spr_for_pp(pp_id)
+		spr_name = pp_id if _gsm_is_standalone_spr_key(pp_id) else (
+			_find_spr_for_pp(pp_id, prefer_draft=False) or _find_draft_spr_for_pp(pp_id)
+		)
 		spr_doc = None
 		spr_jobs = {}
 		if spr_name and frappe.db.exists("Shaft Production Run", spr_name):
@@ -2873,7 +2881,20 @@ def _gsm_job_quality_color(pp_id: str, job_id: str, shaft_row: dict | None = Non
 	return {"quality": quality, "color": color}
 
 
+def _gsm_is_standalone_spr_key(pp_id: str) -> bool:
+	pp_id = _cstr(pp_id).strip()
+	return bool(pp_id) and frappe.db.exists("Shaft Production Run", pp_id) and not frappe.db.exists(
+		"Production Plan", pp_id
+	)
+
+
 def _gsm_order_code_for_pp(pp_id: str) -> str:
+	if _gsm_is_standalone_spr_key(pp_id):
+		fields = ["custom_order_code"]
+		if frappe.db.has_column("Shaft Production Run", "custom_party_code"):
+			fields.append("custom_party_code")
+		row = frappe.db.get_value("Shaft Production Run", pp_id, fields, as_dict=True) or {}
+		return _cstr(row.get("custom_order_code") or row.get("custom_party_code") or "")
 	if not pp_id or not frappe.db.exists("Production Plan", pp_id):
 		return ""
 	pp = frappe.get_doc("Production Plan", pp_id)
@@ -3049,7 +3070,10 @@ def _gsm_build_job_board_entry(
 	max_rolls = limits["max_rolls"]
 	rolls_per_shaft = limits["rolls_per_shaft"]
 
-	spr_list = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
+	if _gsm_is_standalone_spr_key(pp_id):
+		spr_list = [{"name": pp_id}]
+	else:
+		spr_list = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
 	stats = _gsm_job_production_stats(
 		spr_list,
 		job_id,
@@ -3177,6 +3201,13 @@ def _gsm_manual_job_shaft_rows(pp_id: str, unit: str | None = None) -> list[dict
 	spr_names = [_cstr(r.get("name")) for r in spr_rows if _cstr(r.get("name"))]
 	if not spr_names:
 		return []
+	return _gsm_job_shaft_rows_from_spr_names(spr_names)
+
+
+def _gsm_job_shaft_rows_from_spr_names(spr_names: list[str]) -> list[dict]:
+	spr_names = [_cstr(n).strip() for n in (spr_names or []) if _cstr(n).strip()]
+	if not spr_names:
+		return []
 	meta = frappe.get_meta("Shaft Production Run Job")
 	wanted = [
 		"job_id",
@@ -3184,11 +3215,13 @@ def _gsm_manual_job_shaft_rows(pp_id: str, unit: str | None = None) -> list[dict
 		"no_of_rolls",
 		"gsm",
 		"quality",
+		"color",
 		"combination",
 		"total_width",
 		"work_orders",
 		"manual_items",
 		"party_code",
+		"meter_roll_mtrs",
 	]
 	fields = ["name", "parent", "is_manual"] + [f for f in wanted if meta.has_field(f)]
 	rows = frappe.get_all(
@@ -3214,9 +3247,10 @@ def _gsm_manual_job_shaft_rows(pp_id: str, unit: str | None = None) -> list[dict
 				"no_of_rolls": cint(r.get("no_of_rolls") or 1),
 				"gsm": cint(r.get("gsm") or 0),
 				"quality": _cstr(r.get("quality")),
+				"color": _cstr(r.get("color")),
 				"combination": _cstr(r.get("combination")),
 				"total_width": flt(r.get("total_width") or 0),
-				"meter_roll": 0,
+				"meter_roll": flt(r.get("meter_roll_mtrs") or 0),
 				"net_weight": 0,
 				"is_manual": True,
 				"work_order": work_order,
@@ -3233,6 +3267,12 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 	pp_ids = _parse_json_arg(pp_ids, [])
 	if isinstance(pp_ids, str):
 		pp_ids = [x.strip() for x in pp_ids.split(",") if x.strip()]
+	pp_ids = [_cstr(x).strip() for x in (pp_ids or []) if _cstr(x).strip()]
+	if run_date and shift and unit:
+		for row in _gsm_draft_sprs_for_session(run_date, shift, unit):
+			tid = _cstr(row.get("pp_id")).strip()
+			if cint(row.get("is_trial")) and tid and tid not in pp_ids:
+				pp_ids.append(tid)
 	if not pp_ids:
 		return {"jobs": [], "by_pp": {}}
 
@@ -3240,7 +3280,45 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 	by_pp: dict[str, list] = {}
 	for pp_id in pp_ids:
 		pp_id = _cstr(pp_id).strip()
-		if not pp_id or not frappe.db.exists("Production Plan", pp_id):
+		if not pp_id:
+			continue
+		if _gsm_is_standalone_spr_key(pp_id):
+			pp_jobs = []
+			qc_cache: dict = {}
+			for man_row in _gsm_job_shaft_rows_from_spr_names([pp_id]):
+				entry = _gsm_build_job_board_entry(
+					pp_id,
+					man_row,
+					run_date=run_date,
+					shift=shift,
+					unit=unit,
+					wo_terminal=False,
+					qc_cache=qc_cache,
+				)
+				entry["is_trial"] = True
+				entry["is_manual"] = True
+				entry["work_order"] = _cstr(man_row.get("work_order"))
+				entry["item_code"] = _cstr(man_row.get("item_code"))
+				entry["item_name"] = _cstr(man_row.get("item_name"))
+				if not entry.get("quality"):
+					entry["quality"] = _cstr(man_row.get("quality"))
+				if not entry.get("color"):
+					entry["color"] = _cstr(man_row.get("color"))
+				if not entry.get("color") and entry.get("item_code"):
+					try:
+						specs = _spr_resolve_roll_line_specs_from_item_code(
+							entry["item_code"], entry.get("item_name")
+						)
+						entry["color"] = _cstr((specs or {}).get("color") or "")
+						if not entry.get("quality"):
+							entry["quality"] = _cstr((specs or {}).get("quality") or "")
+					except Exception:
+						pass
+				pp_jobs.append(entry)
+				out_jobs.append(entry)
+			by_pp[pp_id] = pp_jobs
+			continue
+		if not frappe.db.exists("Production Plan", pp_id):
 			continue
 		wo_terminal = _gsm_pp_wo_terminal(pp_id)
 		pp_jobs = []
