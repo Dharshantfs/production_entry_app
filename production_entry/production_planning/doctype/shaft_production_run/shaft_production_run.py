@@ -288,6 +288,69 @@ def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
 
 
+def _spr_exc_message(exc=None) -> str:
+	"""Frappe often stores the real throw text in message_log, not on the exception."""
+	parts = []
+	if exc is not None:
+		text = _cstr(exc)
+		if text:
+			parts.append(text)
+		for a in getattr(exc, "args", ()) or ():
+			s = _cstr(a)
+			if s and s not in parts:
+				parts.append(s)
+		title = _cstr(getattr(exc, "title", None))
+		if title and title not in parts:
+			parts.append(title)
+		typename = type(exc).__name__
+		if typename and typename not in ("Exception", "BaseException") and typename not in " ".join(parts):
+			parts.append(typename)
+	try:
+		for m in frappe.get_message_log() or []:
+			if isinstance(m, dict):
+				s = _cstr(m.get("message") or m.get("title"))
+			else:
+				s = _cstr(m)
+			s = re.sub(r"<[^>]+>", " ", s)
+			s = re.sub(r"\s+", " ", s).strip()
+			if s and s not in parts:
+				parts.append(s)
+	except Exception:
+		pass
+	return "\n".join(p for p in parts if p).strip()
+
+
+def _spr_mark_stock_entry_system_flags(se) -> None:
+	if not se:
+		return
+	se.flags.ignore_permissions = True
+	se.flags.ignore_mandatory = True
+	se.flags.ignore_validate = True
+	se.flags.ignore_links = True
+	se.flags.ignore_duplicate_for_work_order = True
+
+
+@contextmanager
+def _spr_as_administrator():
+	"""Post SPR stock docs without the logged-in user's Stock Entry / warehouse limits."""
+	user = frappe.session.user
+	perm_backup = frappe.flags.get("ignore_permissions")
+	switched = False
+	try:
+		frappe.flags.ignore_permissions = True
+		if user and user != "Administrator":
+			frappe.set_user("Administrator")
+			switched = True
+		yield
+	finally:
+		if switched:
+			try:
+				frappe.set_user(user)
+			except Exception:
+				pass
+		frappe.flags.ignore_permissions = perm_backup
+
+
 def _spr_db_savepoint_name(prefix: str, key: str = "") -> str:
 	"""MariaDB savepoint identifiers cannot contain hyphens (e.g. MFG-WO-2026-00917)."""
 	safe_key = re.sub(r"[^0-9a-zA-Z_]", "_", _cstr(key))
@@ -2924,14 +2987,13 @@ class ShaftProductionRun(Document):
 		):
 			self._validate_roll_weight_tolerance()
 		# Create/submit Manufacture entries before final submit so shortage handling can block
-		# submission and still persist a draft transfer link for operators.
+		# submission and still persist a draft transfer link. Run as Administrator so user
+		# Stock Entry / Serial and Batch Bundle / warehouse roles do not block SPR submit.
 		self.flags._spr_allow_manufacture_posting = True
-		perm_backup = frappe.flags.get("ignore_permissions")
-		frappe.flags.ignore_permissions = True
 		try:
-			self.create_manufacturing_stock_entries()
+			with _spr_as_administrator():
+				self.create_manufacturing_stock_entries()
 		finally:
-			frappe.flags.ignore_permissions = perm_backup
 			self.flags._spr_allow_manufacture_posting = False
 
 	def _fg_rows_missing_work_order(self) -> list[dict]:
@@ -4133,6 +4195,26 @@ class ShaftProductionRun(Document):
 	def _spr_apply_stock_entry_item_accounts(self, se) -> None:
 		_spr_apply_stock_entry_item_accounts(se)
 
+	def _spr_wo_wip_covers_required(self, wo_doc) -> bool:
+		"""True when WIP bins cover every WO required_item (within rounding tolerance)."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+		if not wo_doc or not wip_wh:
+			return False
+		any_rm = False
+		for req in getattr(wo_doc, "required_items", None) or []:
+			ic = _cstr(getattr(req, "item_code", None)).strip()
+			required = flt(getattr(req, "required_qty", 0))
+			if not ic or required <= 0:
+				continue
+			any_rm = True
+			wip_qty = flt(
+				frappe.db.get_value("Bin", {"item_code": ic, "warehouse": wip_wh}, "actual_qty") or 0
+			)
+			if wip_qty + _spr_rm_wip_shortage_tolerance(required) + 1e-9 < required:
+				return False
+		return any_rm
+
 	def _throw_wip_stock_wo_transfer_mismatch(self, wo_doc, original_exc=None):
 		"""WO shows RM transferred but WIP bin cannot satisfy Manufacture — do not create more MTFM."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
@@ -4140,7 +4222,7 @@ class ShaftProductionRun(Document):
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		prec = _spr_rm_stock_qty_precision()
 		lines = []
-		wip_covers = True
+		wip_covers = self._spr_wo_wip_covers_required(wo_doc)
 		for req in getattr(wo_doc, "required_items", None) or []:
 			ic = _cstr(getattr(req, "item_code", None)).strip()
 			if not ic:
@@ -4155,20 +4237,17 @@ class ShaftProductionRun(Document):
 					ic, flt(transferred, prec), flt(required, prec), flt(wip_qty, prec)
 				)
 			)
-			if required > 0 and wip_qty + _spr_rm_wip_shortage_tolerance(required) + 1e-9 < required:
-				wip_covers = False
-		err_tail = ""
-		if original_exc:
-			err_tail = _("\n\nERPNext error:\n{0}").format(_cstr(original_exc))
+		err_text = original_exc if isinstance(original_exc, str) else _spr_exc_message(original_exc)
+		err_tail = _("\n\nERPNext error:\n{0}").format(err_text) if err_text else ""
 		if wip_covers:
 			frappe.throw(
 				_(
-					"Could not submit Manufacture for Work Order {0}. "
-					"WIP warehouse already has enough stock (0.001 Kg WO rounding is ignored). "
-					"The Stock Entry failed — this is often a permission issue on operator logins."
-					"{1}"
-				).format(wo_id, err_tail),
-				title=_("Manufacture submit failed"),
+					"Work Order {0} is already submitted and WIP has enough stock. "
+					"No extra RM transfer is required. Only Shaft Production Run {1} is still draft — "
+					"Manufacture Stock Entry could not be posted while submitting it."
+					"{2}"
+				).format(wo_id, self.name, err_tail),
+				title=_("SPR Manufacture failed"),
 			)
 		frappe.throw(
 			_(
@@ -5661,9 +5740,7 @@ class ShaftProductionRun(Document):
 				wo_id = _cstr(se.work_order).strip()
 				self._set_stock_entry_spr_link(se)
 				self._spr_ensure_manufacture_fg_bundles(se_name)
-				se.flags.ignore_duplicate_for_work_order = True
-				se.flags.ignore_permissions = True
-				se.flags.ignore_validate = True
+				_spr_mark_stock_entry_system_flags(se)
 				se.submit()
 				if wo_id:
 					frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
@@ -7622,9 +7699,7 @@ class ShaftProductionRun(Document):
 					self._set_stock_entry_spr_link(draft_se)
 					self._set_stock_entry_unit(draft_se, wo_doc)
 					self._spr_ensure_manufacture_fg_bundles(draft_se_name)
-					draft_se.flags.ignore_duplicate_for_work_order = True
-					draft_se.flags.ignore_permissions = True
-					draft_se.flags.ignore_validate = True
+					_spr_mark_stock_entry_system_flags(draft_se)
 					draft_se.submit()
 					self._spr_backfill_manufacture_fg_batches(draft_se.name, wo_doc, chunk_rows)
 					self._spr_ensure_manufacture_fg_bundles(draft_se.name)
@@ -7699,8 +7774,7 @@ class ShaftProductionRun(Document):
 		self._spr_apply_stock_entry_item_accounts(se)
 		se.stock_entry_type = self._manufacture_stock_entry_type_name()
 		se.purpose = "Manufacture"
-		se.flags.ignore_permissions = True
-		se.flags.ignore_mandatory = True
+		_spr_mark_stock_entry_system_flags(se)
 		se.insert(ignore_permissions=True)
 		self._persist_stock_entry_spr_reference_db(se.name)
 		if _cstr(se.purpose) != "Manufacture":
@@ -7716,13 +7790,10 @@ class ShaftProductionRun(Document):
 		self._spr_remove_bom_fg_duplicates_from_se_db(se, wo_doc.production_item, chunk_rows)
 		# Insert/reload can restore BOM RM qty and drop flags — recap 0.001 Kg drift before submit.
 		if self._spr_cap_manufacture_rm_lines_to_wip_available(se, wo_doc):
-			se.flags.ignore_permissions = True
-			se.flags.ignore_mandatory = True
+			_spr_mark_stock_entry_system_flags(se)
 			se.save()
-		se.flags.ignore_duplicate_for_work_order = True
 		self._set_stock_entry_spr_link(se)
 		self._set_stock_entry_unit(se, wo_doc)
-		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
 		if _cstr(se.purpose) != "Manufacture":
 			frappe.throw(
 				_("Stock Entry {0} changed to purpose {1} after insert; expected Manufacture.").format(
@@ -7732,24 +7803,54 @@ class ShaftProductionRun(Document):
 			)
 		shortages: list = []
 		_submit_exc: Exception | None = None
+		_submit_exc_msg = ""
 		try:
-			se.flags.ignore_duplicate_for_work_order = True
-			se.flags.ignore_permissions = True
-			se.flags.ignore_validate = True
+			_spr_mark_stock_entry_system_flags(se)
+			try:
+				mod = frappe.db.get_value("Stock Entry", se.name, "modified")
+				if mod:
+					se.modified = mod
+			except Exception:
+				pass
 			se.submit()
 			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
 			self._spr_ensure_manufacture_fg_bundles(se.name)
 		except Exception as e:
 			_submit_exc = e  # persist before Python 3.12 deletes the except-clause variable
-			try:
-				frappe.db.rollback(save_point=mfg_submit_savepoint)
-			except Exception:
-				pass
+			_submit_exc_msg = _spr_exc_message(e)
 			shortages = self._rm_shortages_for_se(se, wo_doc)
 			if not shortages:
 				shortages = self._rm_shortages_from_exception(e)
 				if shortages:
 					shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
+		# WIP already has stock and WO is submitted — retry Manufacture, do not create RM transfers.
+		if _submit_exc is not None and self._spr_wo_wip_covers_required(wo_doc):
+			try:
+				se_name = _cstr(getattr(se, "name", None))
+				if se_name and frappe.db.exists("Stock Entry", se_name):
+					se = frappe.get_doc("Stock Entry", se_name)
+					if cint(se.docstatus) == 0:
+						self._spr_cap_manufacture_rm_lines_to_wip_available(se, wo_doc)
+						_spr_mark_stock_entry_system_flags(se)
+						se.submit()
+						self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
+						self._spr_ensure_manufacture_fg_bundles(se.name)
+					_submit_exc = None
+					_submit_exc_msg = ""
+			except Exception as retry_exc:
+				_submit_exc = retry_exc
+				_submit_exc_msg = _spr_exc_message(retry_exc) or _submit_exc_msg
+			if _submit_exc is not None:
+				try:
+					frappe.db.rollback(save_point=mfg_submit_savepoint)
+				except Exception:
+					pass
+				self._throw_wip_stock_wo_transfer_mismatch(wo_doc, _submit_exc_msg)
+		elif _submit_exc is not None:
+			try:
+				frappe.db.rollback(save_point=mfg_submit_savepoint)
+			except Exception:
+				pass
 		if _submit_exc is None:
 			# SUCCESS PATH — run all post-submit bookkeeping then return.
 			frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
@@ -7871,7 +7972,7 @@ class ShaftProductionRun(Document):
 			if allow_wip_topup_retry:
 				frappe.db.savepoint(mfg_submit_savepoint)
 				raise _SprWipTopupRetry()
-		self._throw_wip_stock_wo_transfer_mismatch(wo_doc, _submit_exc)
+		self._throw_wip_stock_wo_transfer_mismatch(wo_doc, _submit_exc_msg or _submit_exc)
 
 	def create_manufacturing_stock_entries(self):
 		"""Create submitted Manufacture Stock Entries from Roll Production Results (per WO / chunk).
