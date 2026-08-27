@@ -1,7 +1,6 @@
 import json
 import math
 import re
-import time
 from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 
@@ -351,56 +350,6 @@ def _spr_as_administrator():
 			except Exception:
 				pass
 		frappe.flags.ignore_permissions = perm_backup
-
-
-def _spr_get_doc_ignore_perm(spr_name, for_update: bool = False):
-	"""Load Shaft Production Run without Desk read / User Permission checks.
-
-	``save(ignore_permissions=True)`` does not skip the earlier ``get_doc`` read
-	check. GSM operators are blocked by Role Perm or Company User Permission even
-	when they are allowed to enter rolls through GSM whitelist APIs.
-	"""
-	spr_name = _cstr(spr_name).strip()
-	if not spr_name:
-		frappe.throw(_("Shaft Production Run is required"))
-	try:
-		cache = getattr(frappe.local, "document_cache", None)
-		if isinstance(cache, dict):
-			for key in (("Shaft Production Run", spr_name), f"Shaft Production Run::{spr_name}"):
-				cache.pop(key, None)
-	except Exception:
-		pass
-	perm_backup = frappe.flags.get("ignore_permissions")
-	frappe.flags.ignore_permissions = True
-	try:
-		if for_update:
-			try:
-				return frappe.get_doc("Shaft Production Run", spr_name, for_update=True)
-			except TypeError:
-				pass
-		return frappe.get_doc(doctype="Shaft Production Run", name=spr_name)
-	finally:
-		frappe.flags.ignore_permissions = perm_backup
-
-
-def _spr_save_gsm_incremental(spr):
-	"""Save a GSM draft SPR without Desk write or stale-timestamp checks.
-
-	Live sync, overlapping Save Row clicks, and other GSM writes update
-	``modified`` between load and save. Operators must not see TimestampMismatchError.
-	"""
-	if not spr:
-		return
-	spr.flags._spr_incremental_roll_save = True
-	spr.flags.ignore_permissions = True
-	spr.flags.ignore_version = True
-	try:
-		db_modified = frappe.db.get_value(spr.doctype, spr.name, "modified")
-		if db_modified:
-			spr.modified = db_modified
-	except Exception:
-		pass
-	spr.save(ignore_permissions=True)
 
 
 def _spr_db_savepoint_name(prefix: str, key: str = "") -> str:
@@ -9595,7 +9544,7 @@ def spr_refresh_bundle_calculation_from_pp(shaft_production_run=None):
 	name = _cstr(shaft_production_run).strip()
 	if not name or not frappe.db.exists("Shaft Production Run", name):
 		frappe.throw(_("Shaft Production Run not found"))
-	doc = _spr_get_doc_ignore_perm( name)
+	doc = frappe.get_doc("Shaft Production Run", name)
 	if cint(doc.docstatus) != 0:
 		frappe.throw(_("Only draft Shaft Production Run can be refreshed"))
 	pp = get_pp_from_spr(name)
@@ -9759,7 +9708,7 @@ def build_spr_bundle_result_lines_for_row(
 	"""Append Roll Production Result lines for one bundle row (no_of_bundles lines)."""
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save Shaft Production Run first"))
-	spr_doc = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if cint(spr_doc.docstatus) != 0:
 		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
 	if not (cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0))):
@@ -9977,7 +9926,7 @@ def _sheet_cutting_spr_metrics(spr_names, pp_id=None):
 	if frappe.db.exists("DocType", BUNDLE_CALC_DOCTYPE):
 		for spr_name in spr_list:
 			try:
-				spr = _spr_get_doc_ignore_perm( spr_name)
+				spr = frappe.get_doc("Shaft Production Run", spr_name)
 			except Exception:
 				continue
 			is_sub = cint(spr.docstatus) == 1
@@ -10166,7 +10115,7 @@ def _spr_acquire_cache_lock(key: str, ttl_sec: int = 120) -> bool:
 
 	if _lock_held():
 		return False
-	return False
+	return True
 
 
 def _spr_release_cache_lock(key: str) -> None:
@@ -10188,13 +10137,7 @@ def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 
 		yield
 		return
 	key = _spr_operation_lock_key(spr_name, operation)
-	acquired = False
-	deadline = time.time() + 20
-	while time.time() < deadline:
-		acquired = _spr_acquire_cache_lock(key, ttl_sec=ttl_sec)
-		if acquired:
-			break
-		time.sleep(0.25)
+	acquired = _spr_acquire_cache_lock(key, ttl_sec=ttl_sec)
 	if not acquired:
 		frappe.throw(
 			_(
@@ -10390,7 +10333,7 @@ def _get_next_spr_batch_numbers_unlocked(
 	existing_batches=None,
 	gsm_shift_prefix=None,
 ):
-	doc = _spr_get_doc_ignore_perm( shaft_production_run)
+	doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if run_date not in (None, ""):
 		doc.run_date = run_date
 	if custom_unit not in (None, "") and str(custom_unit).strip():
@@ -10624,7 +10567,7 @@ def _gsm_count_job_rolls_all_sprs(pp_id: str, job_id: str, unit: str | None = No
 		return 0
 	total = 0
 	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
-		spr = _spr_get_doc_ignore_perm( sn)
+		spr = frappe.get_doc("Shaft Production Run", sn)
 		total += _spr_count_roll_lines_for_job(spr, job_key)
 	return total
 
@@ -10637,7 +10580,7 @@ def _gsm_count_job_width_rolls_all_sprs(
 		return 0
 	total = 0
 	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
-		spr = _spr_get_doc_ignore_perm( sn)
+		spr = frappe.get_doc("Shaft Production Run", sn)
 		total += _spr_count_roll_lines_for_job_width(spr, job_key, width_inch)
 	return total
 
@@ -10786,7 +10729,7 @@ def build_spr_roll_result_lines_for_job(
 		frappe.throw(_("Job ID is required"))
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save Shaft Production Run first"))
-	spr_doc = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if cint(spr_doc.docstatus) != 0:
 		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
 	job_row = None
@@ -11093,7 +11036,8 @@ def _backfill_spr_roll_shaft_numbers_for_doc(spr, save: bool = True) -> dict:
 			)
 
 	if rows_fixed and save:
-		_spr_save_gsm_incremental(spr)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save(ignore_permissions=True)
 
 	return {
 		"status": "ok",
@@ -11109,7 +11053,7 @@ def backfill_spr_roll_shaft_numbers(spr_name=None):
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	spr = _spr_get_doc_ignore_perm( spr_name)
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	return _backfill_spr_roll_shaft_numbers_for_doc(spr, save=True)
 
 
@@ -11614,7 +11558,7 @@ def spr_get_tolerance_violations(spr_name):
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	spr = _spr_get_doc_ignore_perm( spr_name)
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	if _gsm_spr_skips_tolerance(spr):
 		return {
 			"spr_name": spr_name,
@@ -12433,30 +12377,21 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		frappe.throw(_("Roll payload is required"))
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		result = None
-		spr = None
-		for attempt in range(3):
-			spr = _spr_get_doc_ignore_perm(spr_name, for_update=True)
-			if cint(spr.docstatus) != 0:
-				frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
-			pp_id = _cstr(spr.get("production_plan")).strip()
-			is_mix = spr_doc_is_mix_roll(spr)
-			payload = dict(roll_payload)
-			if is_mix:
-				pp_id = ""
-				if not _cstr(payload.get("job_id") or payload.get("job")).strip():
-					payload["job_id"] = "1"
-				payload.pop("pp_id", None)
-				payload.pop("work_order", None)
-			result = _gsm_upsert_roll_line_on_spr(spr, pp_id, payload, shift=shift)
-			spr._validate_no_duplicate_roll_batches()
-			try:
-				_spr_save_gsm_incremental(spr)
-				break
-			except frappe.TimestampMismatchError:
-				if attempt >= 2:
-					raise
-				continue
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
+		pp_id = _cstr(spr.get("production_plan")).strip()
+		is_mix = spr_doc_is_mix_roll(spr)
+		if is_mix:
+			pp_id = ""
+			if not _cstr(roll_payload.get("job_id") or roll_payload.get("job")).strip():
+				roll_payload["job_id"] = "1"
+			roll_payload.pop("pp_id", None)
+			roll_payload.pop("work_order", None)
+		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
+		spr._validate_no_duplicate_roll_batches()
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
 		# Additive: push bay to Batch immediately on Save Row (Batch.custom_bay already exists)
 		try:
 			_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
@@ -12513,7 +12448,7 @@ def delete_gsm_bundle_packaging_from_spr(spr_name, bundle_batch_no, child_roll_b
 		batches_to_remove.add(bundle_batch_no)
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = _spr_get_doc_ignore_perm( spr_name)
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot delete bundle packaging from a submitted Shaft Production Run"))
 
@@ -12538,7 +12473,8 @@ def delete_gsm_bundle_packaging_from_spr(spr_name, bundle_batch_no, child_roll_b
 				"bundle_batch_no": bundle_batch_no,
 			}
 
-		_spr_save_gsm_incremental(spr)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -12562,7 +12498,7 @@ def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
 		frappe.throw(_("Batch number or SPR item row name is required"))
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = _spr_get_doc_ignore_perm( spr_name)
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot delete roll lines from a submitted Shaft Production Run"))
 
@@ -12583,7 +12519,8 @@ def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
 		if not removed_batch and not removed_row:
 			return {"status": "not_found", "spr_name": spr_name, "batch_no": batch_no, "row_name": row_name}
 
-		_spr_save_gsm_incremental(spr)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
 		_gsm_publish_session_update(spr)
 		return {
 			"status": "ok",
@@ -12609,7 +12546,7 @@ def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
 		return {"status": "ok", "spr_name": spr_name, "added": 0, "updated": 0, "lines": []}
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=180):
-		spr = _spr_get_doc_ignore_perm( spr_name)
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot import roll lines to a submitted Shaft Production Run"))
 		pp_id = _cstr(spr.get("production_plan")).strip()
@@ -12628,7 +12565,8 @@ def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
 				added += 1
 			lines.append(res)
 		spr._validate_no_duplicate_roll_batches()
-		_spr_save_gsm_incremental(spr)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -12667,7 +12605,7 @@ def append_roll_lines_for_job_and_save(
 		if not lines:
 			return {"added": 0, "job_id": _cstr(job_id), "total_items": 0, "lines": []}
 
-		spr = _spr_get_doc_ignore_perm( shaft_production_run)
+		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
 
@@ -12711,7 +12649,8 @@ def append_roll_lines_for_job_and_save(
 			)
 
 		spr._validate_no_duplicate_roll_batches()
-		_spr_save_gsm_incremental(spr)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
 
 		return {
 			"added": len(added_rows),
@@ -13212,7 +13151,7 @@ def get_or_create_roll_entry(shaft_production_run):
 	pp_name = get_pp_from_spr(shaft_production_run)
 	if not pp_name:
 		frappe.throw(_("Could not find Production Plan linked to {0}").format(shaft_production_run))
-	spr_doc = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	items = _build_roll_items_from_spr(spr_doc, pp_name)
 	return {"production_plan": pp_name, "items": items}
 
@@ -13237,7 +13176,7 @@ def get_or_create_roll_entry_for_job(shaft_production_run, job_id):
 	pp_name = get_pp_from_spr(shaft_production_run)
 	if not pp_name:
 		frappe.throw(_("Could not find Production Plan linked to {0}").format(shaft_production_run))
-	spr_doc = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	items = _build_roll_items_from_spr(spr_doc, pp_name, job_id_filter=job_id)
 	if not items:
 		frappe.throw(
@@ -13423,7 +13362,7 @@ def _spr_pp_and_company(spr_name: str):
 	pp_name = get_pp_from_spr(spr_name)
 	if not pp_name:
 		frappe.throw(_("Set Production Plan on this Shaft Production Run"))
-	doc = _spr_get_doc_ignore_perm( spr_name)
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	company = doc.get("company") or frappe.db.get_value("Production Plan", pp_name, "company")
 	if not company:
 		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
@@ -14686,7 +14625,7 @@ def spr_get_trial_order_context(shaft_production_run=None, unit=None):
 	spr = None
 	if _cstr(shaft_production_run).strip():
 		_spr_require_saved(shaft_production_run)
-		spr = _spr_get_doc_ignore_perm( shaft_production_run)
+		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 		if not unit:
 			unit = getattr(spr, "custom_unit", None)
 	return _spr_trial_context_for_unit(unit, spr)
@@ -15192,7 +15131,7 @@ def spr_force_relink_and_resync(production_plan: str, shaft_production_run: str 
 	if spr_name:
 		if not frappe.db.exists("Shaft Production Run", spr_name):
 			frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
-		spr_doc = _spr_get_doc_ignore_perm( spr_name)
+		spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
 
 	wo_rows = frappe.get_all(
 		"Work Order",
@@ -15288,7 +15227,7 @@ def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_
 		frappe.throw(_("Shaft Production Run is required"))
 	if not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
-	spr = _spr_get_doc_ignore_perm( spr_name)
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	if not spr.get("production_plan"):
 		frappe.throw(_("SPR {0} has no Production Plan").format(spr_name))
 
@@ -15586,7 +15525,7 @@ def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: in
 	if not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
 
-	spr = _spr_get_doc_ignore_perm( spr_name)
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	se_names = [
 		x.strip() for x in _cstr(getattr(spr, "manufacturing_entries", "")).split(",") if x and x.strip()
 	]
@@ -15698,7 +15637,7 @@ def spr_get_submit_summary(shaft_production_run: str):
 	spr_name = _cstr(shaft_production_run)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
-	spr = _spr_get_doc_ignore_perm( spr_name)
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	if cint(spr.docstatus) != 1:
 		return {"html": "", "title": ""}
 	wo_groups: dict = {}
@@ -15727,7 +15666,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	spr_name = _cstr(shaft_production_run)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
-	spr = _spr_get_doc_ignore_perm( spr_name)
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	if cint(spr.docstatus) == 2:
 		frappe.throw(_("Cannot sync batches on a cancelled SPR."))
 
@@ -16333,7 +16272,7 @@ def spr_set_bundle_packaging_on_submit(shaft_production_run, enabled=0):
 			title=_("Migrate required"),
 		)
 	on = 1 if cint(enabled) else 0
-	spr = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if cint(spr.docstatus) != 0:
 		frappe.throw(_("Cannot change bundle packaging mode after submit."))
 	spr.custom_use_bundle_packaging_on_submit = on
@@ -16539,7 +16478,7 @@ def spr_get_job_segments(shaft_production_run, job_id):
 	so the initial catalog load stays fast.
 	"""
 	_spr_require_saved(shaft_production_run)
-	spr = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	sj = _spr_shaft_job_for_roll(spr, _cstr(job_id))
 	if not sj:
 		return []
@@ -16628,7 +16567,7 @@ def spr_apply_bundle_packaging_for_job_width(
 	if width_inch <= 0:
 		frappe.throw(_("Select a width (in)"))
 
-	spr = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	sj = _spr_shaft_job_for_roll(spr, job_id)
 	if not sj:
 		frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
@@ -16951,7 +16890,7 @@ def gsm_apply_bundle_packaging(
 	avg_single_gross = round(whole_gross_kg / float(no_of_packaging), 2) if no_of_packaging else 0
 
 	with _spr_operation_lock(shaft_production_run, "write", ttl_sec=180):
-		spr = _spr_get_doc_ignore_perm( shaft_production_run)
+		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot apply bundle packaging to a submitted Shaft Production Run"))
 
@@ -17031,7 +16970,7 @@ def gsm_apply_bundle_packaging(
 		)
 
 		spr._validate_no_duplicate_roll_batches()
-		_spr_save_gsm_incremental(spr)
+		spr.save(ignore_permissions=True)
 
 		pp_resolved = pp_id or _cstr(spr.get("production_plan")).strip()
 		order_code = _cstr(spr.get("custom_order_code") or "")
@@ -17098,7 +17037,7 @@ def spr_apply_bundle_packaging(
 	if not spr_item_row_name:
 		frappe.throw(_("Select a roll line"))
 
-	spr = _spr_get_doc_ignore_perm( shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	target = None
 	for it in spr.items or []:
 		if _cstr(it.name) == _cstr(spr_item_row_name):
@@ -17211,7 +17150,7 @@ def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
 	spr_name = _cstr(spr_name)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found."))
-	doc = _spr_get_doc_ignore_perm( spr_name)
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	sync_bundle_total_produced_sheets_for_doc(doc)
 	sync_bundle_total_produced_bag_pcs_for_doc(doc)
 	if cint(getattr(doc, "custom_is_sheet_cutting", 0)) or cint(getattr(doc, "custom_is_box_bag", 0)):
@@ -17245,7 +17184,7 @@ def spr_get_fabric_batch_pick_context(spr_name: str | None = None):
 	spr_name = _cstr(spr_name)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found."))
-	doc = _spr_get_doc_ignore_perm( spr_name)
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	return doc._spr_build_fabric_batch_pick_context_dict()
 
 
@@ -17316,7 +17255,7 @@ def spr_diagnose_save_blockers(spr_name: str | None = None):
 		if cfs:
 			out["duplicate_custom_fields"].append({"fieldname": fn, "names": cfs})
 
-	doc = _spr_get_doc_ignore_perm( spr_name)
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	out["docstatus"] = cint(doc.docstatus)
 	out["is_bag_spr"] = spr_doc_is_bag_spr(doc)
 	out["fabric_batch_picks_count"] = len(doc.get("fabric_batch_picks") or [])
@@ -17374,7 +17313,7 @@ def spr_save_fabric_batch_picks(spr_name: str | None = None, picks_json=None):
 	spr_name = _cstr(spr_name)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found."))
-	doc = _spr_get_doc_ignore_perm( spr_name)
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	if cint(doc.docstatus) != 0:
 		frappe.throw(_("Fabric batch picks can only be saved on a Draft SPR."))
 	if not frappe.get_meta("Shaft Production Run").has_field("fabric_batch_picks"):

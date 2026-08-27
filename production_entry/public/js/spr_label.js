@@ -58,9 +58,18 @@ production_entry.spr_label.load_spr_doc = async function (sprName, options = {})
 			return doc;
 		}
 	}
+	await _promisifyModel("with_doc", "Shaft Production Run", spr);
+	try {
+		doc = frappe.get_doc("Shaft Production Run", spr);
+	} catch (e) {
+		doc = null;
+	}
+	if (doc && Array.isArray(doc.items) && !forceRefresh && !_docMissingChildTables(doc, requireTables)) {
+		return doc;
+	}
 	const res = await frappe.call({
-		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
-		args: { spr_name: spr },
+		method: "frappe.client.get",
+		args: { doctype: "Shaft Production Run", name: spr },
 	});
 	doc = res.message || null;
 	if (!doc) {
@@ -147,11 +156,7 @@ production_entry.spr_label.print_roll = async function (sprName, rowName) {
 		frappe.msgprint(__("SPR and roll row are required to print the label."));
 		return;
 	}
-	try {
-		await _promisifyModel("with_doctype", "Shaft Production Run Item");
-	} catch (e) {
-		/* Operator may lack child DocPerm — row is synced into locals below. */
-	}
+	await _promisifyModel("with_doctype", "Shaft Production Run Item");
 	const doc = await production_entry.spr_label.load_spr_doc(spr);
 	if (!doc) {
 		frappe.msgprint(__("Could not load SPR for label print."));

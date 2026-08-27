@@ -1902,7 +1902,6 @@ let gsmPollTimer = null;
 let gsmRealtimeBound = false;
 let gsmRefreshInFlight = false;
 let gsmRefreshQueued = false;
-let gsmSaveInFlight = false;
 
 let gsmRefreshDebounceTimer = null;
 let gsmVisibilityBound = false;
@@ -2054,7 +2053,7 @@ function resolveRowShaftNo(row) {
 }
 
 function onGsmProductionEntryUpdated(data) {
-  if (!data || !shiftOpened.value || !gsmPageIsVisible() || gsmSaveInFlight) {
+  if (!data || !shiftOpened.value || !gsmPageIsVisible()) {
     return;
   }
   const u = data.unit || "";
@@ -2088,7 +2087,7 @@ function setupGsmLiveSync() {
     clearInterval(gsmPollTimer);
   }
   gsmPollTimer = setInterval(() => {
-    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight && !gsmSaveInFlight) {
+    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight) {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
   }, 15000);
@@ -5795,7 +5794,7 @@ function submitWithTolerance() {
   submitEntry(overrides);
 }
 
-async function saveRow(row, options = {}) {
+async function saveRow(row) {
   if (row?.is_wasted || row?.row_readonly) {
     frappe.msgprint(__("Wasted rolls are read-only."));
     return;
@@ -5833,7 +5832,6 @@ async function saveRow(row, options = {}) {
   row.planned_qty = updated.planned_qty;
   row.gross_weight = String(gross);
   saveStatus.value = "Saving row…";
-  gsmSaveInFlight = true;
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.save_gsm_roll_line",
@@ -5842,7 +5840,6 @@ async function saveRow(row, options = {}) {
         shift: shift.value,
         roll_payload: JSON.stringify(buildRollPayload({ ...row, row_locked: 1, row_ready_for_print: 1 })),
       },
-      error: () => {},
     });
     const msg = res.message || {};
     row.row_locked = 1;
@@ -5889,17 +5886,9 @@ async function saveRow(row, options = {}) {
     frappe.show_alert({ message: __("Row saved to {0}", [sprName]), indicator: "green" });
     await loadJobBoard();
   } catch (e) {
-    const text = `${e?.message || ""} ${e?.exc || ""}`;
-    const stale = /modified after you have opened it|TimestampMismatchError/i.test(text);
-    if (stale && !options.retry) {
-      await new Promise((r) => setTimeout(r, 400));
-      return await saveRow(row, { retry: true });
-    }
     console.error(e);
     saveStatus.value = "Save failed";
     frappe.msgprint(__("Could not save row to server."));
-  } finally {
-    gsmSaveInFlight = false;
   }
 }
 
@@ -6566,8 +6555,12 @@ async function backfillSessionSprLabelTypes() {
     missing.map(async ([ppId, s]) => {
       try {
         const res = await frappe.call({
-          method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
-          args: { spr_name: s.spr_name },
+          method: "frappe.client.get_value",
+          args: {
+            doctype: "Shaft Production Run",
+            filters: { name: s.spr_name },
+            fieldname: "custom_label",
+          },
         });
         const lt = res.message?.custom_label;
         if (lt) {
@@ -6623,13 +6616,6 @@ function applyResumePayload(msg, options = {}) {
     return 0;
   }
   const sprMap = {};
-  const sprFromRolls = {};
-  for (const r of msg.roll_lines || []) {
-    const ppId = r.pp_id || r.ppId;
-    if (ppId && r.spr_name) {
-      sprFromRolls[ppId] = r.spr_name;
-    }
-  }
   for (const s of msg.session_sprs || []) {
     const ppId = s.pp_id || s.ppId;
     if (ppId && s.spr_name) {
@@ -6642,12 +6628,8 @@ function applyResumePayload(msg, options = {}) {
       };
     }
   }
-  for (const [ppId, sprName] of Object.entries(sprFromRolls)) {
-    sprMap[ppId] = {
-      ...(sprMap[ppId] || {}),
-      pp_id: ppId,
-      spr_name: sprName,
-    };
+  if (Object.keys(sprMap).length) {
+    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
   }
   const serverRows = (msg.roll_lines || []).map((r, idx) => {
     const isMix = !!cint(r.is_mix_roll_row);
@@ -6677,14 +6659,6 @@ function applyResumePayload(msg, options = {}) {
           : !cint(r.is_wasted),
     };
   });
-  if (merge && !serverRows.length && rollLines.value.length) {
-    lastServerSyncAt.value = serverRevision || lastServerSyncAt.value;
-    persistDraft({ quiet: true });
-    return rollLines.value.length;
-  }
-  if (Object.keys(sprMap).length) {
-    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
-  }
   if (merge && rollLines.value.length) {
     const serverByKey = new Map();
     for (const sr of serverRows) {
@@ -6695,8 +6669,11 @@ function applyResumePayload(msg, options = {}) {
     }
     const merged = [...serverRows];
     for (const local of rollLines.value) {
+      if (local.row_locked || local.is_wasted) {
+        continue;
+      }
       const k = rollRowSyncKey(local);
-      if (k && serverByKey.has(k)) {
+      if (!k || serverByKey.has(k)) {
         continue;
       }
       const wasteKey = local.batch_no ? `waste:${local.batch_no}` : "";
@@ -6709,7 +6686,7 @@ function applyResumePayload(msg, options = {}) {
       });
     }
     rollLines.value = sortRollLinesLifo(merged);
-  } else if (serverRows.length || !rollLines.value.length) {
+  } else {
     rollLines.value = sortRollLinesLifo(serverRows);
   }
   if (dismissedMixSprs.value.length) {
@@ -6717,19 +6694,14 @@ function applyResumePayload(msg, options = {}) {
       (r) => !r.is_mix_roll_row || !dismissedMixSprs.value.includes(_cstr(r.spr_name))
     );
   }
-  const incomingJobs = msg.job_selections || [];
-  rebuildSelectedEntriesFromResume(incomingJobs, {
-    replaceAll: !merge && incomingJobs.length > 0,
-  });
+  rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
   if (shiftOpened.value) {
     if (msg.selection_locked != null) {
-      if (!(merge && selectionLocked.value && !cint(msg.selection_locked))) {
-        selectionLocked.value = !!cint(msg.selection_locked);
-      }
+      selectionLocked.value = !!cint(msg.selection_locked);
     } else if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
       selectionLocked.value = true;
     }
-    if (!merge && (selectionLocked.value || incomingJobs.length)) {
+    if (!merge && (selectionLocked.value || (msg.job_selections || []).length)) {
       recordJobApiBaselines(jobBoardJobs.value);
     }
   }
@@ -6755,7 +6727,7 @@ function applyResumePayload(msg, options = {}) {
   syncCreationSeqFromGrid();
   syncBatchCounterFromGrid();
   lastServerSyncAt.value = serverRevision || new Date().toISOString();
-  persistDraft({ quiet: true });
+  scheduleAutosave();
   void backfillSessionSprLabelTypes();
   void restoreActiveMixRollFromSession();
   return serverRows.length;
@@ -6809,9 +6781,7 @@ async function bootstrapFromServerSession(options = {}) {
     } else {
       await loadJobBoard();
     }
-    const count = applyResumePayload(msg, {
-      merge: !!(rollLines.value.length || selectedEntries.value.length),
-    });
+    const count = applyResumePayload(msg, { merge: false });
     await fetchSessionSupplementalOrders();
     await loadJobBoard();
     enrichSelectedEntriesFromBoard();
@@ -6831,9 +6801,6 @@ async function bootstrapFromServerSession(options = {}) {
 
 async function refreshSessionFromServer(options = {}) {
   if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
-    return 0;
-  }
-  if (gsmSaveInFlight) {
     return 0;
   }
   if (!gsmPageIsVisible() && options.quiet) {
@@ -7269,7 +7236,7 @@ async function retryPageLoad() {
     shiftFilterDate.value = runDate.value;
     shiftFilterShift.value = shift.value;
     await fetchOrders();
-    restoreDraft();
+    restoreDraft({ skipRollGrid: true });
     if (filterUnit.value) {
       headerUnit.value = filterUnit.value;
       shiftFilterUnit.value = filterUnit.value;
@@ -8080,7 +8047,7 @@ async function loadPrevShiftConsolidated() {
   }
 }
 
-function persistDraft(options = {}) {
+function persistDraft() {
   try {
     const payload = {
       runDate: runDate.value,
@@ -8102,13 +8069,13 @@ function persistDraft(options = {}) {
       payload.selectedEntries = selectedEntries.value;
       payload.selectionLocked = selectionLocked.value;
     }
-    payload.rollLines = rollLines.value;
-    payload.sessionSprs = sessionSprs.value;
+    if (!shiftOpened.value) {
+      payload.rollLines = rollLines.value;
+      payload.sessionSprs = sessionSprs.value;
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    if (!options.quiet) {
-      if (!saveStatus.value || saveStatus.value === "Saved locally" || saveStatus.value === "Saving…") {
-        saveStatus.value = "Draft saved";
-      }
+    if (!saveStatus.value || saveStatus.value === "Saved locally") {
+      saveStatus.value = "Draft saved";
     }
   } catch (e) {
     saveStatus.value = "Save failed";
@@ -8155,33 +8122,36 @@ function restoreDraft(options = {}) {
     const ctxKey = currentBatchContextKey();
     const draftMatchesContext = Boolean(draftCtxKey && draftCtxKey === ctxKey);
     if (draftMatchesContext) {
-      if (Array.isArray(d.selectedEntries) && d.selectedEntries.length) {
-        selectedEntries.value = d.selectedEntries;
+      if (shiftOpened.value) {
+        if (d.selectedEntries?.length) {
+          selectedEntries.value = d.selectedEntries;
+        } else if (d.selectedLineIds?.length) {
+          const pd = d.filterDate || filterDate.value;
+          selectedEntries.value = d.selectedLineIds.map((id) => ({
+            key: entryKey(pd, id),
+            lineId: id,
+            plannedDate: pd,
+            ppId: "",
+            orderCode: "",
+            quality: "",
+            color: "",
+            gsm: 0,
+            width_inch: 0,
+            widthLabel: "",
+            dayTargetKg: 0,
+            sourceSnapshot: {},
+          }));
+        } else {
+          selectedEntries.value = [];
+        }
         selectionLocked.value = !!d.selectionLocked;
-      } else if (d.selectedLineIds?.length) {
-        const pd = d.filterDate || filterDate.value;
-        selectedEntries.value = d.selectedLineIds.map((id) => ({
-          key: entryKey(pd, id),
-          lineId: id,
-          plannedDate: pd,
-          ppId: "",
-          orderCode: "",
-          quality: "",
-          color: "",
-          gsm: 0,
-          width_inch: 0,
-          widthLabel: "",
-          dayTargetKg: 0,
-          sourceSnapshot: {},
-        }));
-        selectionLocked.value = !!d.selectionLocked;
-      } else if (!shiftOpened.value) {
+      } else {
         selectedEntries.value = [];
         selectionLocked.value = false;
       }
       seriesPrefix.value = d.seriesPrefix || "";
       maxRollSuffix.value = d.maxRollSuffix || 0;
-      if (!skipRollGrid) {
+      if (!skipRollGrid && !shiftOpened.value) {
         rollLines.value = sortRollLinesLifo(
           (d.rollLines || []).map((r) => ({
             ...r,
@@ -8190,9 +8160,7 @@ function restoreDraft(options = {}) {
             row_ready_for_print: !!r.row_ready_for_print,
           }))
         );
-        if (d.sessionSprs && typeof d.sessionSprs === "object") {
-          sessionSprs.value = d.sessionSprs;
-        }
+        sessionSprs.value = d.sessionSprs || {};
       }
     } else {
       selectedEntries.value = [];
@@ -8305,7 +8273,7 @@ onMounted(async () => {
     shiftFilterDate.value = runDate.value;
     shiftFilterShift.value = shift.value;
     await fetchOrders();
-    restoreDraft();
+    restoreDraft({ skipRollGrid: true });
     if (filterUnit.value) {
       headerUnit.value = filterUnit.value;
       shiftFilterUnit.value = filterUnit.value;
