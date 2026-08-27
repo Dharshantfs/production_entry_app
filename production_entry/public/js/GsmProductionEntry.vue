@@ -1902,6 +1902,7 @@ let gsmPollTimer = null;
 let gsmRealtimeBound = false;
 let gsmRefreshInFlight = false;
 let gsmRefreshQueued = false;
+let gsmSaveInFlight = false;
 
 let gsmRefreshDebounceTimer = null;
 let gsmVisibilityBound = false;
@@ -2087,7 +2088,7 @@ function setupGsmLiveSync() {
     clearInterval(gsmPollTimer);
   }
   gsmPollTimer = setInterval(() => {
-    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight) {
+    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight && !gsmSaveInFlight) {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
   }, 15000);
@@ -5799,6 +5800,9 @@ async function saveRow(row) {
     frappe.msgprint(__("Wasted rolls are read-only."));
     return;
   }
+  if (gsmSaveInFlight) {
+    return;
+  }
   if (row?.is_mix_roll_row) {
     await saveMixRollRow(row);
     return;
@@ -5832,6 +5836,7 @@ async function saveRow(row) {
   row.planned_qty = updated.planned_qty;
   row.gross_weight = String(gross);
   saveStatus.value = "Saving row…";
+  gsmSaveInFlight = true;
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.save_gsm_roll_line",
@@ -5889,6 +5894,8 @@ async function saveRow(row) {
     console.error(e);
     saveStatus.value = "Save failed";
     frappe.msgprint(__("Could not save row to server."));
+  } finally {
+    gsmSaveInFlight = false;
   }
 }
 
@@ -6612,6 +6619,13 @@ function applyResumePayload(msg, options = {}) {
     return 0;
   }
   const sprMap = {};
+  const sprFromRolls = {};
+  for (const r of msg.roll_lines || []) {
+    const ppId = r.pp_id || r.ppId;
+    if (ppId && r.spr_name) {
+      sprFromRolls[ppId] = r.spr_name;
+    }
+  }
   for (const s of msg.session_sprs || []) {
     const ppId = s.pp_id || s.ppId;
     if (ppId && s.spr_name) {
@@ -6624,8 +6638,12 @@ function applyResumePayload(msg, options = {}) {
       };
     }
   }
-  if (Object.keys(sprMap).length) {
-    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
+  for (const [ppId, sprName] of Object.entries(sprFromRolls)) {
+    sprMap[ppId] = {
+      ...(sprMap[ppId] || {}),
+      pp_id: ppId,
+      spr_name: sprName,
+    };
   }
   const serverRows = (msg.roll_lines || []).map((r, idx) => {
     const isMix = !!cint(r.is_mix_roll_row);
@@ -6655,6 +6673,13 @@ function applyResumePayload(msg, options = {}) {
           : !cint(r.is_wasted),
     };
   });
+  if (merge && !serverRows.length && rollLines.value.length) {
+    lastServerSyncAt.value = serverRevision || lastServerSyncAt.value;
+    return rollLines.value.length;
+  }
+  if (Object.keys(sprMap).length) {
+    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
+  }
   if (merge && rollLines.value.length) {
     const serverByKey = new Map();
     for (const sr of serverRows) {
@@ -6797,6 +6822,9 @@ async function bootstrapFromServerSession(options = {}) {
 
 async function refreshSessionFromServer(options = {}) {
   if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
+    return 0;
+  }
+  if (gsmSaveInFlight && options.quiet) {
     return 0;
   }
   if (!gsmPageIsVisible() && options.quiet) {

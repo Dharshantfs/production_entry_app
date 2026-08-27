@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import time
 from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 
@@ -12394,38 +12395,61 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 	if not roll_payload or not isinstance(roll_payload, dict):
 		frappe.throw(_("Roll payload is required"))
 
-	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = _spr_get_doc_ignore_perm( spr_name)
-		if cint(spr.docstatus) != 0:
-			frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
-		pp_id = _cstr(spr.get("production_plan")).strip()
-		is_mix = spr_doc_is_mix_roll(spr)
-		if is_mix:
-			pp_id = ""
-			if not _cstr(roll_payload.get("job_id") or roll_payload.get("job")).strip():
-				roll_payload["job_id"] = "1"
-			roll_payload.pop("pp_id", None)
-			roll_payload.pop("work_order", None)
-		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
-		spr._validate_no_duplicate_roll_batches()
-		spr.flags._spr_incremental_roll_save = True
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
-		# Additive: push bay to Batch immediately on Save Row (Batch.custom_bay already exists)
+	last_err = None
+	for attempt in range(6):
 		try:
-			_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
-		except Exception:
-			frappe.log_error(frappe.get_traceback(), f"GSM bay→Batch sync:{spr_name}")
-		result.update(
-			{
-				"status": "ok",
-				"spr_name": spr_name,
-				"total_items": len(spr.items or []),
-				"modified": spr.modified,
-			}
-		)
-		_gsm_publish_session_update(spr)
-		return result
+			with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+				spr = _spr_get_doc_ignore_perm(spr_name)
+				if cint(spr.docstatus) != 0:
+					frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
+				pp_id = _cstr(spr.get("production_plan")).strip()
+				is_mix = spr_doc_is_mix_roll(spr)
+				if is_mix:
+					pp_id = ""
+					if not _cstr(roll_payload.get("job_id") or roll_payload.get("job")).strip():
+						roll_payload["job_id"] = "1"
+					roll_payload.pop("pp_id", None)
+					roll_payload.pop("work_order", None)
+				result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
+				if result.get("action") == "skipped":
+					result.update({"status": "ok", "spr_name": spr_name, "total_items": len(spr.items or [])})
+					return result
+				spr._validate_no_duplicate_roll_batches()
+				spr.flags._spr_incremental_roll_save = True
+				spr.flags.ignore_permissions = True
+				spr.save(ignore_permissions=True)
+				try:
+					_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
+				except Exception:
+					frappe.log_error(frappe.get_traceback(), f"GSM bay→Batch sync:{spr_name}")
+				result.update(
+					{
+						"status": "ok",
+						"spr_name": spr_name,
+						"total_items": len(spr.items or []),
+						"modified": spr.modified,
+					}
+				)
+				_gsm_publish_session_update(spr)
+				return result
+		except frappe.TimestampMismatchError as exc:
+			last_err = exc
+			try:
+				frappe.clear_last_message()
+			except Exception:
+				pass
+			if attempt >= 5:
+				break
+			time.sleep(0.2 * (attempt + 1))
+		except frappe.ValidationError:
+			raise
+
+	frappe.throw(
+		_(
+			"Could not save this roll because {0} was being updated at the same time. "
+			"Click Save Row once more."
+		).format(spr_name)
+	)
 
 
 def _gsm_sync_single_roll_bay_to_batch(spr, roll_payload: dict) -> None:
