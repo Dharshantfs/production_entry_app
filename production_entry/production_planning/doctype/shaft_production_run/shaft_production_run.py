@@ -12391,7 +12391,7 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
 		spr._validate_no_duplicate_roll_batches()
 		spr.flags._spr_incremental_roll_save = True
-		spr.save()
+		spr.save(ignore_permissions=True)
 		# Additive: push bay to Batch immediately on Save Row (Batch.custom_bay already exists)
 		try:
 			_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
@@ -12474,7 +12474,7 @@ def delete_gsm_bundle_packaging_from_spr(spr_name, bundle_batch_no, child_roll_b
 			}
 
 		spr.flags._spr_incremental_roll_save = True
-		spr.save()
+		spr.save(ignore_permissions=True)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -12520,7 +12520,7 @@ def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
 			return {"status": "not_found", "spr_name": spr_name, "batch_no": batch_no, "row_name": row_name}
 
 		spr.flags._spr_incremental_roll_save = True
-		spr.save()
+		spr.save(ignore_permissions=True)
 		_gsm_publish_session_update(spr)
 		return {
 			"status": "ok",
@@ -12566,7 +12566,7 @@ def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
 			lines.append(res)
 		spr._validate_no_duplicate_roll_batches()
 		spr.flags._spr_incremental_roll_save = True
-		spr.save()
+		spr.save(ignore_permissions=True)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -12650,7 +12650,7 @@ def append_roll_lines_for_job_and_save(
 
 		spr._validate_no_duplicate_roll_batches()
 		spr.flags._spr_incremental_roll_save = True
-		spr.save()
+		spr.save(ignore_permissions=True)
 
 		return {
 			"added": len(added_rows),
@@ -17158,7 +17158,7 @@ def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
 		sync_bundle_consumed_meter_header(doc)
 	if cint(doc.docstatus) == 0:
 		doc._spr_recalc_total_produced_weight_header()
-		doc.save()
+		doc.save(ignore_permissions=True)
 	out = []
 	for br in doc.get("bundle_calculation") or []:
 		out.append(
@@ -17335,7 +17335,7 @@ def spr_save_fabric_batch_picks(spr_name: str | None = None, picks_json=None):
 			{"work_order": wo, "item_code": ic, "batch_no": bn, "qty": q},
 		)
 	try:
-		doc.save()
+		doc.save(ignore_permissions=True)
 	except Exception as exc:
 		frappe.log_error(frappe.get_traceback(), f"spr_save_fabric_batch_picks:{spr_name}")
 		frappe.throw(

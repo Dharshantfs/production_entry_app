@@ -4426,7 +4426,7 @@ def get_gsm_spr_wastage_context(spr_name):
 				spr = frappe.get_doc("Shaft Production Run", spr_name)
 				if _gsm_dedupe_spr_roll_waste(spr):
 					spr.flags._spr_incremental_roll_save = True
-					spr.save()
+					spr.save(ignore_permissions=True)
 
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
@@ -4692,7 +4692,7 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 		if existing_waste:
 			if matching_items or removed_dupes:
 				spr.flags._spr_incremental_roll_save = True
-				spr.save()
+				spr.save(ignore_permissions=True)
 				_gsm_publish_session_update(spr)
 			waste_dict = _gsm_child_row_dict(existing_waste, _gsm_child_table_columns("Roll Waste Row"))
 			return _gsm_roll_waste_response(
@@ -4705,7 +4705,7 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 		waste_row = _gsm_build_roll_waste_row_from_item(matching_items[0], roll_payload)
 		spr.append("custom_roll_waste", waste_row)
 		spr.flags._spr_incremental_roll_save = True
-		spr.save()
+		spr.save(ignore_permissions=True)
 		_gsm_publish_session_update(spr)
 
 		roll_waste_child = (spr.custom_roll_waste or [])[-1]
@@ -4763,7 +4763,7 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 		if not added:
 			frappe.throw(_("No recycled rows were added"))
 
-		spr.save()
+		spr.save(ignore_permissions=True)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
