@@ -6623,6 +6623,13 @@ function applyResumePayload(msg, options = {}) {
     return 0;
   }
   const sprMap = {};
+  const sprFromRolls = {};
+  for (const r of msg.roll_lines || []) {
+    const ppId = r.pp_id || r.ppId;
+    if (ppId && r.spr_name) {
+      sprFromRolls[ppId] = r.spr_name;
+    }
+  }
   for (const s of msg.session_sprs || []) {
     const ppId = s.pp_id || s.ppId;
     if (ppId && s.spr_name) {
@@ -6635,8 +6642,12 @@ function applyResumePayload(msg, options = {}) {
       };
     }
   }
-  if (Object.keys(sprMap).length) {
-    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
+  for (const [ppId, sprName] of Object.entries(sprFromRolls)) {
+    sprMap[ppId] = {
+      ...(sprMap[ppId] || {}),
+      pp_id: ppId,
+      spr_name: sprName,
+    };
   }
   const serverRows = (msg.roll_lines || []).map((r, idx) => {
     const isMix = !!cint(r.is_mix_roll_row);
@@ -6666,6 +6677,14 @@ function applyResumePayload(msg, options = {}) {
           : !cint(r.is_wasted),
     };
   });
+  if (merge && !serverRows.length && rollLines.value.length) {
+    lastServerSyncAt.value = serverRevision || lastServerSyncAt.value;
+    persistDraft({ quiet: true });
+    return rollLines.value.length;
+  }
+  if (Object.keys(sprMap).length) {
+    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
+  }
   if (merge && rollLines.value.length) {
     const serverByKey = new Map();
     for (const sr of serverRows) {
@@ -6676,11 +6695,8 @@ function applyResumePayload(msg, options = {}) {
     }
     const merged = [...serverRows];
     for (const local of rollLines.value) {
-      if (local.row_locked || local.is_wasted) {
-        continue;
-      }
       const k = rollRowSyncKey(local);
-      if (!k || serverByKey.has(k)) {
+      if (k && serverByKey.has(k)) {
         continue;
       }
       const wasteKey = local.batch_no ? `waste:${local.batch_no}` : "";
@@ -6693,7 +6709,7 @@ function applyResumePayload(msg, options = {}) {
       });
     }
     rollLines.value = sortRollLinesLifo(merged);
-  } else {
+  } else if (serverRows.length || !rollLines.value.length) {
     rollLines.value = sortRollLinesLifo(serverRows);
   }
   if (dismissedMixSprs.value.length) {
@@ -6701,14 +6717,19 @@ function applyResumePayload(msg, options = {}) {
       (r) => !r.is_mix_roll_row || !dismissedMixSprs.value.includes(_cstr(r.spr_name))
     );
   }
-  rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
+  const incomingJobs = msg.job_selections || [];
+  rebuildSelectedEntriesFromResume(incomingJobs, {
+    replaceAll: !merge && incomingJobs.length > 0,
+  });
   if (shiftOpened.value) {
     if (msg.selection_locked != null) {
-      selectionLocked.value = !!cint(msg.selection_locked);
+      if (!(merge && selectionLocked.value && !cint(msg.selection_locked))) {
+        selectionLocked.value = !!cint(msg.selection_locked);
+      }
     } else if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
       selectionLocked.value = true;
     }
-    if (!merge && (selectionLocked.value || (msg.job_selections || []).length)) {
+    if (!merge && (selectionLocked.value || incomingJobs.length)) {
       recordJobApiBaselines(jobBoardJobs.value);
     }
   }
@@ -6734,7 +6755,7 @@ function applyResumePayload(msg, options = {}) {
   syncCreationSeqFromGrid();
   syncBatchCounterFromGrid();
   lastServerSyncAt.value = serverRevision || new Date().toISOString();
-  scheduleAutosave();
+  persistDraft({ quiet: true });
   void backfillSessionSprLabelTypes();
   void restoreActiveMixRollFromSession();
   return serverRows.length;
@@ -6788,7 +6809,9 @@ async function bootstrapFromServerSession(options = {}) {
     } else {
       await loadJobBoard();
     }
-    const count = applyResumePayload(msg, { merge: false });
+    const count = applyResumePayload(msg, {
+      merge: !!(rollLines.value.length || selectedEntries.value.length),
+    });
     await fetchSessionSupplementalOrders();
     await loadJobBoard();
     enrichSelectedEntriesFromBoard();
@@ -7246,7 +7269,7 @@ async function retryPageLoad() {
     shiftFilterDate.value = runDate.value;
     shiftFilterShift.value = shift.value;
     await fetchOrders();
-    restoreDraft({ skipRollGrid: true });
+    restoreDraft();
     if (filterUnit.value) {
       headerUnit.value = filterUnit.value;
       shiftFilterUnit.value = filterUnit.value;
@@ -8057,7 +8080,7 @@ async function loadPrevShiftConsolidated() {
   }
 }
 
-function persistDraft() {
+function persistDraft(options = {}) {
   try {
     const payload = {
       runDate: runDate.value,
@@ -8079,13 +8102,13 @@ function persistDraft() {
       payload.selectedEntries = selectedEntries.value;
       payload.selectionLocked = selectionLocked.value;
     }
-    if (!shiftOpened.value) {
-      payload.rollLines = rollLines.value;
-      payload.sessionSprs = sessionSprs.value;
-    }
+    payload.rollLines = rollLines.value;
+    payload.sessionSprs = sessionSprs.value;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    if (!saveStatus.value || saveStatus.value === "Saved locally") {
-      saveStatus.value = "Draft saved";
+    if (!options.quiet) {
+      if (!saveStatus.value || saveStatus.value === "Saved locally" || saveStatus.value === "Saving…") {
+        saveStatus.value = "Draft saved";
+      }
     }
   } catch (e) {
     saveStatus.value = "Save failed";
@@ -8132,36 +8155,33 @@ function restoreDraft(options = {}) {
     const ctxKey = currentBatchContextKey();
     const draftMatchesContext = Boolean(draftCtxKey && draftCtxKey === ctxKey);
     if (draftMatchesContext) {
-      if (shiftOpened.value) {
-        if (d.selectedEntries?.length) {
-          selectedEntries.value = d.selectedEntries;
-        } else if (d.selectedLineIds?.length) {
-          const pd = d.filterDate || filterDate.value;
-          selectedEntries.value = d.selectedLineIds.map((id) => ({
-            key: entryKey(pd, id),
-            lineId: id,
-            plannedDate: pd,
-            ppId: "",
-            orderCode: "",
-            quality: "",
-            color: "",
-            gsm: 0,
-            width_inch: 0,
-            widthLabel: "",
-            dayTargetKg: 0,
-            sourceSnapshot: {},
-          }));
-        } else {
-          selectedEntries.value = [];
-        }
+      if (Array.isArray(d.selectedEntries) && d.selectedEntries.length) {
+        selectedEntries.value = d.selectedEntries;
         selectionLocked.value = !!d.selectionLocked;
-      } else {
+      } else if (d.selectedLineIds?.length) {
+        const pd = d.filterDate || filterDate.value;
+        selectedEntries.value = d.selectedLineIds.map((id) => ({
+          key: entryKey(pd, id),
+          lineId: id,
+          plannedDate: pd,
+          ppId: "",
+          orderCode: "",
+          quality: "",
+          color: "",
+          gsm: 0,
+          width_inch: 0,
+          widthLabel: "",
+          dayTargetKg: 0,
+          sourceSnapshot: {},
+        }));
+        selectionLocked.value = !!d.selectionLocked;
+      } else if (!shiftOpened.value) {
         selectedEntries.value = [];
         selectionLocked.value = false;
       }
       seriesPrefix.value = d.seriesPrefix || "";
       maxRollSuffix.value = d.maxRollSuffix || 0;
-      if (!skipRollGrid && !shiftOpened.value) {
+      if (!skipRollGrid) {
         rollLines.value = sortRollLinesLifo(
           (d.rollLines || []).map((r) => ({
             ...r,
@@ -8170,7 +8190,9 @@ function restoreDraft(options = {}) {
             row_ready_for_print: !!r.row_ready_for_print,
           }))
         );
-        sessionSprs.value = d.sessionSprs || {};
+        if (d.sessionSprs && typeof d.sessionSprs === "object") {
+          sessionSprs.value = d.sessionSprs;
+        }
       }
     } else {
       selectedEntries.value = [];
@@ -8283,7 +8305,7 @@ onMounted(async () => {
     shiftFilterDate.value = runDate.value;
     shiftFilterShift.value = shift.value;
     await fetchOrders();
-    restoreDraft({ skipRollGrid: true });
+    restoreDraft();
     if (filterUnit.value) {
       headerUnit.value = filterUnit.value;
       shiftFilterUnit.value = filterUnit.value;
