@@ -6555,12 +6555,8 @@ async function backfillSessionSprLabelTypes() {
     missing.map(async ([ppId, s]) => {
       try {
         const res = await frappe.call({
-          method: "frappe.client.get_value",
-          args: {
-            doctype: "Shaft Production Run",
-            filters: { name: s.spr_name },
-            fieldname: "custom_label",
-          },
+          method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
+          args: { spr_name: s.spr_name },
         });
         const lt = res.message?.custom_label;
         if (lt) {

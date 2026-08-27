@@ -11,6 +11,7 @@ from frappe.utils import cint, flt, getdate, now_datetime
 from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 	_cstr,
 	_spr_exc_message,
+	_spr_get_doc_ignore_perm,
 	_count_combination_segments,
 	_parse_combination_widths_inches,
 	_resolve_wos_for_pp_job_row,
@@ -410,7 +411,7 @@ def _gsm_cleanup_empty_session_sprs(run_date, shift, unit) -> list[str]:
 				_spr_is_real_roll_item_row,
 			)
 
-			spr = frappe.get_doc("Shaft Production Run", row)
+			spr = _spr_get_doc_ignore_perm( row)
 			if any(_spr_is_real_roll_item_row(it) for it in (spr.items or [])):
 				continue
 			spr.delete(ignore_permissions=True)
@@ -988,7 +989,7 @@ def _gsm_label_type_for_pp_spr(pp_id: str | None = None, spr_name: str | None = 
 					if label:
 						break
 	if not label and spr_name and frappe.db.exists("Shaft Production Run", spr_name):
-		label = _spr_pick_doc_field(frappe.get_doc("Shaft Production Run", spr_name), "custom_label")
+		label = _spr_pick_doc_field(_spr_get_doc_ignore_perm( spr_name), "custom_label")
 	return _gsm_label_type_display(label)
 
 
@@ -1059,7 +1060,7 @@ def _gsm_session_roll_revision(session_doc, session_sprs: list) -> str:
 			continue
 		spr_mod = frappe.db.get_value("Shaft Production Run", spr_name, "modified")
 		parts.append(f"{spr_name}:{spr_mod or ''}")
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		for it in spr.items or []:
 			if not _spr_is_real_roll_item_row(it):
 				continue
@@ -1212,7 +1213,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		pp_id = spr_row.get("pp_id")
 		if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 			continue
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		is_mix_roll = spr_doc_is_mix_roll(spr)
 		if is_mix_roll:
 			# Mix rolls stay in the mix workspace. Do not inject them into the
@@ -1658,7 +1659,7 @@ def get_pt_line_roll_quota_status(
 		shift_rolls = 0
 		prior_by_shift = {}
 		for spr_row in sprs:
-			spr = frappe.get_doc("Shaft Production Run", spr_row.name)
+			spr = _spr_get_doc_ignore_perm( spr_row.name)
 			job_row = _match_shaft_job_for_line(
 				spr,
 				pp_id,
@@ -1706,7 +1707,7 @@ def get_pt_line_roll_quota_status(
 		prior_shifts = []
 		spr_name = _find_spr_for_pp(pp_id, prefer_draft=True) or ""
 		if spr_name:
-			spr = frappe.get_doc("Shaft Production Run", spr_name)
+			spr = _spr_get_doc_ignore_perm( spr_name)
 			job_row = _match_shaft_job_for_line(
 				spr,
 				pp_id,
@@ -1761,7 +1762,7 @@ def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_dat
 		if result.get("status") == "ok" and result.get("spr_id"):
 			spr_name = result["spr_id"]
 			if unit and run_date and shift and frappe.db.exists("Shaft Production Run", spr_name):
-				spr = frappe.get_doc("Shaft Production Run", spr_name)
+				spr = _spr_get_doc_ignore_perm( spr_name)
 				changed = False
 				if unit and _cstr(spr.get("custom_unit")) != _cstr(unit):
 					spr.custom_unit = unit
@@ -2134,7 +2135,7 @@ def _planned_qty_kg_from_pp_shaft(
 
 	spr_name = _find_spr_for_pp(pp_id, prefer_draft=True)
 	if spr_name:
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		net_ps, _matched_jid = _spr_net_kg_per_shaft_for_pp_line_width(
 			spr,
 			wx,
@@ -2465,7 +2466,7 @@ def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 		order_by="modified desc",
 		limit=100,
 	)
-	return [_gsm_build_shift_spr_entry(frappe.get_doc("Shaft Production Run", row.name)) for row in sprs]
+	return [_gsm_build_shift_spr_entry(_spr_get_doc_ignore_perm( row.name)) for row in sprs]
 
 
 def _gsm_roll_batch_series_prefix(batch_no: str) -> str:
@@ -2588,7 +2589,7 @@ def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 	by_batch_series = {}
 
 	for spr_name in spr_names or []:
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		entry = _gsm_build_shift_spr_entry(spr)
 		spr_list.append(entry)
 		if entry["spr_status"] == "Submitted":
@@ -2762,7 +2763,7 @@ def _gsm_spr_has_submittable_rolls(spr_name: str) -> bool:
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		return False
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	return any(_spr_is_real_roll_item_row(it) for it in (spr.items or []))
 
 
@@ -2825,7 +2826,7 @@ def _gsm_job_quality_color(pp_id: str, job_id: str, shaft_row: dict | None = Non
 		spr_jobs = {}
 		if spr_name and frappe.db.exists("Shaft Production Run", spr_name):
 			try:
-				spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
+				spr_doc = _spr_get_doc_ignore_perm( spr_name)
 			except Exception:
 				spr_doc = None
 		if spr_doc:
@@ -2987,7 +2988,7 @@ def _gsm_job_production_stats(
 		sn = _cstr(spr_row.get("name") if isinstance(spr_row, dict) else spr_row)
 		if not sn:
 			continue
-		spr = frappe.get_doc("Shaft Production Run", sn)
+		spr = _spr_get_doc_ignore_perm( sn)
 		if sn not in spr_names:
 			spr_names.append(sn)
 		spr_run = getdate(spr.run_date) if spr.get("run_date") else None
@@ -3432,7 +3433,7 @@ def create_gsm_sprs_for_session(
 			)
 			continue
 		spr_name = result["spr_name"]
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
 			spr.save(ignore_permissions=True)
 		label_type = _gsm_label_type_for_pp_spr(pp_id, spr_name)
@@ -3496,7 +3497,7 @@ def _gsm_tolerance_orders_from_sprs(spr_names: list[str]) -> list[dict]:
 
 def _gsm_apply_tolerance_override(spr_name: str, reason: str, approved: int):
 	"""Set SPR tolerance override fields — same fields desk submit dialog uses."""
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	meta = frappe.get_meta("Shaft Production Run")
 	if not meta.has_field("tolerance_override_approved") or not meta.has_field("tolerance_override_reason"):
 		return
@@ -3509,6 +3510,15 @@ def _gsm_apply_tolerance_override(spr_name: str, reason: str, approved: int):
 def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 	"""GSM real-time Save Row — thin wrapper for Vue."""
 	return save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=shift)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_gsm_spr_doc(spr_name):
+	"""GSM-safe SPR load — skips Desk read permission so operators can print labels / tools."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	return _spr_get_doc_ignore_perm(spr_name).as_dict()
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -3703,7 +3713,7 @@ def submit_gsm_production_entry(
 				)
 			continue
 		try:
-			spr = frappe.get_doc("Shaft Production Run", spr_name)
+			spr = _spr_get_doc_ignore_perm( spr_name)
 			# Resume can include already-submitted SPRs (docstatus=1).
 			# Import is only allowed for draft SPRs (docstatus=0), so skip import for submitted SPRs.
 			if cint(spr.docstatus) != 0:
@@ -3767,7 +3777,7 @@ def submit_gsm_production_entry(
 			approved = cint(ov.get("approved") or ov.get("tolerance_override_approved"))
 			if reason and approved:
 				_gsm_apply_tolerance_override(spr_name, reason, approved)
-			doc = frappe.get_doc("Shaft Production Run", spr_name)
+			doc = _spr_get_doc_ignore_perm( spr_name)
 			if cint(doc.docstatus) == 0:
 				doc.flags.ignore_permissions = True
 				doc.submit()
@@ -3791,7 +3801,7 @@ def submit_gsm_production_entry(
 	total_kg = 0.0
 	for row in submitted:
 		try:
-			doc = frappe.get_doc("Shaft Production Run", row["spr_name"])
+			doc = _spr_get_doc_ignore_perm( row["spr_name"])
 			total_kg += sum(flt(getattr(it, "net_weight", 0)) for it in (doc.items or []))
 		except Exception:
 			pass
@@ -4410,7 +4420,7 @@ def get_gsm_spr_wastage_context(spr_name):
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
 
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	if cint(spr.docstatus) == 0:
 		waste_keys = [
 			_cstr(getattr(r, "batch_no", None) or getattr(r, "source_roll", None) or "").strip()
@@ -4423,7 +4433,7 @@ def get_gsm_spr_wastage_context(spr_name):
 			)
 
 			with _spr_operation_lock(spr_name, "write", ttl_sec=60):
-				spr = frappe.get_doc("Shaft Production Run", spr_name)
+				spr = _spr_get_doc_ignore_perm( spr_name)
 				if _gsm_dedupe_spr_roll_waste(spr):
 					spr.flags._spr_incremental_roll_save = True
 					spr.flags.ignore_permissions = True
@@ -4511,7 +4521,7 @@ def get_gsm_available_patty_stock(spr_name):
 
 def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
 	"""When site RPC is unavailable, derive patty-stock from saved wastage rows or GSM preview."""
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	out: list[dict] = []
 
 	for fieldname in ("custom_running_patty_wastage", "custom_roll_waste"):
@@ -4672,7 +4682,7 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 		frappe.throw(_("Roll Waste table is not configured on Shaft Production Run"))
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot mark roll waste on a submitted Shaft Production Run"))
 
@@ -4736,7 +4746,7 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 		frappe.throw(_("Recycled Wastage Details is not configured on Shaft Production Run"))
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot add recycled rows to a submitted Shaft Production Run"))
 
@@ -5083,7 +5093,7 @@ def activate_gsm_mix_roll_for_session(
 
 	spr_name = _cstr(mix_entry.get("spr_name")).strip()
 	if spr_name and frappe.db.exists("Shaft Production Run", spr_name):
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		if cint(spr.docstatus) == 1:
 			frappe.throw(_("Mix roll SPR {0} is already submitted").format(spr_name))
 		if cint(spr.docstatus) == 2:
@@ -5109,7 +5119,7 @@ def activate_gsm_mix_roll_for_session(
 		)
 		_sync_mix_roll_spr_name_in_store(date_key, mix_entry, spr_name)
 
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	rolls = _gsm_serialize_spr_roll_lines_for_grid(spr)
 	return {
 		"status": "ok",
@@ -5126,7 +5136,7 @@ def get_gsm_mix_roll_spr_rolls(spr_name):
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	if not spr_doc_is_mix_roll(spr):
 		frappe.throw(_("Not a mix roll Shaft Production Run"))
 	return {
@@ -5151,7 +5161,7 @@ def add_gsm_mix_roll_line(spr_name, item_code=None, width_inch=None, batch_no=No
 		frappe.throw(_("Shaft Production Run not found"))
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		spr = _spr_get_doc_ignore_perm( spr_name)
 		if not spr_doc_is_mix_roll(spr):
 			frappe.throw(_("Only mix roll SPRs can use this action"))
 		if cint(spr.docstatus) != 0:
@@ -5199,7 +5209,7 @@ def submit_gsm_mix_roll_spr(spr_name):
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr = _spr_get_doc_ignore_perm( spr_name)
 	if not spr_doc_is_mix_roll(spr):
 		frappe.throw(_("Use fabric submit for non-mix SPRs"))
 	already = cint(spr.docstatus) == 1

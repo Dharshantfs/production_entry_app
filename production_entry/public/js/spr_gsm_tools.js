@@ -10,8 +10,8 @@ async function loadSprDocForGsm(sprName) {
 		return production_entry.spr_label.load_spr_doc(sprName);
 	}
 	const res = await frappe.call({
-		method: "frappe.client.get",
-		args: { doctype: "Shaft Production Run", name: sprName },
+		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
+		args: { spr_name: sprName },
 	});
 	return res.message || null;
 }

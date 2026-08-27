@@ -29422,7 +29422,10 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             if not existing_spr_name or not frappe.db.exists("Shaft Production Run", existing_spr_name):
                 return
 
-            spr_doc = frappe.get_doc("Shaft Production Run", existing_spr_name)
+            from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+                _spr_get_doc_ignore_perm,
+            )
+            spr_doc = _spr_get_doc_ignore_perm(existing_spr_name)
             if cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0)):
                 from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
                     populate_spr_bundle_calculation_from_pp,
@@ -29446,7 +29449,10 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             if not jobs:
                 return
 
-            spr_doc = frappe.get_doc("Shaft Production Run", existing_spr_name)
+            from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+                _spr_get_doc_ignore_perm,
+            )
+            spr_doc = _spr_get_doc_ignore_perm(existing_spr_name)
             rows = list(spr_doc.get("shaft_jobs") or [])
             changed = False
 
