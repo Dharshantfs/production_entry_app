@@ -3512,6 +3512,15 @@ def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 
 
 @frappe.whitelist(methods=["GET", "POST"])
+def get_gsm_spr_doc(spr_name):
+	"""GSM label / SPR Tools load. Desk read permission is not required for operators."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	return frappe.get_doc("Shaft Production Run", spr_name).as_dict()
+
+
+@frappe.whitelist(methods=["GET", "POST"])
 def get_warehouse_bays_for_unit(unit=None):
 	"""Bay names for Production Session unit — Warehouse Bay.description like 'UNIT N%'.
 

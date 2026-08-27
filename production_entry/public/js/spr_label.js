@@ -58,18 +58,11 @@ production_entry.spr_label.load_spr_doc = async function (sprName, options = {})
 			return doc;
 		}
 	}
-	await _promisifyModel("with_doc", "Shaft Production Run", spr);
-	try {
-		doc = frappe.get_doc("Shaft Production Run", spr);
-	} catch (e) {
-		doc = null;
-	}
-	if (doc && Array.isArray(doc.items) && !forceRefresh && !_docMissingChildTables(doc, requireTables)) {
-		return doc;
-	}
+	// frappe.model.with_doc / frappe.client.get both check Desk read permission on the SPR,
+	// which operators are not granted. Load through the GSM endpoint instead.
 	const res = await frappe.call({
-		method: "frappe.client.get",
-		args: { doctype: "Shaft Production Run", name: spr },
+		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
+		args: { spr_name: spr },
 	});
 	doc = res.message || null;
 	if (!doc) {
@@ -156,7 +149,11 @@ production_entry.spr_label.print_roll = async function (sprName, rowName) {
 		frappe.msgprint(__("SPR and roll row are required to print the label."));
 		return;
 	}
-	await _promisifyModel("with_doctype", "Shaft Production Run Item");
+	try {
+		await _promisifyModel("with_doctype", "Shaft Production Run Item");
+	} catch (e) {
+		/* Operator may lack the child DocPerm — the row is synced into locals below. */
+	}
 	const doc = await production_entry.spr_label.load_spr_doc(spr);
 	if (!doc) {
 		frappe.msgprint(__("Could not load SPR for label print."));
