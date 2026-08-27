@@ -353,7 +353,7 @@ def _spr_as_administrator():
 		frappe.flags.ignore_permissions = perm_backup
 
 
-def _spr_get_doc_ignore_perm(spr_name):
+def _spr_get_doc_ignore_perm(spr_name, for_update: bool = False):
 	"""Load Shaft Production Run without Desk read / User Permission checks.
 
 	``save(ignore_permissions=True)`` does not skip the earlier ``get_doc`` read
@@ -363,12 +363,44 @@ def _spr_get_doc_ignore_perm(spr_name):
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name:
 		frappe.throw(_("Shaft Production Run is required"))
+	try:
+		cache = getattr(frappe.local, "document_cache", None)
+		if isinstance(cache, dict):
+			for key in (("Shaft Production Run", spr_name), f"Shaft Production Run::{spr_name}"):
+				cache.pop(key, None)
+	except Exception:
+		pass
 	perm_backup = frappe.flags.get("ignore_permissions")
 	frappe.flags.ignore_permissions = True
 	try:
+		if for_update:
+			try:
+				return frappe.get_doc("Shaft Production Run", spr_name, for_update=True)
+			except TypeError:
+				pass
 		return frappe.get_doc(doctype="Shaft Production Run", name=spr_name)
 	finally:
 		frappe.flags.ignore_permissions = perm_backup
+
+
+def _spr_save_gsm_incremental(spr):
+	"""Save a GSM draft SPR without Desk write or stale-timestamp checks.
+
+	Live sync, overlapping Save Row clicks, and other GSM writes update
+	``modified`` between load and save. Operators must not see TimestampMismatchError.
+	"""
+	if not spr:
+		return
+	spr.flags._spr_incremental_roll_save = True
+	spr.flags.ignore_permissions = True
+	spr.flags.ignore_version = True
+	try:
+		db_modified = frappe.db.get_value(spr.doctype, spr.name, "modified")
+		if db_modified:
+			spr.modified = db_modified
+	except Exception:
+		pass
+	spr.save(ignore_permissions=True)
 
 
 def _spr_db_savepoint_name(prefix: str, key: str = "") -> str:
@@ -10134,7 +10166,7 @@ def _spr_acquire_cache_lock(key: str, ttl_sec: int = 120) -> bool:
 
 	if _lock_held():
 		return False
-	return True
+	return False
 
 
 def _spr_release_cache_lock(key: str) -> None:
@@ -10156,7 +10188,13 @@ def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 
 		yield
 		return
 	key = _spr_operation_lock_key(spr_name, operation)
-	acquired = _spr_acquire_cache_lock(key, ttl_sec=ttl_sec)
+	acquired = False
+	deadline = time.time() + 20
+	while time.time() < deadline:
+		acquired = _spr_acquire_cache_lock(key, ttl_sec=ttl_sec)
+		if acquired:
+			break
+		time.sleep(0.25)
 	if not acquired:
 		frappe.throw(
 			_(
@@ -11055,8 +11093,7 @@ def _backfill_spr_roll_shaft_numbers_for_doc(spr, save: bool = True) -> dict:
 			)
 
 	if rows_fixed and save:
-		spr.flags._spr_incremental_roll_save = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 
 	return {
 		"status": "ok",
@@ -12395,61 +12432,46 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 	if not roll_payload or not isinstance(roll_payload, dict):
 		frappe.throw(_("Roll payload is required"))
 
-	last_err = None
-	for attempt in range(6):
-		try:
-			with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-				spr = _spr_get_doc_ignore_perm(spr_name)
-				if cint(spr.docstatus) != 0:
-					frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
-				pp_id = _cstr(spr.get("production_plan")).strip()
-				is_mix = spr_doc_is_mix_roll(spr)
-				if is_mix:
-					pp_id = ""
-					if not _cstr(roll_payload.get("job_id") or roll_payload.get("job")).strip():
-						roll_payload["job_id"] = "1"
-					roll_payload.pop("pp_id", None)
-					roll_payload.pop("work_order", None)
-				result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
-				if result.get("action") == "skipped":
-					result.update({"status": "ok", "spr_name": spr_name, "total_items": len(spr.items or [])})
-					return result
-				spr._validate_no_duplicate_roll_batches()
-				spr.flags._spr_incremental_roll_save = True
-				spr.flags.ignore_permissions = True
-				spr.save(ignore_permissions=True)
-				try:
-					_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
-				except Exception:
-					frappe.log_error(frappe.get_traceback(), f"GSM bay→Batch sync:{spr_name}")
-				result.update(
-					{
-						"status": "ok",
-						"spr_name": spr_name,
-						"total_items": len(spr.items or []),
-						"modified": spr.modified,
-					}
-				)
-				_gsm_publish_session_update(spr)
-				return result
-		except frappe.TimestampMismatchError as exc:
-			last_err = exc
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		result = None
+		spr = None
+		for attempt in range(3):
+			spr = _spr_get_doc_ignore_perm(spr_name, for_update=True)
+			if cint(spr.docstatus) != 0:
+				frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
+			pp_id = _cstr(spr.get("production_plan")).strip()
+			is_mix = spr_doc_is_mix_roll(spr)
+			payload = dict(roll_payload)
+			if is_mix:
+				pp_id = ""
+				if not _cstr(payload.get("job_id") or payload.get("job")).strip():
+					payload["job_id"] = "1"
+				payload.pop("pp_id", None)
+				payload.pop("work_order", None)
+			result = _gsm_upsert_roll_line_on_spr(spr, pp_id, payload, shift=shift)
+			spr._validate_no_duplicate_roll_batches()
 			try:
-				frappe.clear_last_message()
-			except Exception:
-				pass
-			if attempt >= 5:
+				_spr_save_gsm_incremental(spr)
 				break
-			time.sleep(0.2 * (attempt + 1))
-		except frappe.ValidationError:
-			raise
-
-	frappe.throw(
-		_(
-			"Could not save this roll because {0} was being updated at the same time. "
-			"Click Save Row once more."
-		).format(spr_name)
-	)
+			except frappe.TimestampMismatchError:
+				if attempt >= 2:
+					raise
+				continue
+		# Additive: push bay to Batch immediately on Save Row (Batch.custom_bay already exists)
+		try:
+			_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"GSM bay→Batch sync:{spr_name}")
+		result.update(
+			{
+				"status": "ok",
+				"spr_name": spr_name,
+				"total_items": len(spr.items or []),
+				"modified": spr.modified,
+			}
+		)
+		_gsm_publish_session_update(spr)
+		return result
 
 
 def _gsm_sync_single_roll_bay_to_batch(spr, roll_payload: dict) -> None:
@@ -12516,9 +12538,7 @@ def delete_gsm_bundle_packaging_from_spr(spr_name, bundle_batch_no, child_roll_b
 				"bundle_batch_no": bundle_batch_no,
 			}
 
-		spr.flags._spr_incremental_roll_save = True
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -12563,9 +12583,7 @@ def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
 		if not removed_batch and not removed_row:
 			return {"status": "not_found", "spr_name": spr_name, "batch_no": batch_no, "row_name": row_name}
 
-		spr.flags._spr_incremental_roll_save = True
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 		_gsm_publish_session_update(spr)
 		return {
 			"status": "ok",
@@ -12610,9 +12628,7 @@ def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
 				added += 1
 			lines.append(res)
 		spr._validate_no_duplicate_roll_batches()
-		spr.flags._spr_incremental_roll_save = True
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -12695,9 +12711,7 @@ def append_roll_lines_for_job_and_save(
 			)
 
 		spr._validate_no_duplicate_roll_batches()
-		spr.flags._spr_incremental_roll_save = True
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 
 		return {
 			"added": len(added_rows),
@@ -17017,7 +17031,7 @@ def gsm_apply_bundle_packaging(
 		)
 
 		spr._validate_no_duplicate_roll_batches()
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 
 		pp_resolved = pp_id or _cstr(spr.get("production_plan")).strip()
 		order_code = _cstr(spr.get("custom_order_code") or "")

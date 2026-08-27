@@ -2054,7 +2054,7 @@ function resolveRowShaftNo(row) {
 }
 
 function onGsmProductionEntryUpdated(data) {
-  if (!data || !shiftOpened.value || !gsmPageIsVisible()) {
+  if (!data || !shiftOpened.value || !gsmPageIsVisible() || gsmSaveInFlight) {
     return;
   }
   const u = data.unit || "";
@@ -5795,12 +5795,9 @@ function submitWithTolerance() {
   submitEntry(overrides);
 }
 
-async function saveRow(row) {
+async function saveRow(row, options = {}) {
   if (row?.is_wasted || row?.row_readonly) {
     frappe.msgprint(__("Wasted rolls are read-only."));
-    return;
-  }
-  if (gsmSaveInFlight) {
     return;
   }
   if (row?.is_mix_roll_row) {
@@ -5845,6 +5842,7 @@ async function saveRow(row) {
         shift: shift.value,
         roll_payload: JSON.stringify(buildRollPayload({ ...row, row_locked: 1, row_ready_for_print: 1 })),
       },
+      error: () => {},
     });
     const msg = res.message || {};
     row.row_locked = 1;
@@ -5891,6 +5889,12 @@ async function saveRow(row) {
     frappe.show_alert({ message: __("Row saved to {0}", [sprName]), indicator: "green" });
     await loadJobBoard();
   } catch (e) {
+    const text = `${e?.message || ""} ${e?.exc || ""}`;
+    const stale = /modified after you have opened it|TimestampMismatchError/i.test(text);
+    if (stale && !options.retry) {
+      await new Promise((r) => setTimeout(r, 400));
+      return await saveRow(row, { retry: true });
+    }
     console.error(e);
     saveStatus.value = "Save failed";
     frappe.msgprint(__("Could not save row to server."));
@@ -6619,13 +6623,6 @@ function applyResumePayload(msg, options = {}) {
     return 0;
   }
   const sprMap = {};
-  const sprFromRolls = {};
-  for (const r of msg.roll_lines || []) {
-    const ppId = r.pp_id || r.ppId;
-    if (ppId && r.spr_name) {
-      sprFromRolls[ppId] = r.spr_name;
-    }
-  }
   for (const s of msg.session_sprs || []) {
     const ppId = s.pp_id || s.ppId;
     if (ppId && s.spr_name) {
@@ -6638,12 +6635,8 @@ function applyResumePayload(msg, options = {}) {
       };
     }
   }
-  for (const [ppId, sprName] of Object.entries(sprFromRolls)) {
-    sprMap[ppId] = {
-      ...(sprMap[ppId] || {}),
-      pp_id: ppId,
-      spr_name: sprName,
-    };
+  if (Object.keys(sprMap).length) {
+    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
   }
   const serverRows = (msg.roll_lines || []).map((r, idx) => {
     const isMix = !!cint(r.is_mix_roll_row);
@@ -6673,13 +6666,6 @@ function applyResumePayload(msg, options = {}) {
           : !cint(r.is_wasted),
     };
   });
-  if (merge && !serverRows.length && rollLines.value.length) {
-    lastServerSyncAt.value = serverRevision || lastServerSyncAt.value;
-    return rollLines.value.length;
-  }
-  if (Object.keys(sprMap).length) {
-    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
-  }
   if (merge && rollLines.value.length) {
     const serverByKey = new Map();
     for (const sr of serverRows) {
@@ -6824,7 +6810,7 @@ async function refreshSessionFromServer(options = {}) {
   if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
     return 0;
   }
-  if (gsmSaveInFlight && options.quiet) {
+  if (gsmSaveInFlight) {
     return 0;
   }
   if (!gsmPageIsVisible() && options.quiet) {

@@ -12,7 +12,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_cstr,
 	_spr_exc_message,
 	_spr_get_doc_ignore_perm,
-	_units_equivalent,
+	_spr_save_gsm_incremental,
 	_count_combination_segments,
 	_parse_combination_widths_inches,
 	_resolve_wos_for_pp_job_row,
@@ -115,65 +115,17 @@ def _shaft_gsm(shaft_row) -> int:
 		return 0
 
 
-def _gsm_unit_matches(spr_unit, session_unit) -> bool:
-	if _units_equivalent(spr_unit, session_unit):
-		return True
-	a = normalize_planning_unit_for_select(spr_unit)
-	b = normalize_planning_unit_for_select(session_unit)
-	return bool(a and b and a == b and a != "UNASSIGNED")
-
-
-def _gsm_shift_matches(spr_shift, session_shift) -> bool:
-	"""Blank SPR shift still belongs to this GSM date; otherwise compare Day/Night labels."""
-	want = _normalize_gsm_shift_label(session_shift)
-	got = _normalize_gsm_shift_label(spr_shift)
-	if not got:
-		return True
-	return got == want
-
-
-def _gsm_spr_item_roll_counts(spr_names: list[str]) -> dict[str, int]:
-	names = [_cstr(n).strip() for n in (spr_names or []) if _cstr(n).strip()]
-	if not names:
-		return {}
-	rows = frappe.db.sql(
-		"""
-		SELECT parent, COUNT(*) AS n
-		FROM `tabShaft Production Run Item`
-		WHERE parent IN ({placeholders})
-		  AND IFNULL(TRIM(batch_no), '') != ''
-		GROUP BY parent
-		""".format(placeholders=", ".join(["%s"] * len(names))),
-		tuple(names),
-		as_dict=True,
-	)
-	return {_cstr(r.parent): cint(r.n) for r in rows or []}
-
-
-def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None) -> str | None:
-	"""Return draft SPR for PP, preferring the session's unit/date/shift and SPRs that already have rolls."""
+def _find_draft_spr_for_pp(pp_id: str) -> str | None:
+	"""Return draft (docstatus=0) SPR for PP, or None."""
 	if not pp_id:
 		return None
-	rows = frappe.get_all(
+	row = frappe.db.get_value(
 		"Shaft Production Run",
-		filters={"production_plan": pp_id, "docstatus": 0},
-		fields=["name", "custom_unit", "shift", "run_date", "modified"],
+		{"production_plan": pp_id, "docstatus": 0},
+		"name",
 		order_by="modified desc",
-		limit=40,
 	)
-	if not rows:
-		return None
-	counts = _gsm_spr_item_roll_counts([r.name for r in rows])
-	want_date = str(getdate(run_date)) if run_date else ""
-
-	def _score(row):
-		unit_ok = 1 if (not unit or _gsm_unit_matches(row.get("custom_unit"), unit)) else 0
-		date_ok = 1 if (not want_date or str(getdate(row.get("run_date") or "")) == want_date) else 0
-		shift_ok = 1 if (not shift or _gsm_shift_matches(row.get("shift"), shift)) else 0
-		return (unit_ok + date_ok + shift_ok, counts.get(row.name, 0), str(row.get("modified") or ""))
-
-	rows = sorted(rows, key=_score, reverse=True)
-	return _cstr(rows[0].name).strip() or None
+	return _cstr(row).strip() or None
 
 
 def _find_spr_for_pp(pp_id: str, prefer_draft: bool = True) -> str | None:
@@ -1042,18 +994,22 @@ def _gsm_label_type_for_pp_spr(pp_id: str | None = None, spr_name: str | None = 
 	return _gsm_label_type_display(label)
 
 
-def _gsm_draft_sprs_for_session(run_date, shift, unit, extra_pp_ids=None) -> list[dict]:
-	"""Draft/submitted SPR headers for an open GSM shift.
-
-	Matches Unit 2 / UNIT 2 and Day / Day Shift. When the same Production Plan has
-	an empty Create-SPR stub and another SPR that already has rolls, keep the SPR
-	with rolls so GSM does not resume an empty grid.
-	"""
+def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
+	"""Draft SPR headers for an active GSM shift (run_date + shift + unit)."""
 	unit = _cstr(unit).strip()
 	shift = _normalize_gsm_shift_label(shift)
 	if not unit or not run_date or not shift:
 		return []
-	fields = ["name", "production_plan", "custom_order_code", "modified", "shift", "custom_unit"]
+	filters = {
+		# Include both draft and submitted SPRs for an open GSM shift session.
+		# Users can switch computers / reopen the entry screen without losing
+		# already-posted (submitted) roll rows.
+		"docstatus": ["in", [0, 1]],
+		"run_date": getdate(run_date),
+		"shift": shift,
+		"custom_unit": unit,
+	}
+	fields = ["name", "production_plan", "custom_order_code", "modified"]
 	if frappe.db.has_column("Shaft Production Run", "custom_party_code"):
 		fields.append("custom_party_code")
 	if frappe.db.has_column("Shaft Production Run", "custom_label"):
@@ -1062,91 +1018,34 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit, extra_pp_ids=None) -> lis
 		fields.append("is_mix_roll")
 	rows = frappe.get_all(
 		"Shaft Production Run",
-		filters={"docstatus": ["in", [0, 1]], "run_date": getdate(run_date)},
+		filters=filters,
 		fields=fields,
 		order_by="modified desc",
-		limit=200,
+		limit=50,
 	)
-	extra = {_cstr(p).strip() for p in (extra_pp_ids or []) if _cstr(p).strip()}
-	matched = []
+	out = []
 	for row in rows or []:
 		if cint(row.get("is_mix_roll")):
 			continue
 		pp_id = _cstr(row.get("production_plan")).strip()
 		is_trial = 0
 		if not pp_id:
+			# Standalone Trail Order SPR — key GSM session/job-board by the SPR name.
 			pp_id = row.name
 			is_trial = 1
-		unit_ok = _gsm_unit_matches(row.get("custom_unit"), unit)
-		shift_ok = _gsm_shift_matches(row.get("shift"), shift)
-		same_pp = (not is_trial and pp_id in extra)
-		if not ((unit_ok and shift_ok) or same_pp):
-			continue
 		order_code = _cstr(row.get("custom_order_code") or row.get("custom_party_code") or "")
 		if not order_code and not is_trial:
 			order_code = _gsm_order_code_for_pp(pp_id)
-		matched.append(
+		out.append(
 			{
 				"pp_id": pp_id,
 				"spr_name": row.name,
 				"order_code": order_code,
 				"is_trial": is_trial,
-				"unit_ok": 1 if unit_ok else 0,
-				"shift_ok": 1 if shift_ok else 0,
 				"label_type": _gsm_label_type_for_pp_spr(pp_id, row.name)
 				or _gsm_label_type_display(row.get("custom_label") or ""),
 			}
 		)
-
-	# Same-date SPRs for session PPs even when shift/unit labels differ (desk-created runs).
-	pp_ids = extra | {_cstr(r["pp_id"]) for r in matched if not r.get("is_trial")}
-	if pp_ids:
-		seen = {r["spr_name"] for r in matched}
-		for row in rows or []:
-			if row.name in seen or cint(row.get("is_mix_roll")):
-				continue
-			pp_id = _cstr(row.get("production_plan")).strip()
-			if not pp_id or pp_id not in pp_ids:
-				continue
-			order_code = _cstr(row.get("custom_order_code") or row.get("custom_party_code") or "")
-			if not order_code:
-				order_code = _gsm_order_code_for_pp(pp_id)
-			matched.append(
-				{
-					"pp_id": pp_id,
-					"spr_name": row.name,
-					"order_code": order_code,
-					"is_trial": 0,
-					"unit_ok": 1 if _gsm_unit_matches(row.get("custom_unit"), unit) else 0,
-					"shift_ok": 1 if _gsm_shift_matches(row.get("shift"), shift) else 0,
-					"label_type": _gsm_label_type_for_pp_spr(pp_id, row.name)
-					or _gsm_label_type_display(row.get("custom_label") or ""),
-				}
-			)
-
-	counts = _gsm_spr_item_roll_counts([r["spr_name"] for r in matched])
-	for row in matched:
-		row["roll_count"] = counts.get(row["spr_name"], 0)
-
-	# Drop empty stub SPRs when another SPR for the same PP already has rolls.
-	rolls_by_pp: dict[str, int] = {}
-	for row in matched:
-		if row.get("is_trial"):
-			continue
-		pp_id = row["pp_id"]
-		rolls_by_pp[pp_id] = max(rolls_by_pp.get(pp_id, 0), cint(row.get("roll_count") or 0))
-	out = []
-	for row in matched:
-		if (
-			not row.get("is_trial")
-			and cint(row.get("roll_count") or 0) <= 0
-			and rolls_by_pp.get(row["pp_id"], 0) > 0
-		):
-			continue
-		out.append(row)
-
-	# Client sessionSprs last-write-wins — put the SPR with the most rolls last per PP.
-	out.sort(key=lambda r: (r["pp_id"], cint(r.get("roll_count") or 0)))
 	return out
 
 
@@ -1301,8 +1200,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		}
 
 	session_doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, session_name)
-	locked_pp_ids = [_cstr(j.get("pp_id")).strip() for j in _gsm_locked_jobs_from_session(session_doc)]
-	session_sprs = _gsm_draft_sprs_for_session(run_date, shift, unit, extra_pp_ids=locked_pp_ids)
+	session_sprs = _gsm_draft_sprs_for_session(run_date, shift, unit)
 	roll_lines = []
 	job_keys = set()
 
@@ -1856,7 +1754,7 @@ def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_dat
 		frappe.throw(_("Planning Table row name(s) required"))
 
 	if not cint(force_new):
-		existing = _find_draft_spr_for_pp(pp_id, unit=unit, run_date=run_date, shift=shift)
+		existing = _find_draft_spr_for_pp(pp_id)
 		if existing:
 			return {"status": "ok", "spr_name": existing, "reused": 1}
 
@@ -4538,9 +4436,7 @@ def get_gsm_spr_wastage_context(spr_name):
 			with _spr_operation_lock(spr_name, "write", ttl_sec=60):
 				spr = _spr_get_doc_ignore_perm( spr_name)
 				if _gsm_dedupe_spr_roll_waste(spr):
-					spr.flags._spr_incremental_roll_save = True
-					spr.flags.ignore_permissions = True
-					spr.save(ignore_permissions=True)
+					_spr_save_gsm_incremental(spr)
 
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
@@ -4805,9 +4701,7 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 
 		if existing_waste:
 			if matching_items or removed_dupes:
-				spr.flags._spr_incremental_roll_save = True
-				spr.flags.ignore_permissions = True
-				spr.save(ignore_permissions=True)
+				_spr_save_gsm_incremental(spr)
 				_gsm_publish_session_update(spr)
 			waste_dict = _gsm_child_row_dict(existing_waste, _gsm_child_table_columns("Roll Waste Row"))
 			return _gsm_roll_waste_response(
@@ -4819,9 +4713,7 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 
 		waste_row = _gsm_build_roll_waste_row_from_item(matching_items[0], roll_payload)
 		spr.append("custom_roll_waste", waste_row)
-		spr.flags._spr_incremental_roll_save = True
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 		_gsm_publish_session_update(spr)
 
 		roll_waste_child = (spr.custom_roll_waste or [])[-1]
@@ -4879,8 +4771,7 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 		if not added:
 			frappe.throw(_("No recycled rows were added"))
 
-		spr.flags.ignore_permissions = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,
@@ -5294,8 +5185,7 @@ def add_gsm_mix_roll_line(spr_name, item_code=None, width_inch=None, batch_no=No
 		line["party_code"] = _cstr(spr.get("custom_order_code") or "")
 
 		spr.append("items", line)
-		spr.flags._spr_incremental_roll_save = True
-		spr.save(ignore_permissions=True)
+		_spr_save_gsm_incremental(spr)
 
 		added = spr.items[-1]
 		return {
