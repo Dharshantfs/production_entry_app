@@ -290,8 +290,8 @@ function _apiColsToDesk(apiCols, fallbackCols) {
 function _cellValue(row, field) {
 	const aliases = {
 		batch_no: ["batch_no", "batch", "source_roll"],
-		width_inch: ["width_inch", "width", "w"],
-		width: ["width", "width_inch", "w"],
+		width_inch: ["width_inch", "width", "w", "custom_width_inch", "custom_width"],
+		width: ["width", "width_inch", "w", "custom_width_inch", "custom_width"],
 		meter_per_roll: ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"],
 		wastage: ["wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg", "net_wastage"],
 		net_wastage: ["net_wastage", "net_wastage_kg", "wastage_qty", "wastage", "available", "available_qty"],
@@ -326,8 +326,8 @@ function _normalizePattyRow(row) {
 		quality: _val(row, "quality"),
 		color: _val(row, "color"),
 		gsm: _val(row, "gsm"),
-		width_inch: _val(row, "width_inch", "width", "w"),
-		width: _val(row, "width", "width_inch", "w"),
+		width_inch: _val(row, "width_inch", "width", "w", "custom_width_inch", "custom_width"),
+		width: _val(row, "width", "width_inch", "w", "custom_width_inch", "custom_width"),
 		meter_per_roll: _val(row, "meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"),
 		no_of_shafts: _val(row, "no_of_shafts", "shafts", "no_of_shaft"),
 		wastage: _val(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg"),

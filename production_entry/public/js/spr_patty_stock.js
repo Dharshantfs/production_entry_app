@@ -51,7 +51,10 @@ function _normalizeStockRow(row) {
 		quality: row.quality || "",
 		color: row.color || "",
 		gsm: row.gsm != null && row.gsm !== "" ? row.gsm : "",
-		width_inch: row.width_inch != null && row.width_inch !== "" ? row.width_inch : row.width || "",
+		width_inch: (function () {
+			const w = parseFloat(row.width_inch != null && row.width_inch !== "" ? row.width_inch : row.width);
+			return Number.isFinite(w) && w > 0 ? w : parseFloat(row.custom_width_inch) || "";
+		})(),
 		available_kg: row.available_kg != null ? row.available_kg : row.available || row.qty || 0,
 	};
 }
@@ -168,7 +171,10 @@ function _pattyConsumePayload(row) {
 		quality: n.quality || "",
 		color: n.color || "",
 		gsm: n.gsm,
-		width_inch: n.width_inch,
+		width_inch: (function () {
+			const w = parseFloat(n.width_inch);
+			return Number.isFinite(w) && w > 0 ? w : 0;
+		})(),
 		available_kg: Number.isFinite(kg) ? kg : 0,
 	};
 }

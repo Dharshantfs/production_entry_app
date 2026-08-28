@@ -2789,7 +2789,21 @@ def _gsm_hydrate_patty_selection(sel) -> dict:
 		"net_wastage",
 	)
 	qty = flt(_pick_value(out, qty_keys, 0))
-	width = flt(_pick_value(out, ["width_inch", "width", "w"], 0))
+	width = flt(
+		_pick_value(
+			out,
+			[
+				"width_inch",
+				"width",
+				"w",
+				"custom_width_inch",
+				"custom_width",
+				"trim_width",
+				"patty_width",
+			],
+			0,
+		)
+	)
 	quality = _cstr(_pick_value(out, ["quality"], ""))
 	color = _cstr(_pick_value(out, ["color"], ""))
 	gsm = cint(_pick_value(out, ["gsm"], 0))
@@ -2830,7 +2844,56 @@ def _gsm_hydrate_patty_selection(sel) -> dict:
 		out["gsm"] = gsm
 	if item_code:
 		out["item_code"] = item_code
+
+	if width <= 0 or qty <= 0 or not batch_no:
+		for stock in _gsm_patty_stock_rows_cached():
+			stock_batch = _cstr(stock.get("batch_no") or stock.get("name") or "").strip()
+			if batch_no and stock_batch and stock_batch != batch_no:
+				continue
+			if not batch_no:
+				if gsm and cint(stock.get("gsm") or 0) != gsm:
+					continue
+				if quality and _cstr(stock.get("quality")).strip().upper() != quality.upper():
+					continue
+				if color and _cstr(stock.get("color")).strip().upper() != color.upper():
+					continue
+			if width <= 0:
+				width = flt(stock.get("width_inch") or stock.get("width") or 0)
+			if qty <= 0:
+				qty = flt(stock.get("available_kg") or stock.get("available") or 0)
+			if not batch_no and stock_batch:
+				batch_no = stock_batch
+				out["batch_no"] = batch_no
+				out["source_roll"] = batch_no
+			if width > 0 and qty > 0:
+				break
+		if width > 0:
+			out["width_inch"] = width
+			out["width"] = width
+		out["available_kg"] = qty
+		out["available"] = qty
+		out["available_qty"] = qty
+
 	return out
+
+
+def _gsm_patty_stock_rows_cached() -> list:
+	rows = getattr(frappe.local, "_gsm_patty_stock_rows", None)
+	if rows is not None:
+		return rows
+	try:
+		from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+			get_available_patty_stock,
+		)
+
+		raw = get_available_patty_stock() or []
+		if isinstance(raw, dict):
+			raw = raw.get("stock") or raw.get("rows") or []
+		rows = [r for r in raw if isinstance(r, dict)]
+	except Exception:
+		rows = []
+	frappe.local._gsm_patty_stock_rows = rows
+	return rows
 
 
 def _apply_gsm_session_header_to_spr(spr, run_date=None, shift=None, unit=None, operator=None, supervisor=None):
@@ -4035,8 +4098,24 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 	"quality": ("quality", "custom_quality"),
 	"color": ("color", "fabric_colour", "custom_color"),
 	"gsm": ("gsm",),
-	"width_inch": ("width_inch", "width", "w"),
-	"width": ("width", "width_inch", "w"),
+	"width_inch": (
+		"width_inch",
+		"width",
+		"w",
+		"custom_width_inch",
+		"custom_width",
+		"trim_width",
+		"patty_width",
+	),
+	"width": (
+		"width",
+		"width_inch",
+		"w",
+		"custom_width_inch",
+		"custom_width",
+		"trim_width",
+		"patty_width",
+	),
 	"meter_per_roll": (
 		"meter_per_roll",
 		"meter_roll",
@@ -4070,15 +4149,87 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
-	"""Write child row values using whichever fieldnames exist on the live child DocType."""
+def _gsm_recycled_child_doctype() -> str:
+	meta = frappe.get_meta("Shaft Production Run")
+	df = meta.get_field("custom_recycled_wastage_details") if meta else None
+	return _cstr(getattr(df, "options", None) or "Recycled Wastage Detail Row") or "Recycled Wastage Detail Row"
+
+
+def _gsm_child_writable_fields(child_doctype: str) -> set[str]:
 	meta = frappe.get_meta(child_doctype)
 	existing = {df.fieldname for df in meta.fields}
+	for fn in (
+		"job_id",
+		"quality",
+		"color",
+		"gsm",
+		"width_inch",
+		"width",
+		"w",
+		"custom_width_inch",
+		"custom_width",
+		"trim_width",
+		"patty_width",
+		"meter_per_roll",
+		"no_of_shafts",
+		"wastage",
+		"wastage_qty",
+		"net_wastage",
+		"recycled",
+		"recycled_qty",
+		"available",
+		"available_qty",
+		"batch_no",
+		"source_roll",
+		"source_roll_waste_row",
+	):
+		try:
+			if frappe.db.has_column(child_doctype, fn):
+				existing.add(fn)
+		except Exception:
+			pass
+	return existing
+
+
+def _gsm_width_fieldnames(row_or_doctype) -> list[str]:
+	"""Every live child field that stores fabric/patty width (not core width)."""
+	dt = row_or_doctype
+	if not isinstance(dt, str):
+		dt = _cstr(getattr(row_or_doctype, "doctype", None) or _gsm_recycled_child_doctype())
+	names = []
+	seen = set()
+	try:
+		meta = frappe.get_meta(dt)
+	except Exception:
+		meta = None
+	for df in (meta.fields if meta else []) or []:
+		fn = _cstr(getattr(df, "fieldname", "") or "")
+		label = _cstr(getattr(df, "label", "") or "").lower()
+		if not fn or fn in seen:
+			continue
+		low = fn.lower()
+		if "core" in low:
+			continue
+		if "width" in low or "width" in label:
+			seen.add(fn)
+			names.append(fn)
+	for fn in _GSM_CHILD_FIELD_ALIASES.get("width_inch", ()):
+		if fn not in seen:
+			seen.add(fn)
+			names.append(fn)
+	return names
+
+
+def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
+	"""Write child row values using whichever fieldnames exist on the live child DocType."""
+	existing = _gsm_child_writable_fields(child_doctype)
 	out: dict = {}
 	for logical_key, val in (logical or {}).items():
 		if val is None:
 			continue
 		if isinstance(val, str) and not val.strip():
+			continue
+		if logical_key in ("width_inch", "width", "w") and flt(val) <= 0:
 			continue
 		aliases = _GSM_CHILD_FIELD_ALIASES.get(logical_key, (logical_key,))
 		wrote = False
@@ -4088,7 +4239,61 @@ def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
 				wrote = True
 		if not wrote and logical_key in existing:
 			out[logical_key] = val
+	width_out = flt((logical or {}).get("width_inch") or (logical or {}).get("width") or out.get("width_inch") or 0)
+	if width_out > 0:
+		for fn in _gsm_width_fieldnames(child_doctype):
+			if fn in existing:
+				out[fn] = width_out
 	return out
+
+
+def _gsm_stamp_child_values(row, logical: dict) -> None:
+	"""Force-set mapped values on an appended child row (covers Custom Field / alias names)."""
+	if row is None:
+		return
+	dt = _cstr(getattr(row, "doctype", None) or _gsm_recycled_child_doctype())
+	writable = _gsm_child_writable_fields(dt)
+	width_val = flt(
+		_pick_value(logical or {}, ["width_inch", "width", "w", "custom_width_inch", "custom_width"], 0)
+	)
+	for key, val in (logical or {}).items():
+		if val is None:
+			continue
+		if isinstance(val, str) and not val.strip():
+			continue
+		if key in ("width_inch", "width", "w", "custom_width_inch", "custom_width") and flt(val) <= 0:
+			continue
+		aliases = _GSM_CHILD_FIELD_ALIASES.get(key, (key,))
+		for fn in aliases:
+			if fn not in writable:
+				continue
+			try:
+				row.set(fn, val)
+			except Exception:
+				setattr(row, fn, val)
+	if width_val > 0:
+		_gsm_stamp_width_on_child(row, width_val)
+
+
+def _gsm_stamp_width_on_child(row, width) -> None:
+	width = flt(width)
+	if row is None or width <= 0:
+		return
+	writable = _gsm_child_writable_fields(_cstr(getattr(row, "doctype", None) or ""))
+	for fn in _gsm_width_fieldnames(row):
+		if writable and fn not in writable:
+			try:
+				if not frappe.db.has_column(getattr(row, "doctype", None) or "", fn):
+					continue
+			except Exception:
+				continue
+		try:
+			row.set(fn, width)
+		except Exception:
+			try:
+				setattr(row, fn, width)
+			except Exception:
+				pass
 
 
 def _gsm_child_table_columns(child_doctype: str) -> list[dict]:
@@ -4128,20 +4333,57 @@ def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
 	# Field fallbacks for "db-only" columns that may have different stored fieldnames
 	# on the live site vs the repo scaffolds.
 	FALLBACKS = {k: v for k, v in _GSM_CHILD_FIELD_ALIASES.items()}
+	qty_or_width = {
+		"width_inch",
+		"width",
+		"w",
+		"custom_width_inch",
+		"custom_width",
+		"trim_width",
+		"patty_width",
+		"wastage",
+		"wastage_qty",
+		"recycled",
+		"recycled_qty",
+		"available",
+		"available_qty",
+		"available_kg",
+		"net_wastage",
+	}
+
+	def _empty(fn, val):
+		if val is None:
+			return True
+		if isinstance(val, str) and not str(val).strip():
+			return True
+		if fn in qty_or_width or "width" in _cstr(fn).lower():
+			return flt(val or 0) <= 0
+		return False
 
 	for col in columns:
 		fn = col["fieldname"]
 		val = _get(fn)
-		if (val is None or (isinstance(val, str) and not str(val).strip())) and fn in FALLBACKS:
+		if _empty(fn, val) and fn in FALLBACKS:
 			for alt in FALLBACKS[fn]:
 				if alt == fn:
 					continue
-				val = _get(alt)
-				if val is not None and not (isinstance(val, str) and not str(val).strip()):
+				alt_val = _get(alt)
+				if not _empty(alt, alt_val):
+					val = alt_val
 					break
 		if val is not None and hasattr(val, "isoformat"):
 			val = str(val)
 		out[fn] = val
+	if isinstance(src, dict):
+		found_w = flt(_pick_value(out, ["width_inch", "width", "w", "custom_width_inch", "custom_width"], 0))
+		if found_w <= 0:
+			for k, v in src.items():
+				if "width" in _cstr(k).lower() and "core" not in _cstr(k).lower() and flt(v or 0) > 0:
+					found_w = flt(v)
+					break
+		if found_w > 0:
+			out["width_inch"] = found_w
+			out["width"] = found_w
 	return out
 
 
@@ -4175,6 +4417,33 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 	).lower()
 	# Patty-stock recycle rows have no job_id — do not copy production-roll width/meter/batch.
 	skip_spr_roll_fill = is_patty_wastage or (is_recycled and not job_id)
+	if is_recycled and not job_id:
+		filled = _gsm_hydrate_patty_selection(out)
+		filled_w = flt(
+			filled.get("width_inch")
+			or filled.get("width")
+			or filled.get("custom_width_inch")
+			or 0
+		)
+		if filled_w > 0:
+			out["width_inch"] = filled_w
+			out["width"] = filled_w
+			out["w"] = filled_w
+			out["custom_width_inch"] = filled_w
+			out["custom_width"] = filled_w
+		kg = flt(filled.get("available_kg") or filled.get("recycled") or filled.get("wastage") or 0)
+		if kg > 0:
+			if flt(_gsm_pick_row_val(out, "recycled", "recycled_qty") or 0) <= 0:
+				out["recycled"] = kg
+				out["recycled_qty"] = kg
+			if flt(_gsm_pick_row_val(out, "wastage", "wastage_qty") or 0) <= 0:
+				out["wastage"] = kg
+				out["wastage_qty"] = kg
+			out["available_kg"] = kg
+			out["available"] = kg
+		if filled.get("batch_no") and not _cstr(_gsm_pick_row_val(out, "batch_no", "source_roll") or ""):
+			out["batch_no"] = filled.get("batch_no")
+			out["source_roll"] = filled.get("batch_no")
 	width = flt(_gsm_pick_row_val(out, "width_inch", "width", "w") or 0)
 	# Patty width is unit trim (10/12/14/15), not the production roll width.
 	if width <= 0 and not skip_spr_roll_fill:
@@ -4368,7 +4637,13 @@ def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
 		"quality": _cstr(_pick_value(src, ["quality"], "")),
 		"color": _cstr(_pick_value(src, ["color"], "")),
 		"gsm": cint(_pick_value(src, ["gsm"], 0)),
-		"width_inch": flt(_pick_value(src, ["width_inch", "width", "w"], 0)),
+		"width_inch": flt(
+			_pick_value(
+				src,
+				["width_inch", "width", "w", "custom_width_inch", "custom_width", "trim_width", "patty_width"],
+				0,
+			)
+		),
 		"meter_per_roll": flt(
 			_pick_value(
 				src,
@@ -4391,7 +4666,7 @@ def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
 		row_name = _cstr(_pick_value(src, ["name"], ""))
 		if row_name:
 			logical["source_roll_waste_row"] = row_name
-	return _gsm_write_child_row("Recycled Wastage Detail Row", logical)
+	return _gsm_write_child_row(_gsm_recycled_child_doctype(), logical)
 
 
 def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = None) -> dict:
@@ -4873,9 +5148,19 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			row = _gsm_hydrate_patty_selection(sel)
 			if not row:
 				continue
-			spr.append(
-				"custom_recycled_wastage_details",
-				_gsm_map_to_recycled_row(row, from_roll_waste=False),
+			values = _gsm_map_to_recycled_row(row, from_roll_waste=False)
+			child = spr.append("custom_recycled_wastage_details", values)
+			_gsm_stamp_child_values(child, row)
+			_gsm_stamp_child_values(child, values)
+			_gsm_stamp_width_on_child(
+				child,
+				flt(
+					row.get("width_inch")
+					or row.get("width")
+					or values.get("width_inch")
+					or values.get("width")
+					or 0
+				),
 			)
 			added += 1
 
@@ -4888,7 +5173,9 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			rw = roll_waste_by_name.get(rn)
 			if not rw:
 				continue
-			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(rw, from_roll_waste=True))
+			values = _gsm_map_to_recycled_row(rw, from_roll_waste=True)
+			child = spr.append("custom_recycled_wastage_details", values)
+			_gsm_stamp_child_values(child, values)
 			roll_waste_to_remove.append(rw)
 			added += 1
 
