@@ -333,6 +333,12 @@
                   :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_mixing_sheet')"
                   @click="guardedMixingSheet"
                 >Mixing Sheet</button>
+                <button
+                  type="button"
+                  class="gpe-btn"
+                  :disabled="!canOpenMixingSheet"
+                  @click="openBreakdownDialog"
+                >Breakdown</button>
               </div>
               <div v-if="shiftOpened && sessionSprList.length" class="gpe-wastage-recycle-btns">
                 <button
@@ -1795,6 +1801,7 @@ import {
   openGsmRecycleDialog,
 } from "./gsm_wastage_recycle_dialog.js";
 import { openGsmMixingSheetDialog } from "./gsm_mixing_sheet_dialog.js";
+import { openGsmBreakdownDialog } from "./gsm_breakdown_dialog.js";
 import {
   fetchGsmMixRollCandidates,
   activateGsmMixRollForSession,
@@ -4465,6 +4472,15 @@ function preferredSprPickContext() {
 
 function openMixingDialog() {
   openGsmMixingSheetDialog({
+    headerUnit: headerUnit.value || filterUnit.value,
+    runDate: runDate.value,
+    shift: shift.value,
+    shiftSessionId: shiftSession.value?.name || "",
+  });
+}
+
+function openBreakdownDialog() {
+  openGsmBreakdownDialog({
     headerUnit: headerUnit.value || filterUnit.value,
     runDate: runDate.value,
     shift: shift.value,

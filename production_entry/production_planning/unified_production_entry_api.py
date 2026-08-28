@@ -2766,16 +2766,35 @@ def _gsm_coerce_patty_selection(sel) -> dict:
 	return dict(sel) if isinstance(sel, dict) else {}
 
 
+def _gsm_is_real_batch_no(val) -> bool:
+	"""True for Batch names like JS-0208267W/1 — not Frappe child hashes (d4oa1av77v)."""
+	s = _cstr(val).strip()
+	if not s:
+		return False
+	if "/" in s:
+		return True
+	if s.lower() == s and s.isalnum() and 8 <= len(s) <= 12:
+		return False
+	try:
+		return bool(frappe.db.exists("Batch", s))
+	except Exception:
+		return False
+
+
 def _gsm_hydrate_patty_selection(sel) -> dict:
 	"""Fill available_kg / width / specs from Batch when the client payload omitted them."""
 	out = _gsm_coerce_patty_selection(sel)
-	batch_no = _cstr(
-		_pick_value(out, ["batch_no", "batch", "source_roll", "name"], "")
-	).strip()
+	batch_no = _cstr(_pick_value(out, ["batch_no", "batch", "source_roll"], "")).strip()
+	if not _gsm_is_real_batch_no(batch_no):
+		maybe_name = _cstr(out.get("name") or "").strip()
+		batch_no = maybe_name if _gsm_is_real_batch_no(maybe_name) else ""
 	if batch_no:
 		out["batch_no"] = batch_no
-		if not _cstr(out.get("source_roll") or "").strip():
-			out["source_roll"] = batch_no
+		out["source_roll"] = batch_no
+	else:
+		out.pop("batch_no", None)
+		if not _gsm_is_real_batch_no(_cstr(out.get("source_roll") or "")):
+			out.pop("source_roll", None)
 
 	qty_keys = (
 		"available_kg",
@@ -2856,6 +2875,9 @@ def _gsm_hydrate_patty_selection(sel) -> dict:
 				if quality and _cstr(stock.get("quality")).strip().upper() != quality.upper():
 					continue
 				if color and _cstr(stock.get("color")).strip().upper() != color.upper():
+					continue
+				stock_w = flt(stock.get("width_inch") or stock.get("width") or 0)
+				if width > 0 and stock_w > 0 and abs(stock_w - width) > 0.05:
 					continue
 			if width <= 0:
 				width = flt(stock.get("width_inch") or stock.get("width") or 0)
@@ -4142,6 +4164,15 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 	"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
 	"available": ("available", "available_qty", "available_kg", "wastage", "net_wastage"),
 	"available_qty": ("available_qty", "available", "available_kg"),
+	"available_kg": (
+		"available_kg",
+		"available",
+		"available_qty",
+		"wastage",
+		"wastage_qty",
+		"recycled",
+		"recycled_qty",
+	),
 	"batch_no": ("batch_no", "batch", "source_roll"),
 	"source_roll": ("source_roll", "batch_no", "batch"),
 	"source_roll_waste_row": ("source_roll_waste_row", "roll_waste_row", "spr_item_name"),
@@ -4247,6 +4278,41 @@ def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
 	return out
 
 
+_GSM_STAMP_SKIP_KEYS = {
+	"name",
+	"owner",
+	"creation",
+	"modified",
+	"modified_by",
+	"parent",
+	"parentfield",
+	"parenttype",
+	"idx",
+	"docstatus",
+	"doctype",
+}
+_GSM_QTY_STAMP_KEYS = {
+	"available_kg",
+	"available",
+	"available_qty",
+	"wastage",
+	"wastage_qty",
+	"net_wastage",
+	"recycled",
+	"recycled_qty",
+}
+_GSM_QTY_FIELDS = (
+	"wastage",
+	"wastage_qty",
+	"net_wastage",
+	"recycled",
+	"recycled_qty",
+	"available",
+	"available_qty",
+	"available_kg",
+)
+
+
 def _gsm_stamp_child_values(row, logical: dict) -> None:
 	"""Force-set mapped values on an appended child row (covers Custom Field / alias names)."""
 	if row is None:
@@ -4256,12 +4322,19 @@ def _gsm_stamp_child_values(row, logical: dict) -> None:
 	width_val = flt(
 		_pick_value(logical or {}, ["width_inch", "width", "w", "custom_width_inch", "custom_width"], 0)
 	)
+	qty_val = flt(_pick_value(logical or {}, list(_GSM_QTY_STAMP_KEYS), 0))
 	for key, val in (logical or {}).items():
+		if key in _GSM_STAMP_SKIP_KEYS:
+			continue
 		if val is None:
 			continue
 		if isinstance(val, str) and not val.strip():
 			continue
 		if key in ("width_inch", "width", "w", "custom_width_inch", "custom_width") and flt(val) <= 0:
+			continue
+		if key in _GSM_QTY_STAMP_KEYS and flt(val) <= 0:
+			continue
+		if key in ("batch_no", "batch", "source_roll") and not _gsm_is_real_batch_no(val):
 			continue
 		aliases = _GSM_CHILD_FIELD_ALIASES.get(key, (key,))
 		for fn in aliases:
@@ -4273,6 +4346,25 @@ def _gsm_stamp_child_values(row, logical: dict) -> None:
 				setattr(row, fn, val)
 	if width_val > 0:
 		_gsm_stamp_width_on_child(row, width_val)
+	if qty_val > 0:
+		_gsm_stamp_qty_on_child(row, qty_val)
+
+
+def _gsm_stamp_qty_on_child(row, qty) -> None:
+	qty = flt(qty)
+	if row is None or qty <= 0:
+		return
+	writable = _gsm_child_writable_fields(_cstr(getattr(row, "doctype", None) or ""))
+	for fn in _GSM_QTY_FIELDS:
+		if writable and fn not in writable:
+			continue
+		try:
+			row.set(fn, qty)
+		except Exception:
+			try:
+				setattr(row, fn, qty)
+			except Exception:
+				pass
 
 
 def _gsm_stamp_width_on_child(row, width) -> None:
@@ -4418,6 +4510,10 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 	# Patty-stock recycle rows have no job_id — do not copy production-roll width/meter/batch.
 	skip_spr_roll_fill = is_patty_wastage or (is_recycled and not job_id)
 	if is_recycled and not job_id:
+		bn_now = _cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll") or "")
+		if bn_now and not _gsm_is_real_batch_no(bn_now):
+			out["batch_no"] = ""
+			out["source_roll"] = ""
 		filled = _gsm_hydrate_patty_selection(out)
 		filled_w = flt(
 			filled.get("width_inch")
@@ -4441,7 +4537,7 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 				out["wastage_qty"] = kg
 			out["available_kg"] = kg
 			out["available"] = kg
-		if filled.get("batch_no") and not _cstr(_gsm_pick_row_val(out, "batch_no", "source_roll") or ""):
+		if filled.get("batch_no") and _gsm_is_real_batch_no(filled.get("batch_no")):
 			out["batch_no"] = filled.get("batch_no")
 			out["source_roll"] = filled.get("batch_no")
 	width = flt(_gsm_pick_row_val(out, "width_inch", "width", "w") or 0)
@@ -4627,7 +4723,10 @@ def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
 	if recycled_qty <= 0:
 		recycled_qty = consume_kg
 
-	batch_no = _cstr(_pick_value(src, ["batch_no", "batch", "source_roll", "name"], ""))
+	batch_no = _cstr(_pick_value(src, ["batch_no", "batch", "source_roll"], ""))
+	if not _gsm_is_real_batch_no(batch_no):
+		maybe_name = _cstr(_pick_value(src, ["name"], ""))
+		batch_no = maybe_name if _gsm_is_real_batch_no(maybe_name) else ""
 	if not from_roll_waste and consume_kg <= 0:
 		frappe.throw(
 			_("No available quantity to recycle for batch {0}").format(batch_no or _("selected row"))
@@ -5162,6 +5261,26 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 					or 0
 				),
 			)
+			_gsm_stamp_qty_on_child(
+				child,
+				flt(
+					row.get("available_kg")
+					or row.get("wastage")
+					or values.get("wastage")
+					or values.get("recycled")
+					or 0
+				),
+			)
+			real_bn = _cstr(row.get("batch_no") or values.get("batch_no") or "")
+			if _gsm_is_real_batch_no(real_bn):
+				try:
+					child.set("batch_no", real_bn)
+				except Exception:
+					child.batch_no = real_bn
+				try:
+					child.set("source_roll", real_bn)
+				except Exception:
+					child.source_roll = real_bn
 			added += 1
 
 		roll_waste_by_name = {r.name: r for r in (spr.custom_roll_waste or [])}

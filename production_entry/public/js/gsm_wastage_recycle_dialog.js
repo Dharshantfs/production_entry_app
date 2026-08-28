@@ -314,9 +314,34 @@ function _rollNoFromBatch(batchNo) {
 	return Number.isFinite(n) ? String(n) : "";
 }
 
+function _valQty(row, ...keys) {
+	for (const k of keys) {
+		const n = parseFloat(row?.[k]);
+		if (Number.isFinite(n) && n > 0) {
+			return n;
+		}
+	}
+	return _val(row, ...keys);
+}
+
+function _looksLikeBatchNo(v) {
+	const s = String(v || "").trim();
+	if (!s) {
+		return false;
+	}
+	if (s.includes("/")) {
+		return true;
+	}
+	if (/^[a-z0-9]{8,12}$/.test(s)) {
+		return false;
+	}
+	return s.length > 4;
+}
+
 function _normalizePattyRow(row) {
 	const jobId = _val(row, "job_id", "job");
-	const batchNo = _val(row, "batch_no", "batch", "source_roll");
+	const rawBatch = _val(row, "batch_no", "batch", "source_roll");
+	const batchNo = _looksLikeBatchNo(rawBatch) ? rawBatch : "";
 	const printKey = _val(row, "name") || (jobId ? `preview::${jobId}` : "") || batchNo;
 	const normalized = {
 		...row,
@@ -330,13 +355,13 @@ function _normalizePattyRow(row) {
 		width: _val(row, "width", "width_inch", "w", "custom_width_inch", "custom_width"),
 		meter_per_roll: _val(row, "meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"),
 		no_of_shafts: _val(row, "no_of_shafts", "shafts", "no_of_shaft"),
-		wastage: _val(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg"),
-		wastage_qty: _val(row, "wastage_qty", "wastage_qt", "wastage", "net_wastage"),
-		net_wastage: _val(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage", "available", "available_qty"),
-		recycled: _val(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available"),
-		recycled_qty: _val(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available"),
-		available: _val(row, "available", "available_qty", "available_kg", "wastage", "net_wastage"),
-		available_kg: _val(row, "available_kg", "available", "available_qty", "wastage", "net_wastage"),
+		wastage: _valQty(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg"),
+		wastage_qty: _valQty(row, "wastage_qty", "wastage_qt", "wastage", "net_wastage"),
+		net_wastage: _valQty(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage", "available", "available_qty"),
+		recycled: _valQty(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available", "available_kg", "wastage"),
+		recycled_qty: _valQty(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available", "available_kg", "wastage"),
+		available: _valQty(row, "available", "available_qty", "available_kg", "wastage", "net_wastage"),
+		available_kg: _valQty(row, "available_kg", "available", "available_qty", "wastage", "net_wastage"),
 		spr_item_name: _val(row, "spr_item_name", "source_roll_waste_row"),
 		source_roll: _val(row, "source_roll", "batch_no", "batch"),
 		order_code: _val(row, "order_code", "party_code"),

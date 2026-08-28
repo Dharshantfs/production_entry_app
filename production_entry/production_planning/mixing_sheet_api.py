@@ -17,6 +17,34 @@ def _cstr(val) -> str:
 	return (val or "").strip() if val is not None else ""
 
 
+def _mixing_status_label(consumed_by, consumed_at) -> str:
+	user = _cstr(consumed_by)
+	label = user.split("@")[0] if user else "User"
+	if hasattr(consumed_at, "strftime"):
+		hhmm = consumed_at.strftime("%H:%M")
+	else:
+		s = _cstr(consumed_at)
+		hhmm = s[11:16] if len(s) >= 16 else s
+	if not hhmm:
+		return label
+	return f"{label} @ {hhmm}"
+
+
+def _stamp_mixing_row_status(data: dict) -> dict:
+	"""Write the grid Status text (e.g. Administrator @ 13:13) onto each consumed row in JSON."""
+	if not isinstance(data, dict):
+		return data
+	for s in data.get("sets") or []:
+		if not isinstance(s, dict):
+			continue
+		for row in s.get("rows") or []:
+			if not isinstance(row, dict):
+				continue
+			if row.get("consumed"):
+				row["status"] = _mixing_status_label(row.get("consumed_by"), row.get("consumed_at"))
+	return data
+
+
 def _empty_mixing_state() -> dict:
 	return {"mixing_type": "", "sets": [{"materials": {}, "extras": [], "rows": []}], "completed": False}
 
@@ -102,7 +130,7 @@ def _find_mixing_sheet(
 
 
 def _sheet_payload(doc) -> dict:
-	data = _parse_mixing_json(doc.mixing_sheet_data)
+	data = _stamp_mixing_row_status(_parse_mixing_json(doc.mixing_sheet_data))
 	return {
 		"mixing_sheet_name": doc.name,
 		"status": doc.status,
@@ -167,6 +195,7 @@ def _upsert_mixing_sheet(
 	order_code=None,
 ):
 	data = _parse_mixing_json(mixing_sheet_json)
+	data = _stamp_mixing_row_status(data)
 	completed = cint(data.get("completed"))
 
 	found = _find_mixing_sheet(
@@ -269,6 +298,7 @@ def record_mixing_consumption(
 		row["consumed"] = True
 		row["consumed_by"] = frappe.session.user
 		row["consumed_at"] = now_datetime().strftime("%Y-%m-%d %H:%M:%S")
+		row["status"] = _mixing_status_label(row.get("consumed_by"), row.get("consumed_at"))
 
 	payload = _upsert_mixing_sheet(
 		mixing_sheet_json=json.dumps(data),

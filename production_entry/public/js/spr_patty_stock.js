@@ -46,8 +46,8 @@ function _normalizeStockRow(row) {
 	row = row || {};
 	return {
 		...row,
-		name: row.name || row.batch_no || "",
-		batch_no: row.batch_no || row.name || "",
+		name: row.batch_no || row.name || "",
+		batch_no: row.batch_no || (String(row.name || "").includes("/") ? row.name : "") || "",
 		quality: row.quality || "",
 		color: row.color || "",
 		gsm: row.gsm != null && row.gsm !== "" ? row.gsm : "",
@@ -101,7 +101,7 @@ function _stockTableHtml(stock) {
 	const body = stock
 		.map((raw, idx) => {
 			const row = _normalizeStockRow(raw);
-			const key = row.name || row.batch_no || String(idx);
+			const key = row.batch_no || row.name || String(idx);
 			const cells = _STOCK_COLS.map((c) => {
 				let v = row[c.key];
 				if (c.num) {
@@ -164,9 +164,10 @@ function _wirePattyStockDialog($wrapper, stock) {
 function _pattyConsumePayload(row) {
 	const n = _normalizeStockRow(row);
 	const kg = parseFloat(n.available_kg);
+	const qty = Number.isFinite(kg) && kg > 0 ? kg : 0;
+	const batch = String(n.batch_no || "").trim();
 	return {
-		batch_no: n.batch_no || n.name || "",
-		name: n.name || n.batch_no || "",
+		batch_no: batch,
 		item_code: n.item_code || "",
 		quality: n.quality || "",
 		color: n.color || "",
@@ -175,7 +176,9 @@ function _pattyConsumePayload(row) {
 			const w = parseFloat(n.width_inch);
 			return Number.isFinite(w) && w > 0 ? w : 0;
 		})(),
-		available_kg: Number.isFinite(kg) ? kg : 0,
+		available_kg: qty,
+		wastage: qty,
+		recycled: qty,
 	};
 }
 
@@ -193,7 +196,7 @@ production_entry.spr_patty_stock.open_dialog = async function (sprName, options)
 			const picks = [];
 			d.$wrapper.find(".spr-patty-cb:checked").each(function () {
 				const key = String($(this).attr("data-key") || $(this).data("key") || "");
-				const row = stock.find((r, i) => String(r.name || r.batch_no || i) === key);
+				const row = stock.find((r, i) => String(r.batch_no || r.name || i) === key);
 				if (row) {
 					picks.push(_pattyConsumePayload(row));
 				}
