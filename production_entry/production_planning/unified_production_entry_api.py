@@ -38,6 +38,8 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_gsm_roll_suffix_from_batch_no,
 	_spr_resolve_roll_line_specs_from_item_code,
 	_spr_roll_starting_for_gsm_session,
+	_gsm_batch_available_kg,
+	_gsm_patty_stock_from_batch_doc,
 )
 from production_entry.production_planning.scheduler_api import create_item_spr, create_mix_spr, get_current_shift
 from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
@@ -2730,6 +2732,107 @@ def _parse_json_arg(val, default=None):
 	return val
 
 
+def _gsm_as_selection_list(val) -> list:
+	"""Normalize frappe.call JSON / form-dict selections into a list of rows."""
+	parsed = _parse_json_arg(val, [])
+	if parsed is None:
+		return []
+	if isinstance(parsed, dict):
+		if parsed and all(str(k).isdigit() for k in parsed.keys()):
+			return [parsed[k] for k in sorted(parsed.keys(), key=lambda x: int(x))]
+		return [parsed]
+	if isinstance(parsed, list):
+		return parsed
+	return [parsed] if parsed else []
+
+
+def _gsm_coerce_patty_selection(sel) -> dict:
+	if sel is None:
+		return {}
+	if isinstance(sel, str):
+		s = sel.strip()
+		if not s:
+			return {}
+		if s[:1] in "{[":
+			parsed = _parse_json_arg(s, None)
+			if isinstance(parsed, dict):
+				return dict(parsed)
+			if isinstance(parsed, list) and parsed:
+				return _gsm_coerce_patty_selection(parsed[0])
+			return {}
+		return {"batch_no": s, "name": s}
+	if hasattr(sel, "as_dict"):
+		sel = sel.as_dict()
+	return dict(sel) if isinstance(sel, dict) else {}
+
+
+def _gsm_hydrate_patty_selection(sel) -> dict:
+	"""Fill available_kg / width / specs from Batch when the client payload omitted them."""
+	out = _gsm_coerce_patty_selection(sel)
+	batch_no = _cstr(
+		_pick_value(out, ["batch_no", "batch", "source_roll", "name"], "")
+	).strip()
+	if batch_no:
+		out["batch_no"] = batch_no
+		if not _cstr(out.get("source_roll") or "").strip():
+			out["source_roll"] = batch_no
+
+	qty_keys = (
+		"available_kg",
+		"available",
+		"available_qty",
+		"qty",
+		"batch_qty",
+		"actual_qty",
+		"wastage",
+		"wastage_qty",
+		"net_wastage",
+	)
+	qty = flt(_pick_value(out, qty_keys, 0))
+	width = flt(_pick_value(out, ["width_inch", "width", "w"], 0))
+	quality = _cstr(_pick_value(out, ["quality"], ""))
+	color = _cstr(_pick_value(out, ["color"], ""))
+	gsm = cint(_pick_value(out, ["gsm"], 0))
+	item_code = _cstr(_pick_value(out, ["item_code", "item"], ""))
+
+	if batch_no and (qty <= 0 or width <= 0 or not quality or not color or gsm <= 0):
+		if qty <= 0:
+			qty = flt(_gsm_batch_available_kg(batch_no, item_code))
+		if (width <= 0 or not quality or not color or gsm <= 0) and frappe.db.exists("Batch", batch_no):
+			bdoc = frappe.get_doc("Batch", batch_no).as_dict()
+			if not item_code:
+				item_code = _cstr(bdoc.get("item") or bdoc.get("item_code") or "")
+			info = _gsm_patty_stock_from_batch_doc(bdoc, item_code, qty)
+			if width <= 0:
+				width = flt(info.get("width_inch") or 0)
+			if not quality:
+				quality = _cstr(info.get("quality") or "")
+			if not color:
+				color = _cstr(info.get("color") or "")
+			if gsm <= 0:
+				gsm = cint(info.get("gsm") or 0)
+			if not item_code:
+				item_code = _cstr(info.get("item_code") or "")
+			if qty <= 0:
+				qty = flt(info.get("available_kg") or 0)
+
+	out["available_kg"] = qty
+	out["available"] = qty
+	out["available_qty"] = qty
+	if width > 0:
+		out["width_inch"] = width
+		out["width"] = width
+	if quality:
+		out["quality"] = quality
+	if color:
+		out["color"] = color
+	if gsm > 0:
+		out["gsm"] = gsm
+	if item_code:
+		out["item_code"] = item_code
+	return out
+
+
 def _apply_gsm_session_header_to_spr(spr, run_date=None, shift=None, unit=None, operator=None, supervisor=None):
 	"""Set GSM session header fields on draft SPR without touching desk SPR flows."""
 	changed = False
@@ -4067,9 +4170,14 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 	is_patty_wastage = "patty" in child_doctype.lower() or "patty" in _cstr(
 		out.get("parentfield") or ""
 	).lower()
+	is_recycled = "recycl" in child_doctype.lower() or "recycl" in _cstr(
+		out.get("parentfield") or ""
+	).lower()
+	# Patty-stock recycle rows have no job_id — do not copy production-roll width/meter/batch.
+	skip_spr_roll_fill = is_patty_wastage or (is_recycled and not job_id)
 	width = flt(_gsm_pick_row_val(out, "width_inch", "width", "w") or 0)
 	# Patty width is unit trim (10/12/14/15), not the production roll width.
-	if width <= 0 and not is_patty_wastage:
+	if width <= 0 and not skip_spr_roll_fill:
 		for it in job_items:
 			width = flt(getattr(it, "width_inch", 0) or 0)
 			if width > 0:
@@ -4088,7 +4196,7 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 		)
 		or 0
 	)
-	if meter <= 0:
+	if meter <= 0 and not skip_spr_roll_fill:
 		for it in job_items:
 			meter = flt(getattr(it, "meter_roll", 0) or getattr(it, "produced_length_mtrs", 0) or 0)
 			if meter > 0:
@@ -4097,7 +4205,9 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 				break
 
 	batch_no = _cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll", "source_batch") or "")
-	if not batch_no:
+	if not batch_no and is_recycled and not job_id:
+		pass
+	elif not batch_no:
 		if is_patty_wastage:
 			for it in job_items:
 				candidate = _cstr(getattr(it, "batch_no", "") or "")
@@ -4220,10 +4330,18 @@ def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) ->
 
 
 def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
-	if not isinstance(src, dict):
+	if not from_roll_waste:
+		src = _gsm_hydrate_patty_selection(src)
+	elif not isinstance(src, dict):
 		src = src.as_dict() if hasattr(src, "as_dict") else {}
 
-	available_qty = flt(_pick_value(src, ["available_kg", "available", "available_qty"], 0))
+	available_qty = flt(
+		_pick_value(
+			src,
+			["available_kg", "available", "available_qty", "qty", "batch_qty", "actual_qty"],
+			0,
+		)
+	)
 	wastage_qty = flt(
 		_pick_value(
 			src,
@@ -4240,7 +4358,11 @@ def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
 	if recycled_qty <= 0:
 		recycled_qty = consume_kg
 
-	batch_no = _cstr(_pick_value(src, ["batch_no", "batch", "source_roll"], ""))
+	batch_no = _cstr(_pick_value(src, ["batch_no", "batch", "source_roll", "name"], ""))
+	if not from_roll_waste and consume_kg <= 0:
+		frappe.throw(
+			_("No available quantity to recycle for batch {0}").format(batch_no or _("selected row"))
+		)
 	logical = {
 		"job_id": _cstr(_pick_value(src, ["job_id", "job"], "")),
 		"quality": _cstr(_pick_value(src, ["quality"], "")),
@@ -4729,8 +4851,8 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 	)
 
 	spr_name = _cstr(spr_name).strip()
-	patty_selections = _parse_json_arg(patty_selections, [])
-	roll_waste_row_names = _parse_json_arg(roll_waste_row_names, [])
+	patty_selections = _gsm_as_selection_list(patty_selections)
+	roll_waste_row_names = _gsm_as_selection_list(roll_waste_row_names)
 
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
@@ -4748,9 +4870,13 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 
 		added = 0
 		for sel in patty_selections:
-			if not isinstance(sel, dict):
+			row = _gsm_hydrate_patty_selection(sel)
+			if not row:
 				continue
-			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(sel, from_roll_waste=False))
+			spr.append(
+				"custom_recycled_wastage_details",
+				_gsm_map_to_recycled_row(row, from_roll_waste=False),
+			)
 			added += 1
 
 		roll_waste_by_name = {r.name: r for r in (spr.custom_roll_waste or [])}

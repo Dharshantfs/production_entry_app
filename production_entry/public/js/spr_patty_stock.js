@@ -158,6 +158,21 @@ function _wirePattyStockDialog($wrapper, stock) {
 	});
 }
 
+function _pattyConsumePayload(row) {
+	const n = _normalizeStockRow(row);
+	const kg = parseFloat(n.available_kg);
+	return {
+		batch_no: n.batch_no || n.name || "",
+		name: n.name || n.batch_no || "",
+		item_code: n.item_code || "",
+		quality: n.quality || "",
+		color: n.color || "",
+		gsm: n.gsm,
+		width_inch: n.width_inch,
+		available_kg: Number.isFinite(kg) ? kg : 0,
+	};
+}
+
 production_entry.spr_patty_stock.open_dialog = async function (sprName, options) {
 	options = options || {};
 	const stock = await production_entry.spr_patty_stock.fetch(sprName);
@@ -171,10 +186,10 @@ production_entry.spr_patty_stock.open_dialog = async function (sprName, options)
 		d.set_primary_action(__("Consume Selected"), async () => {
 			const picks = [];
 			d.$wrapper.find(".spr-patty-cb:checked").each(function () {
-				const key = $(this).data("key");
-				const row = stock.find((r, i) => (r.name || r.batch_no || String(i)) === key);
+				const key = String($(this).attr("data-key") || $(this).data("key") || "");
+				const row = stock.find((r, i) => String(r.name || r.batch_no || i) === key);
 				if (row) {
-					picks.push(row);
+					picks.push(_pattyConsumePayload(row));
 				}
 			});
 			if (!picks.length) {

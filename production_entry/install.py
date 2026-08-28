@@ -60,6 +60,7 @@ def after_migrate():
 	_ensure_planning_workspace()
 	_ensure_planning_line_unit_docfield_meta()
 	_ensure_parent_fabric_select_options()
+	_enable_planning_sheet_allow_import()
 	_warn_if_duplicate_scheduler_app()
 
 
@@ -127,6 +128,21 @@ def _ensure_parent_fabric_select_options():
 		frappe.log_error(
 			frappe.get_traceback(),
 			"production_entry: sync_parent_fabric_field_options after migrate",
+		)
+
+
+def _enable_planning_sheet_allow_import():
+	"""Keep Planning sheet importable so Role Permission Manager can save Delete/Import flags."""
+	if frappe.flags.in_test:
+		return
+	try:
+		from production_entry.patches.enable_planning_sheet_import import _enable_planning_sheet_import
+
+		_enable_planning_sheet_import()
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			"production_entry: enable Planning sheet allow_import",
 		)
 
 
