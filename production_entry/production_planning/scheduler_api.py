@@ -6898,11 +6898,11 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 
 
 def _nominal_inch_from_mm(mm):
-	"""Convert mm width to nominal whole inches (405 mm → 16"), matching Planning Table display."""
-	mm_val = cint(mm or 0)
+	"""Convert mm width to inches, snapped to nearest 0.5" (800 mm → 31.5", 405 mm → 16")."""
+	mm_val = flt(mm or 0)
 	if mm_val <= 0:
 		return 0.0
-	return float(cint(round(mm_val / 25.4)))
+	return round(round(mm_val / 25.4 * 2.0) / 2.0, 1)
 
 
 def _nominal_inch_from_width_code(width_code_str):
@@ -6969,13 +6969,24 @@ def _parse_104_item_code(item_code):
 	return {}
 
 
-def _width_inch_from_104_item_code(item_code):
-	"""Roll width (inch) from 104 body WWWW — stored as mm integer (e.g. ``0405`` → 405 mm → 16")."""
-	p = _parse_104_item_code(item_code) or {}
+def _width_inch_from_104_item_code(item_code, item_name=""):
+	"""Roll width (inch) from 104: prefer ``W - 31.5`` in the item name, else WWWW mm (``0800`` → 31.5")."""
+	ic = _cstr(item_code).strip()
+	inm = _cstr(item_name).strip()
+	if ic and not inm:
+		try:
+			if frappe.db.exists("Item", ic):
+				inm = _cstr(frappe.db.get_value("Item", ic, "item_name") or "")
+		except Exception:
+			inm = ""
+	_, wname = _parse_gsm_width_from_item_text(f"{ic} {inm}".strip())
+	if flt(wname) > 0:
+		return round(flt(wname), 1)
+	p = _parse_104_item_code(ic) or {}
 	w = flt(p.get("width_inch") or 0)
 	if w > 0:
 		return w
-	digits = "".join(ch for ch in str(item_code or "") if ch.isdigit())
+	digits = "".join(ch for ch in ic if ch.isdigit())
 	for m in re.finditer(r"104\d{13}", digits):
 		block = m.group(0)
 		if len(block) >= 16:
@@ -6996,7 +7007,7 @@ def _resolve_planning_row_width_inch(item_code, db_width=0, item_name=""):
 		lam = _lamination_process_from_item_code(ic)
 		pp = _item_process_prefix(ic)
 		if lam == "104":
-			w = _width_inch_from_104_item_code(ic)
+			w = _width_inch_from_104_item_code(ic, inm)
 		elif lam == "107":
 			w = flt((_parse_107_item_code(ic) or {}).get("width_inch") or 0)
 		elif pp == "255" or lam == "255":
@@ -16827,7 +16838,7 @@ def _populate_planning_sheet_items(ps, doc):
             gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
             if gsm_from_code > 0:
                 gsm = gsm_from_code
-            w104_pop = _width_inch_from_104_item_code(it.item_code)
+            w104_pop = _width_inch_from_104_item_code(it.item_code, getattr(it, "item_name", None) or "")
             if w104_pop > 0:
                 width = w104_pop
         elif _item_process_prefix(str(it.item_code or "")) == "106":
