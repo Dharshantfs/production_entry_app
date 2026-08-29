@@ -50,7 +50,10 @@ doctype_js = {
         "public/js/planning_sheet_custom.js",
         "public/js/planning_sheet_stock_check.js",
     ],
-    "Work Order": "public/js/work_order_rm_uom.js",
+    "Work Order": [
+        "public/js/work_order_rm_uom.js",
+        "public/js/work_order_start_production.js",
+    ],
     "Production Plan": "public/js/production_plan_rm_uom.js",
     "Shaft Production Run": [
         "public/js/child_grid_columns.js",
