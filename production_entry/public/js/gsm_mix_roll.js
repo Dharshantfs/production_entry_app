@@ -189,6 +189,16 @@ export function nextMixRollCombinationSlot(mixRow, existingRows = []) {
   };
 }
 
+export function mixRollShaftCount(mixRow) {
+  const n = Number(mixRow?.no_of_shaft || mixRow?.no_of_shafts || 1);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+export function mixRollMaxRows(mixRow) {
+  const segs = Math.max(1, mixRollWidthOptions(mixRow).length);
+  return mixRollShaftCount(mixRow) * segs;
+}
+
 export function normalizeSpiDiameterCbm(line = {}) {
   const dia = sprFlt(line.custom_diameter_inches ?? line.custom_diameter ?? line.diameter);
   const cbm = sprFlt(line.custom_cbm_cubic_meters ?? line.custom_cbm ?? line.cbm);
@@ -213,7 +223,7 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
     item_code: line.item_code || "",
     item_name: line.item_name || "",
     quality: line.quality || mixMeta.quality || "",
-    color: line.color || mixMeta.clType || "",
+    color: line.color || mixMeta.clType || mixMeta.cl_type || mixMeta.color_transition || "",
     gsm: line.gsm || mixMeta.gsm || 0,
     width_inch: line.width_inch || 0,
     batch_no: line.batch_no || "",

@@ -551,6 +551,7 @@
                     <th class="p-2 border" style="width: 120px;">COLOR</th>
                     <th class="p-2 border" style="width: 60px;">GSM</th>
                     <th class="p-2 border" style="width: 140px;">SHAFT DETAILS</th>
+                    <th class="p-2 border" style="width: 90px;">NO OF SHAFT</th>
                     <th class="p-2 border" style="width: 100px;">WEIGHT (Kg)</th>
                     <th class="p-2 border" style="width: 80px; text-align: center;">RECYCLE</th>
                     <th class="p-2 border" style="width: 120px; text-align: center;">ACTIONS</th>
@@ -561,15 +562,35 @@
                     <td class="p-2 border font-bold text-gray-700 text-center">{{ mix.unit }}</td>
                     <!-- COLOR 1 with background badge -->
                     <td class="p-2 border">
-                        <span class="mix-color-badge" :style="getMixColorBadgeStyle(mix.color1)">{{ mix.color1 }}</span>
+                        <select
+                            class="w-full border p-1 rounded font-bold text-gray-700"
+                            style="font-size: 12px;"
+                            v-model="mix.color1"
+                            :disabled="mix._submitted"
+                            :style="getMixColorBadgeStyle(mix.color1)"
+                            @change="onMixColorChange(mix)"
+                        >
+                            <option value="">Select colour</option>
+                            <option v-for="c in mixColorOptions" :key="'c1-'+c" :value="c">{{ c }}</option>
+                        </select>
                     </td>
-                    <!-- COLOR 2 with background badge -->
+                    <!-- COLOR 2 -->
                     <td class="p-2 border">
-                        <span class="mix-color-badge" :style="getMixColorBadgeStyle(mix.color2)">{{ mix.color2 }}</span>
+                        <select
+                            class="w-full border p-1 rounded font-bold text-gray-700"
+                            style="font-size: 12px;"
+                            v-model="mix.color2"
+                            :disabled="mix._submitted"
+                            :style="getMixColorBadgeStyle(mix.color2)"
+                            @change="onMixColorChange(mix)"
+                        >
+                            <option value="">Select colour</option>
+                            <option v-for="c in mixColorOptions" :key="'c2-'+c" :value="c">{{ c }}</option>
+                        </select>
                     </td>
                     <!-- RECYCLE row: merge MIX NAME + QUALITY + COLOR + GSM + SHAFT + WEIGHT into one cell -->
                     <template v-if="mix.isRecycle">
-                        <td class="p-2 border text-center font-bold" colspan="6" style="background: #fef3c7; font-size: 15px; letter-spacing: 2px; color: #92400e;">
+                        <td class="p-2 border text-center font-bold" colspan="7" style="background: #fef3c7; font-size: 15px; letter-spacing: 2px; color: #92400e;">
                             ♻️ RECYCLE
                         </td>
                     </template>
@@ -604,6 +625,19 @@
                         <td class="p-2 border">
                             <input type="text" class="w-full border p-1 rounded outline-none focus:border-blue-500 text-center font-bold text-gray-700" style="font-size: 12px;" placeholder="32 + 30..." v-model="mix.shaft" :disabled="mix._submitted" @input="debouncedSaveMixRolls()" />
                             <div v-if="mixShaftHint(mix.unit)" class="text-[9px] text-gray-500 mt-0.5 text-center">{{ mixShaftHint(mix.unit) }}</div>
+                        </td>
+                        <td class="p-2 border text-center">
+                        <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            class="w-full border p-1 rounded outline-none focus:border-blue-500 text-center font-mono font-bold"
+                            style="font-size: 12px;"
+                            placeholder="1"
+                            v-model.number="mix.no_of_shaft"
+                            :disabled="mix._submitted"
+                            @input="debouncedSaveMixRolls()"
+                        />
                         </td>
                         <td class="p-2 border text-center">
                         <input 
@@ -1426,6 +1460,24 @@ const filteredData = computed(() => {
 const mixRolls = ref([]);
 let _mixSaveTimeout = null;
 
+const mixColorOptions = computed(() => {
+    const set = new Set();
+    const add = (c) => {
+        const v = String(c || "").trim().toUpperCase();
+        if (v && v !== "NO COLOR") set.add(v);
+    };
+    for (const d of rawData.value || []) add(d.color);
+    for (const d of filteredData.value || []) add(d.color);
+    for (const g of COLOR_GROUPS) {
+        for (const k of g.keywords || []) add(k);
+    }
+    for (const m of mixRolls.value || []) {
+        add(m.color1);
+        add(m.color2);
+    }
+    return Array.from(set).sort((a, b) => compareColor({ color: a }, { color: b }, "asc"));
+});
+
 // Unique key for the current date context (daily / weekly / monthly)
 function getMixRollDateKey() {
     let base = 'day-' + (filterOrderDate.value || 'none');
@@ -1481,6 +1533,7 @@ function _buildRawMixRolls() {
                     clType: clType,
                     gsm: cur.gsm || next.gsm || "",
                     shaft: "",
+                    no_of_shaft: 1,
                     kg: "",
                     item_code: "",
                     item_name: "",
@@ -1533,6 +1586,7 @@ async function rebuildMixRolls() {
             row.clType = s.clType || row.clType || "Color Mix";
             row.gsm = s.gsm || row.gsm;
             row.shaft = s.shaft || "";
+            row.no_of_shaft = s.no_of_shaft || s.no_of_shafts || 1;
             row.kg = s.kg || "";
             row.item_code = s.item_code || "";
             row.item_name = s.item_name || "";
@@ -1562,6 +1616,7 @@ function saveMixRolls() {
         clType: m.clType,
         gsm: m.gsm,
         shaft: m.shaft,
+        no_of_shaft: m.no_of_shaft || 1,
         kg: m.kg,
         item_code: m.item_code,
         item_name: m.item_name,
@@ -1610,9 +1665,7 @@ function revertMixRow(idx) {
 }
 
 function addMixRow() {
-    // Add a blank manual row at the end
-    const units = [...new Set(filteredData.value.map(d => d.unit || 'Unit 1'))];
-    const unit = units[0] || 'Unit 1';
+    const unit = filterUnit.value || [...new Set(filteredData.value.map(d => d.unit || 'Unit 1'))][0] || 'Unit 1';
     mixRolls.value.push({
         unit,
         color1: '',
@@ -1622,6 +1675,7 @@ function addMixRow() {
         clType: 'Color Mix',
         gsm: '',
         shaft: '',
+        no_of_shaft: 1,
         kg: 0,
         item_code: '',
         item_name: '',
@@ -1631,6 +1685,13 @@ function addMixRow() {
         mix_id: "mix-" + Math.random().toString(36).substring(2, 9)
     });
     saveMixRolls();
+}
+
+function onMixColorChange(mix) {
+    if (mix.color1 && mix.color2) {
+        mix.clType = getMixColorType(mix.color1, mix.color2);
+    }
+    debouncedSaveMixRolls();
 }
 
 function getMixColorType(c1, c2) {

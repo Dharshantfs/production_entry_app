@@ -52,6 +52,22 @@ function mixing_set_label(si) {
 	return __("Set {0}", [si + 1]);
 }
 
+function default_mixing_type(unit) {
+	const u = String(unit || "")
+		.toUpperCase()
+		.replace(/-/g, " ");
+	if (u.includes("UNIT 4") || /\bUNIT4\b/.test(u)) {
+		return "Half Mixing";
+	}
+	if (u.includes("UNIT 2") || u.includes("UNIT 3") || /\bUNIT[23]\b/.test(u)) {
+		return "Full Mixing";
+	}
+	if (u.includes("UNIT 1") || /\bUNIT1\b/.test(u)) {
+		return "Half Mixing";
+	}
+	return "Full Mixing";
+}
+
 function make_empty_row(custom_unit) {
 	const is_printing = PRINTING_MACHINES.includes(custom_unit);
 	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
@@ -70,6 +86,7 @@ function make_empty_row(custom_unit) {
 		mb_qty: 0,
 		anti_qty: 0,
 		ppa_qty: 0,
+		mixing_type: default_mixing_type(custom_unit),
 		consumed: false,
 		consumed_by: null,
 		consumed_at: null,
@@ -143,7 +160,7 @@ function open_mixing_sheet_desk(frm) {
 	});
 }
 
-function normalizeMixingState(raw) {
+function normalizeMixingState(raw, custom_unit) {
 	const state = raw || { mixing_type: "", sets: [make_empty_set()], completed: false };
 	if (state.sets && typeof state.sets === "object" && !Array.isArray(state.sets)) {
 		state.sets = [state.sets];
@@ -151,11 +168,19 @@ function normalizeMixingState(raw) {
 	if (!Array.isArray(state.sets) || !state.sets.length) {
 		state.sets = [make_empty_set()];
 	}
+	const fallbackType = state.mixing_type || default_mixing_type(custom_unit);
 	state.sets = state.sets.map((setObj) => {
 		const set = setObj && typeof setObj === "object" ? { ...setObj } : make_empty_set();
 		if (!Array.isArray(set.extras)) set.extras = [];
 		if (!Array.isArray(set.rows)) set.rows = [];
 		if (!set.materials || typeof set.materials !== "object") set.materials = {};
+		set.rows = set.rows.map((row) => {
+			const r = row && typeof row === "object" ? { ...row } : make_empty_row(custom_unit);
+			if (!r.mixing_type) {
+				r.mixing_type = fallbackType;
+			}
+			return r;
+		});
 		return set;
 	});
 	return state;
@@ -167,7 +192,7 @@ function show_dialog(ctx, existing, frm) {
 	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
 	if (_mix_dialog) _mix_dialog.hide();
 
-	const state = normalizeMixingState(existing);
+	const state = normalizeMixingState(existing, custom_unit);
 	if (state.completed || ctx.read_only) {
 		frappe.msgprint({
 			title: __("Mixing Completed"),
@@ -183,16 +208,6 @@ function show_dialog(ctx, existing, frm) {
 		`${ctx.run_date || ""} · ${ctx.shift || ""} · ${custom_unit}`;
 
 	const fields = [];
-	if (!is_printing) {
-		fields.push({
-			fieldname: "mixing_type",
-			label: __("Mixing Type"),
-			fieldtype: "Select",
-			options: "\nFull Mixing\nHalf Mixing",
-			reqd: 1,
-			default: state.mixing_type,
-		});
-	}
 	fields.push({ fieldtype: "Section Break", label: __("Raw Materials") });
 
 	if (is_printing) {
@@ -305,7 +320,6 @@ function show_dialog(ctx, existing, frm) {
 		d.set_value("masterbatch_item", m0.Masterbatch || "");
 		d.set_value("antistatic_item", m0.Antistatic || "");
 		d.set_value("ppa_item", m0.PPA || "");
-		if (state.mixing_type) d.set_value("mixing_type", state.mixing_type);
 	}
 
 	render_all(d, ctx, state, frm);
@@ -415,7 +429,6 @@ function show_dialog(ctx, existing, frm) {
 			__("<b>Finish and submit this Mixing Sheet?</b><br><br>This will lock the sheet."),
 			() => {
 				collect_row_qtys(d, state);
-				if (!is_printing) state.mixing_type = d.get_value("mixing_type");
 				state.completed = true;
 				persist(() => {
 					frappe.msgprint(__("Mixing Sheet submitted successfully."));
@@ -431,19 +444,12 @@ function show_dialog(ctx, existing, frm) {
 
 	d.footer.find("#btn_save_all").on("click", () => {
 		collect_row_qtys(d, state);
-		if (!is_printing) state.mixing_type = d.get_value("mixing_type");
 		persist(() => {
 			frappe.show_alert({ message: __("Mixing Sheet saved."), indicator: "green" });
 			if (frm) frm.reload_doc();
 			if (ctx.on_saved) ctx.on_saved();
 		});
 	});
-
-	if (!is_printing) {
-		d.fields_dict.mixing_type.$input.on("change", () => {
-			state.mixing_type = d.get_value("mixing_type");
-		});
-	}
 
 	let mixAutosaveTimer = null;
 	const scheduleMixAutosave = () => {
@@ -452,14 +458,10 @@ function show_dialog(ctx, existing, frm) {
 		mixAutosaveTimer = setTimeout(() => {
 			mixAutosaveTimer = null;
 			collect_row_qtys(d, state);
-			if (!is_printing) state.mixing_type = d.get_value("mixing_type");
 			persist();
 		}, 5000);
 	};
-	d.wrapper.on("input change", ".row-qty, .row-qty-extra", scheduleMixAutosave);
-	if (!is_printing) {
-		d.fields_dict.mixing_type.$input.on("change", scheduleMixAutosave);
-	}
+	d.wrapper.on("input change", ".row-qty, .row-qty-extra, .row-mixing-type", scheduleMixAutosave);
 	const prevOnhide = d.onhide;
 	d.onhide = () => {
 		if (mixAutosaveTimer) clearTimeout(mixAutosaveTimer);
@@ -472,10 +474,6 @@ function save_raw_materials(d, ctx, state, frm) {
 	const is_printing = PRINTING_MACHINES.includes(custom_unit);
 	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
 	const v = d.get_values();
-	if (!is_printing && !v.mixing_type) {
-		frappe.msgprint(__("Please select Mixing Type first."));
-		return;
-	}
 
 	let selected = {};
 	if (is_printing) {
@@ -508,7 +506,6 @@ function save_raw_materials(d, ctx, state, frm) {
 	}
 
 	const apply_to_set = (index) => {
-		if (!is_printing) state.mixing_type = v.mixing_type;
 		state.sets[index].materials = selected;
 		state.sets[index].rows = [];
 		build_rows(state.sets[index], custom_unit);
@@ -660,6 +657,13 @@ function render_set_html(set, si, ctx, state, readOnly) {
 			.join("");
 
 		const dis = readOnly || row.consumed ? "disabled" : "";
+		const mixType = row.mixing_type || default_mixing_type(custom_unit);
+		const typeSelect = is_printing
+			? ""
+			: `<td><select class="form-control form-control-sm row-mixing-type" data-set="${si}" data-row="${ri}" ${dis}>
+					<option value="Full Mixing"${mixType === "Full Mixing" ? " selected" : ""}>${__("Full Mixing")}</option>
+					<option value="Half Mixing"${mixType === "Half Mixing" ? " selected" : ""}>${__("Half Mixing")}</option>
+				</select></td>`;
 		if (is_printing) {
 			const solvent_cols = uses_solvent
 				? `
@@ -676,6 +680,7 @@ function render_set_html(set, si, ctx, state, readOnly) {
 		} else {
 			rows_html += `<tr style="${row.consumed ? "background:#f0fff0" : ""}">
 				<td style="text-align:center;width:40px">${ri + 1}</td>
+				${typeSelect}
 				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="pp_qty" value="${row.pp_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
 				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="filler_qty" value="${row.filler_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
 				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="mb_qty" value="${row.mb_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
@@ -704,6 +709,7 @@ function render_set_html(set, si, ctx, state, readOnly) {
 		table = `<table class="table table-bordered table-sm" style="margin-top:8px;font-size:13px">
 			<thead><tr>
 				<th>#</th>
+				<th>${__("Mixing Type")}</th>
 				<th>${names.PP || m.PP || "PP"} (kg)</th>
 				<th>${names.Filler || m.Filler || __("Filler")} (kg)</th>
 				<th>${names.Masterbatch || m.Masterbatch || __("Masterbatch")} (kg)</th>
@@ -813,6 +819,14 @@ function collect_row_qtys(d, state) {
 			state.sets[si].rows[ri].extras[item_code] = parseFloat(el.val()) || 0;
 		}
 	});
+	d.fields_dict.main_html.$wrapper.find(".row-mixing-type").each(function () {
+		const el = $(this);
+		const si = parseInt(el.data("set"), 10);
+		const ri = parseInt(el.data("row"), 10);
+		if (state.sets[si]?.rows[ri]) {
+			state.sets[si].rows[ri].mixing_type = el.val() || default_mixing_type("");
+		}
+	});
 }
 
 function print_mixing_sheet(state, ctx) {
@@ -838,7 +852,7 @@ function print_mixing_sheet(state, ctx) {
 					return `<tr><td>${i + 1}</td><td>${r.ink_qty || 0}</td>${extras_cols}${solvent_cols}
 						<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
 				}
-				return `<tr><td>${i + 1}</td><td>${r.pp_qty || 0}</td><td>${r.filler_qty || 0}</td>
+				return `<tr><td>${i + 1}</td><td>${r.mixing_type || ""}</td><td>${r.pp_qty || 0}</td><td>${r.filler_qty || 0}</td>
 					<td>${r.mb_qty || 0}</td><td>${r.anti_qty || 0}</td><td>${r.ppa_qty || 0}</td>${extras_cols}
 					<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
 			})
@@ -860,7 +874,7 @@ function print_mixing_sheet(state, ctx) {
 			return `<h3>Raw Material Set ${si + 1}</h3>
 				<p>PP: <b>${m.PP || "-"}</b> | Filler: <b>${m.Filler || "-"}</b> | MB: <b>${m.Masterbatch || "-"}</b></p>
 				<table border="1" cellpadding="6" style="width:100%;font-size:12px;border-collapse:collapse">
-				<thead><tr><th>#</th><th>PP</th><th>Filler</th><th>MB</th><th>Anti</th><th>Modifier</th>${extras_headers}<th>Time</th><th>Signature</th></tr></thead>
+				<thead><tr><th>#</th><th>Mixing Type</th><th>PP</th><th>Filler</th><th>MB</th><th>Anti</th><th>Modifier</th>${extras_headers}<th>Time</th><th>Signature</th></tr></thead>
 				<tbody>${rows_html(set)}</tbody></table>`;
 		})
 		.join("");
@@ -869,7 +883,7 @@ function print_mixing_sheet(state, ctx) {
 	win.document.write(`<!DOCTYPE html><html><head><title>Mixing Sheet — ${title}</title>
 		<style>body{font-family:Arial,sans-serif;padding:20px}h2{text-align:center}</style></head><body>
 		<h2>MIXING SHEET</h2>
-		<p style="text-align:center"><b>${title}</b> | Type: <b>${state.mixing_type || ""}</b> | ${frappe.datetime.now_datetime()}</p>
+		<p style="text-align:center"><b>${title}</b> | ${frappe.datetime.now_datetime()}</p>
 		${sets_html}
 		<script>window.print();</script></body></html>`);
 	win.document.close();

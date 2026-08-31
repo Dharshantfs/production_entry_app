@@ -1,0 +1,140 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-08-31 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "run_date",
+  "shift",
+  "custom_unit",
+  "column_break_1",
+  "gsm_shift_session",
+  "shift_mixing_sheet",
+  "section_break_sets",
+  "material_sets",
+  "section_break_items",
+  "mixing_items"
+ ],
+ "fields": [
+  {
+   "default": "SWML-.YYYY.-",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "SWML-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "run_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "shift",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Shift",
+   "options": "Day Shift\nNight Shift",
+   "reqd": 1
+  },
+  {
+   "fieldname": "custom_unit",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Unit",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gsm_shift_session",
+   "fieldtype": "Link",
+   "label": "GSM Shift Session",
+   "options": "GSM Shift Session"
+  },
+  {
+   "fieldname": "shift_mixing_sheet",
+   "fieldtype": "Link",
+   "label": "Shift Mixing Sheet",
+   "options": "Shift Mixing Sheet"
+  },
+  {
+   "fieldname": "section_break_sets",
+   "fieldtype": "Section Break",
+   "label": "Raw Material Sets"
+  },
+  {
+   "fieldname": "material_sets",
+   "fieldtype": "Table",
+   "label": "Set Items",
+   "options": "Shift Wise Mixing Set"
+  },
+  {
+   "fieldname": "section_break_items",
+   "fieldtype": "Section Break",
+   "label": "Mixing Rows"
+  },
+  {
+   "fieldname": "mixing_items",
+   "fieldtype": "Table",
+   "label": "RAW MATERIAL SET",
+   "options": "Shift Wise Mixing Item"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-31 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Shift Wise Mixing List",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

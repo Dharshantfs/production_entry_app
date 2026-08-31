@@ -28602,7 +28602,8 @@ def create_mix_spr(date_key, mix_data, run_date=None, shift=None, unit=None):
             or mix.get("meters_per_roll")
         )
         row.meter_roll_mtrs = flt(raw_meter) if raw_meter else 0
-        row.no_of_shafts = len(widths) if widths else 1
+        n_shaft = cint(mix.get("no_of_shaft") or mix.get("no_of_shafts") or 0)
+        row.no_of_shafts = n_shaft if n_shaft > 0 else 1
         row.no_of_rolls = 1
         row.total_weight = flt(mix.get("kg"))
 

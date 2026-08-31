@@ -1,0 +1,66 @@
+{
+ "actions": [],
+ "creation": "2026-08-31 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "set_no",
+  "polypropylene_item",
+  "filler_item",
+  "modifier_item",
+  "antistatic_item",
+  "masterbatch_item"
+ ],
+ "fields": [
+  {
+   "fieldname": "set_no",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Set No",
+   "reqd": 1
+  },
+  {
+   "fieldname": "polypropylene_item",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Polypropylene"
+  },
+  {
+   "fieldname": "filler_item",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Filler"
+  },
+  {
+   "fieldname": "modifier_item",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Modifier"
+  },
+  {
+   "fieldname": "antistatic_item",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Antistatic"
+  },
+  {
+   "fieldname": "masterbatch_item",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Masterbatch"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-31 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Shift Wise Mixing Set",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

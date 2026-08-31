@@ -181,7 +181,7 @@
             </div>
             <div class="gpe-mix-roll-meta">
               <span>{{ mix.color_transition }}</span>
-              <span>{{ mix.gsm }} GSM · {{ mix.shaft || "—" }}</span>
+              <span>{{ mix.gsm }} GSM · {{ mix.shaft || "—" }} · {{ mixRollShaftCount(mix) }} shaft(s)</span>
               <span class="gpe-muted">Chart: {{ formatMixPlanningKey(mix.planning_date_key) }}</span>
               <span v-if="mix.spr_name" class="gpe-muted">SPR: {{ mix.spr_name }}</span>
               <span
@@ -461,7 +461,7 @@
             <button
               type="button"
               class="gpe-btn gpe-btn-warn"
-              title="Clear grid and mix roll workspace — server SPRs are kept"
+              title="Clear grid including mix roll rows — server SPRs are kept"
               :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_clear_entries')"
               @click="guardedClearEntries"
             >Clear Entries</button>
@@ -495,53 +495,20 @@
           <div class="gpe-mix-roll-workspace-head">
             <div class="gpe-mix-roll-title">
               <strong>Mix Roll · {{ activeMixRoll.label }}</strong>
-              <span>{{ activeMixRoll.color_transition }} · {{ activeMixRoll.gsm }} GSM · {{ activeMixRoll.shaft }}</span>
+              <span>{{ activeMixRoll.color_transition }} · {{ activeMixRoll.gsm }} GSM · {{ activeMixRoll.shaft }} · {{ mixRollShaftCount(activeMixRoll) }} shaft(s)</span>
               <a v-if="activeMixRoll.spr_name" href="#" @click.prevent="openSpr(activeMixRoll.spr_name)">
                 {{ activeMixRoll.spr_name }}
               </a>
+              <span class="gpe-muted">Rows appear in the production table below — Save Row, then print labels.</span>
             </div>
             <div class="gpe-mix-roll-workspace-actions">
-              <button type="button" class="gpe-btn" :disabled="mixRollBusy || !activeMixRoll?.spr_name" @click="addMixRollRow">
-                {{ mixRollBusy ? "…" : "Add Roll Row" }}
+              <button type="button" class="gpe-btn primary" :disabled="mixRollBusy || !activeMixRoll?.spr_name" @click="addMixRollRow">
+                {{ mixRollBusy ? "…" : "Add Mix Roll Row" }}
               </button>
               <button type="button" class="gpe-btn gpe-btn-warn" :disabled="mixRollBusy" @click="clearActiveMixRoll">
                 Remove from this shift
               </button>
             </div>
-          </div>
-          <div class="gpe-grid-wrap gpe-mix-grid-wrap">
-            <table class="gpe-grid gpe-grid-entry">
-              <thead>
-                <tr>
-                  <th>#</th><th>Item</th><th>GSM</th><th>Width</th><th>Produced Length</th><th>Batch</th>
-                  <th>Net</th><th>Gross</th><th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="!mixRollLines.length"><td colspan="8" class="gpe-muted">Add roll rows to start.</td></tr>
-                <tr v-for="(row, midx) in mixRollLines" :key="row._id">
-                  <td>{{ mixRollLines.length - midx }}</td>
-                  <td>{{ row.item_code }}</td>
-                  <td>{{ row.gsm }}</td>
-                  <td>{{ row.width_inch }}"</td>
-                  <td>
-                    <input v-model.number="row.produced_length_mtrs" type="number" step="1" min="0" inputmode="numeric" class="gpe-inp gpe-inp-len" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
-                  </td>
-                  <td>{{ row.batch_no }}</td>
-                  <td>{{ formatKg(row.net_weight) }}</td>
-                  <td>
-                    <input v-model="row.gross_weight" type="text" class="gpe-inp" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
-                  </td>
-                  <td>
-                    <div class="gpe-actions">
-                    <button v-if="!row.row_locked" type="button" class="gpe-btn gpe-btn-sm" @click="saveMixRollRow(row)">Save</button>
-                    <button v-else type="button" class="gpe-btn gpe-btn-sm" @click="editRow(row)">Edit</button>
-                    <button type="button" class="gpe-btn gpe-btn-sm" @click="removeMixRollRow(row)">Remove</button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
           </div>
         </div>
 
@@ -587,10 +554,13 @@
               <tr
                 v-for="(row, idx) in fabricRollLines"
                 :key="row._id"
-                :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked, 'gpe-row-wasted': row.is_wasted }]"
+                :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked, 'gpe-row-wasted': row.is_wasted, 'gpe-row-mix': row.is_mix_roll_row }]"
               >
                 <td class="gpe-sticky-col gpe-sticky-0">{{ fabricRollLines.length - idx }}</td>
-                <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code }}</td>
+                <td class="gpe-sticky-col gpe-sticky-1">
+                  {{ row.party_code }}
+                  <span v-if="row.is_mix_roll_row" class="gpe-chip gpe-chip-mix">Mix</span>
+                </td>
                 <td class="gpe-num">{{ row.job_id || row.job || "—" }}</td>
                 <td>{{ row.quality }}</td>
                 <td>{{ row.color }}</td>
@@ -1827,6 +1797,8 @@ import {
   mixRollItemOptions,
   mixRollWidthOptions,
   nextMixRollCombinationSlot,
+  mixRollMaxRows,
+  mixRollShaftCount,
   mapMixRollLineFromServer,
   buildMixRollSavePayload,
   recalcMixRollRow,
@@ -3662,7 +3634,7 @@ const metrics = computed(() => {
 });
 
 const sessionRollCount = computed(() => {
-  const grid = rollLines.value.filter((r) => !r.is_wasted && !r.is_mix_roll_row && !r.is_bundle_row).length;
+  const grid = rollLines.value.filter((r) => !r.is_wasted && !r.is_bundle_row).length;
   if (grid > 0) {
     return grid;
   }
@@ -3997,7 +3969,7 @@ function isCompleteGsmRoll(r) {
   );
 }
 
-const fabricRollLines = computed(() => (rollLines.value || []).filter((r) => !r.is_mix_roll_row));
+const fabricRollLines = computed(() => rollLines.value || []);
 
 const submitConfirmRolls = computed(() =>
   rollLines.value.filter((r) => isCompleteGsmRoll(r))
@@ -4342,7 +4314,7 @@ async function removeMixRollRow(row) {
     }
   };
   if (row.spr_item_name || row.row_locked) {
-    frappe.confirm(__("Remove this mix roll row from both grids and delete it from {0}?", [sprName]), remove);
+    frappe.confirm(__("Remove this mix roll row from the grid and delete it from {0}?", [sprName]), remove);
   } else {
     await remove();
   }
@@ -4363,6 +4335,16 @@ async function addMixRollRow() {
   const existing = (mixRollLines.value || []).filter(
     (r) => !activeMixRoll.value.spr_name || r.spr_name === activeMixRoll.value.spr_name
   );
+  const maxRows = mixRollMaxRows(activeMixRoll.value);
+  if (existing.length >= maxRows) {
+    frappe.msgprint(
+      __("This mix roll allows {0} shaft(s) with combination {1}.", [
+        mixRollShaftCount(activeMixRoll.value),
+        activeMixRoll.value.shaft || activeMixRoll.value.combination || "",
+      ])
+    );
+    return;
+  }
   const slot = nextMixRollCombinationSlot(activeMixRoll.value, existing);
   const itemCode = slot.itemCode || mixRollItemOptions(activeMixRoll.value)[0]?.item_code || "";
   const widthInch = slot.widthInch || mixRollWidthOptions(activeMixRoll.value)[0] || 0;
@@ -4418,12 +4400,16 @@ async function addMixRollRow() {
     line.roll_no = batch.roll_no || line.roll_no;
     line.party_code = activeMixRoll.value.label || line.party_code;
     line.gsm = activeMixRoll.value.gsm || line.gsm;
+    line.quality = activeMixRoll.value.quality || line.quality;
+    line.color = line.color || activeMixRoll.value.color_transition || "";
     line.width_inch = widthInch || line.width_inch;
     line.item_code = itemCode;
     if (slot.itemName) {
       line.item_name = slot.itemName;
     }
     line.creation_seq = nextCreationSeq();
+    const segs = Math.max(1, mixRollWidthOptions(activeMixRoll.value).length);
+    line.custom_no_of_shaft = Math.floor(existing.length / segs) + 1;
     mixRollLines.value = [line, ...mixRollLines.value];
     rollLines.value = sortRollLinesLifo([line, ...rollLines.value]);
     reserveBatchNo(batch.batch_no, batch.roll_no);
@@ -5994,7 +5980,7 @@ async function resolveSprItemRowName(row) {
   if (row.spr_item_name) {
     return row.spr_item_name;
   }
-  const sprName = sprNameForPp(row.pp_id);
+  const sprName = sprNameForRow(row);
   if (!sprName || !row.batch_no) {
     return "";
   }
@@ -8823,6 +8809,10 @@ onUnmounted(() => {
 .gpe-mix-roll-workspace-actions {
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
+}
+.gpe-row-mix {
+  box-shadow: inset 4px 0 0 #7c3aed;
 }
 .gpe-btn-sm {
   padding: 4px 10px;
@@ -9696,6 +9686,13 @@ onUnmounted(() => {
 .gpe-chip-submitted {
   background: #dcfce7;
   color: #166534;
+}
+.gpe-chip-mix {
+  background: #ede9fe;
+  color: #5b21b6;
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 2px 7px;
 }
 .gpe-chip-merge {
   background: #ede9fe;

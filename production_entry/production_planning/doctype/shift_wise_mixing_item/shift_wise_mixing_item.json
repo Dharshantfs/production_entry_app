@@ -1,0 +1,85 @@
+{
+ "actions": [],
+ "creation": "2026-08-31 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "set_no",
+  "row_no",
+  "mixing_type",
+  "polypropylene",
+  "filler",
+  "modifier",
+  "antistatic",
+  "masterbatch"
+ ],
+ "fields": [
+  {
+   "fieldname": "set_no",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Set"
+  },
+  {
+   "fieldname": "row_no",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "S.NO"
+  },
+  {
+   "fieldname": "mixing_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Mixing Type",
+   "options": "\nFull Mixing\nHalf Mixing"
+  },
+  {
+   "fieldname": "polypropylene",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "POLYPROPYLENE (KGS)",
+   "precision": "3"
+  },
+  {
+   "fieldname": "filler",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "FILLER (KGS)",
+   "precision": "3"
+  },
+  {
+   "fieldname": "modifier",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MODIFIER (KGS)",
+   "precision": "3"
+  },
+  {
+   "fieldname": "antistatic",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "ANTISTATIC (KGS)",
+   "precision": "3"
+  },
+  {
+   "fieldname": "masterbatch",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MASTERBATCH (KGS)",
+   "precision": "3"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-31 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Shift Wise Mixing Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

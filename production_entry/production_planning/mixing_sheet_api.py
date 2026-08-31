@@ -7,7 +7,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, getdate, now_datetime
+from frappe.utils import cint, flt, getdate, now_datetime
 
 
 API_MODULE = "production_entry.production_planning.mixing_sheet_api"
@@ -234,6 +234,10 @@ def _upsert_mixing_sheet(
 		doc.completed_by = frappe.session.user
 		doc.completed_on = now_datetime()
 	doc.save(ignore_permissions=True)
+	try:
+		_sync_shift_wise_mixing_list(doc, data)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Shift Wise Mixing List sync")
 	frappe.db.commit()
 	return _sheet_payload(doc)
 
@@ -311,3 +315,69 @@ def record_mixing_consumption(
 	)
 	payload["sets"] = data.get("sets")
 	return payload
+
+
+def _sync_shift_wise_mixing_list(sheet_doc, data: dict) -> None:
+	"""Mirror mixing JSON into Shift Wise Mixing List child tables (one doc per date+shift+unit)."""
+	if not frappe.db.exists("DocType", "Shift Wise Mixing List"):
+		return
+	unit = _cstr(sheet_doc.custom_unit)
+	shift_n = _normalize_shift(sheet_doc.shift)
+	rd = getdate(sheet_doc.run_date) if sheet_doc.run_date else None
+	if not (rd and shift_n and unit):
+		return
+
+	found = frappe.db.get_value(
+		"Shift Wise Mixing List",
+		{"run_date": rd, "shift": shift_n, "custom_unit": unit},
+		"name",
+		order_by="modified desc",
+	)
+	if found:
+		doc = frappe.get_doc("Shift Wise Mixing List", found)
+	else:
+		doc = frappe.new_doc("Shift Wise Mixing List")
+		doc.run_date = rd
+		doc.shift = shift_n
+		doc.custom_unit = unit
+	if sheet_doc.gsm_shift_session:
+		doc.gsm_shift_session = sheet_doc.gsm_shift_session
+	doc.shift_mixing_sheet = sheet_doc.name
+	doc.material_sets = []
+	doc.mixing_items = []
+	for i, set_obj in enumerate(data.get("sets") or []):
+		if not isinstance(set_obj, dict):
+			continue
+		materials = set_obj.get("materials") or {}
+		names = set_obj.get("item_names") or {}
+		if not (materials.get("PP") or materials.get("Ink")):
+			continue
+		set_no = i + 1
+		doc.append(
+			"material_sets",
+			{
+				"set_no": set_no,
+				"polypropylene_item": _cstr(names.get("PP") or materials.get("PP")),
+				"filler_item": _cstr(names.get("Filler") or materials.get("Filler")),
+				"modifier_item": _cstr(names.get("PPA") or materials.get("PPA")),
+				"antistatic_item": _cstr(names.get("Antistatic") or materials.get("Antistatic")),
+				"masterbatch_item": _cstr(names.get("Masterbatch") or materials.get("Masterbatch")),
+			},
+		)
+		for ri, row in enumerate(set_obj.get("rows") or []):
+			if not isinstance(row, dict):
+				continue
+			doc.append(
+				"mixing_items",
+				{
+					"set_no": set_no,
+					"row_no": ri + 1,
+					"mixing_type": _cstr(row.get("mixing_type") or data.get("mixing_type")),
+					"polypropylene": flt(row.get("pp_qty") or 0),
+					"filler": flt(row.get("filler_qty") or 0),
+					"modifier": flt(row.get("ppa_qty") or 0),
+					"antistatic": flt(row.get("anti_qty") or 0),
+					"masterbatch": flt(row.get("mb_qty") or 0),
+				},
+			)
+	doc.save(ignore_permissions=True)
