@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import frappe
 from frappe import _
@@ -50,8 +51,9 @@ def _company_name() -> str:
 	if company:
 		name = _cstr(frappe.db.get_value("Company", company, "company_name") or company)
 		if name:
-			return name.upper()
-	return "JAYASREE SPUN BOND"
+			cleaned = re.sub(r"\s*[-–]\s*[A-Z0-9]{2,8}\s*$", "", name, flags=re.I).strip()
+			return (cleaned or name).upper()
+	return "JAYASHREE SPUN BOND"
 
 
 def _fabric_type_from_plan(plan_id: str) -> str:

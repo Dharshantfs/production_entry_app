@@ -48,6 +48,61 @@ function set_has_materials(set) {
 	return !!(m.PP || m.Ink);
 }
 
+function extra_group_key(ex) {
+	const code = String(ex?.item_code || "").toUpperCase().trim();
+	const name = String(ex?.item_name || "").toUpperCase();
+	const blob = `${code} ${name}`;
+	if (code.startsWith("PP ") || code.startsWith("PP-")) return "PP";
+	if (code.startsWith("FL ") || code.startsWith("FL-") || blob.includes("FILLER")) return "Filler";
+	if (code.startsWith("MB ") || code.startsWith("MB-") || blob.includes("MASTERBATCH")) return "Masterbatch";
+	if (blob.includes("ANTISTATIC")) return "Antistatic";
+	if (code.startsWith("SA ") || code.startsWith("SA-")) return "PPA";
+	return "Other";
+}
+
+function extras_in_group(set, group) {
+	return (set.extras || []).filter((ex) => extra_group_key(ex) === group);
+}
+
+function extras_headers_html(set, group) {
+	return extras_in_group(set, group)
+		.map((ex) => `<th>${frappe.utils.escape_html(ex.item_name || ex.item_code)} (kg)</th>`)
+		.join("");
+}
+
+function extras_cells_html(set, row, si, ri, dis, group) {
+	return extras_in_group(set, group)
+		.map((ex) => {
+			const val = (row.extras && row.extras[ex.item_code]) || 0;
+			const code = frappe.utils.escape_html(ex.item_code);
+			return `<td><input class="form-control form-control-sm row-qty-extra" data-set="${si}" data-row="${ri}" data-item="${code}" value="${val}" style="width:70px;text-align:center" ${dis}></td>`;
+		})
+		.join("");
+}
+
+function extras_print_headers(set, group) {
+	return extras_in_group(set, group)
+		.map((ex) => `<th>${frappe.utils.escape_html(ex.item_name || ex.item_code)} (kg)</th>`)
+		.join("");
+}
+
+function extras_print_cells(set, row, group) {
+	return extras_in_group(set, group)
+		.map((ex) => `<td style="text-align:center">${(row.extras && row.extras[ex.item_code]) || 0}</td>`)
+		.join("");
+}
+
+function has_material(m, key) {
+	return !!(m?.[key] || "").toString().trim();
+}
+
+function fetch_item_name(item_code) {
+	if (!item_code) {
+		return Promise.resolve({ message: { item_name: "" } });
+	}
+	return frappe.db.get_value("Item", item_code, "item_name");
+}
+
 function mixing_set_label(si) {
 	return __("Set {0}", [si + 1]);
 }
@@ -440,7 +495,6 @@ function show_dialog(ctx, existing, frm) {
 		);
 	};
 	d.footer.find("#btn_submit_mixing").on("click", on_submit_mixing);
-	d.wrapper.on("click", ".btn-submit-mixing-inline", on_submit_mixing);
 
 	d.footer.find("#btn_save_all").on("click", () => {
 		collect_row_qtys(d, state);
@@ -492,16 +546,16 @@ function save_raw_materials(d, ctx, state, frm) {
 			selected.IsoButanol = v.iso_butanol_item || "";
 		}
 	} else {
-		if (!v.pp_item || !v.filler_item || !v.masterbatch_item || !v.antistatic_item || !v.ppa_item) {
-			frappe.msgprint(__("Please select all 5 raw materials before saving."));
+		if (!v.pp_item) {
+			frappe.msgprint(__("Please select Polypropylene before saving. Other materials are optional."));
 			return;
 		}
 		selected = {
 			PP: v.pp_item,
-			Filler: v.filler_item,
-			Masterbatch: v.masterbatch_item,
-			Antistatic: v.antistatic_item,
-			PPA: v.ppa_item,
+			Filler: v.filler_item || "",
+			Masterbatch: v.masterbatch_item || "",
+			Antistatic: v.antistatic_item || "",
+			PPA: v.ppa_item || "",
 		};
 	}
 
@@ -520,11 +574,11 @@ function save_raw_materials(d, ctx, state, frm) {
 						: null,
 				].filter(Boolean)
 			: [
-					frappe.db.get_value("Item", selected.PP, "item_name"),
-					frappe.db.get_value("Item", selected.Filler, "item_name"),
-					frappe.db.get_value("Item", selected.Masterbatch, "item_name"),
-					frappe.db.get_value("Item", selected.Antistatic, "item_name"),
-					frappe.db.get_value("Item", selected.PPA, "item_name"),
+					fetch_item_name(selected.PP),
+					fetch_item_name(selected.Filler),
+					fetch_item_name(selected.Masterbatch),
+					fetch_item_name(selected.Antistatic),
+					fetch_item_name(selected.PPA),
 				];
 
 		Promise.all(fetches).then((results) => {
@@ -545,10 +599,14 @@ function save_raw_materials(d, ctx, state, frm) {
 			} else {
 				state.sets[index].item_names = {
 					PP: results[0]?.message?.item_name || selected.PP,
-					Filler: results[1]?.message?.item_name || selected.Filler,
-					Masterbatch: results[2]?.message?.item_name || selected.Masterbatch,
-					Antistatic: results[3]?.message?.item_name || selected.Antistatic,
-					PPA: results[4]?.message?.item_name || selected.PPA,
+					Filler: selected.Filler ? results[1]?.message?.item_name || selected.Filler : "",
+					Masterbatch: selected.Masterbatch
+						? results[2]?.message?.item_name || selected.Masterbatch
+						: "",
+					Antistatic: selected.Antistatic
+						? results[3]?.message?.item_name || selected.Antistatic
+						: "",
+					PPA: selected.PPA ? results[4]?.message?.item_name || selected.PPA : "",
 				};
 			}
 			render_all(d, ctx, state, frm);
@@ -597,17 +655,6 @@ function render_all(d, ctx, state, frm) {
 		$wrap.append(render_set_html(set, si, ctx, state, readOnly));
 	});
 
-	if (!readOnly) {
-		$wrap.append(`
-			<div style="margin-top:40px;padding:30px 0;border-top:1px solid #eee;display:flex;justify-content:center;">
-				<button class="btn btn-md btn-primary btn-submit-mixing-inline" style="background:#2e7d32;border:none;width:280px;font-weight:bold;height:45px;">
-					🚩 ${__("Finish & Submit Mixing")}
-				</button>
-			</div>
-			<div style="height:60px"></div>
-		`);
-	}
-
 	$wrap.find(".btn-consume").on("click", function () {
 		consume_row(ctx, state, parseInt($(this).data("set"), 10), parseInt($(this).data("row"), 10), d, frm);
 	});
@@ -651,12 +698,14 @@ function render_set_html(set, si, ctx, state, readOnly) {
 		const extras_cols = (set.extras || [])
 			.map((ex) => {
 				const val = (row.extras && row.extras[ex.item_code]) || 0;
-				const dis = readOnly || row.consumed ? "disabled" : "";
-				return `<td><input class="form-control form-control-sm row-qty-extra" data-set="${si}" data-row="${ri}" data-item="${ex.item_code}" value="${val}" style="width:70px;text-align:center" ${dis}></td>`;
+				const disExtra = readOnly || row.consumed ? "disabled" : "";
+				return `<td><input class="form-control form-control-sm row-qty-extra" data-set="${si}" data-row="${ri}" data-item="${ex.item_code}" value="${val}" style="width:70px;text-align:center" ${disExtra}></td>`;
 			})
 			.join("");
 
 		const dis = readOnly || row.consumed ? "disabled" : "";
+		const qtyCell = (field, value) =>
+			`<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="${field}" value="${value || 0}" style="width:70px;text-align:center" ${dis}></td>`;
 		const mixType = row.mixing_type || default_mixing_type(custom_unit);
 		const typeSelect = is_printing
 			? ""
@@ -678,15 +727,23 @@ function render_set_html(set, si, ctx, state, readOnly) {
 				<td style="text-align:center">${status_badge}</td>
 			</tr>`;
 		} else {
+			const gsm_cells = [
+				has_material(m, "PP") ? qtyCell("pp_qty", row.pp_qty) : "",
+				extras_cells_html(set, row, si, ri, dis, "PP"),
+				has_material(m, "Filler") ? qtyCell("filler_qty", row.filler_qty) : "",
+				extras_cells_html(set, row, si, ri, dis, "Filler"),
+				has_material(m, "Masterbatch") ? qtyCell("mb_qty", row.mb_qty) : "",
+				extras_cells_html(set, row, si, ri, dis, "Masterbatch"),
+				has_material(m, "Antistatic") ? qtyCell("anti_qty", row.anti_qty) : "",
+				extras_cells_html(set, row, si, ri, dis, "Antistatic"),
+				has_material(m, "PPA") ? qtyCell("ppa_qty", row.ppa_qty) : "",
+				extras_cells_html(set, row, si, ri, dis, "PPA"),
+				extras_cells_html(set, row, si, ri, dis, "Other"),
+			].join("");
 			rows_html += `<tr style="${row.consumed ? "background:#f0fff0" : ""}">
 				<td style="text-align:center;width:40px">${ri + 1}</td>
 				${typeSelect}
-				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="pp_qty" value="${row.pp_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
-				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="filler_qty" value="${row.filler_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
-				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="mb_qty" value="${row.mb_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
-				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="anti_qty" value="${row.anti_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
-				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="ppa_qty" value="${row.ppa_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
-				${extras_cols}
+				${gsm_cells}
 				<td style="text-align:center">${status_badge}</td>
 			</tr>`;
 		}
@@ -706,16 +763,34 @@ function render_set_html(set, si, ctx, state, readOnly) {
 				${solvent_headers}<th>${__("Status")}</th>
 			</tr></thead><tbody>${rows_html}</tbody></table>`;
 	} else {
+		const gsm_headers = [
+			has_material(m, "PP")
+				? `<th>${frappe.utils.escape_html(names.PP || m.PP || "PP")} (kg)</th>`
+				: "",
+			extras_headers_html(set, "PP"),
+			has_material(m, "Filler")
+				? `<th>${frappe.utils.escape_html(names.Filler || m.Filler || __("Filler"))} (kg)</th>`
+				: "",
+			extras_headers_html(set, "Filler"),
+			has_material(m, "Masterbatch")
+				? `<th>${frappe.utils.escape_html(names.Masterbatch || m.Masterbatch || __("Masterbatch"))} (kg)</th>`
+				: "",
+			extras_headers_html(set, "Masterbatch"),
+			has_material(m, "Antistatic")
+				? `<th>${frappe.utils.escape_html(names.Antistatic || m.Antistatic || __("Antistatic"))} (kg)</th>`
+				: "",
+			extras_headers_html(set, "Antistatic"),
+			has_material(m, "PPA")
+				? `<th>${frappe.utils.escape_html(names.PPA || m.PPA || __("Modifier"))} (kg)</th>`
+				: "",
+			extras_headers_html(set, "PPA"),
+			extras_headers_html(set, "Other"),
+		].join("");
 		table = `<table class="table table-bordered table-sm" style="margin-top:8px;font-size:13px">
 			<thead><tr>
 				<th>#</th>
 				<th>${__("Mixing Type")}</th>
-				<th>${names.PP || m.PP || "PP"} (kg)</th>
-				<th>${names.Filler || m.Filler || __("Filler")} (kg)</th>
-				<th>${names.Masterbatch || m.Masterbatch || __("Masterbatch")} (kg)</th>
-				<th>${names.Antistatic || m.Antistatic || __("Antistatic")} (kg)</th>
-				<th>${names.PPA || m.PPA || __("Modifier")} (kg)</th>
-				${(set.extras || []).map((ex) => `<th>${ex.item_name} (kg)</th>`).join("")}
+				${gsm_headers}
 				<th>${__("Status")}</th>
 			</tr></thead><tbody>${rows_html}</tbody></table>`;
 	}
@@ -852,8 +927,21 @@ function print_mixing_sheet(state, ctx) {
 					return `<tr><td>${i + 1}</td><td>${r.ink_qty || 0}</td>${extras_cols}${solvent_cols}
 						<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
 				}
-				return `<tr><td>${i + 1}</td><td>${r.mixing_type || ""}</td><td>${r.pp_qty || 0}</td><td>${r.filler_qty || 0}</td>
-					<td>${r.mb_qty || 0}</td><td>${r.anti_qty || 0}</td><td>${r.ppa_qty || 0}</td>${extras_cols}
+				const m = set.materials || {};
+				const gsm_cells = [
+					has_material(m, "PP") ? `<td>${r.pp_qty || 0}</td>` : "",
+					extras_print_cells(set, r, "PP"),
+					has_material(m, "Filler") ? `<td>${r.filler_qty || 0}</td>` : "",
+					extras_print_cells(set, r, "Filler"),
+					has_material(m, "Masterbatch") ? `<td>${r.mb_qty || 0}</td>` : "",
+					extras_print_cells(set, r, "Masterbatch"),
+					has_material(m, "Antistatic") ? `<td>${r.anti_qty || 0}</td>` : "",
+					extras_print_cells(set, r, "Antistatic"),
+					has_material(m, "PPA") ? `<td>${r.ppa_qty || 0}</td>` : "",
+					extras_print_cells(set, r, "PPA"),
+					extras_print_cells(set, r, "Other"),
+				].join("");
+				return `<tr><td>${i + 1}</td><td>${r.mixing_type || ""}</td>${gsm_cells}
 					<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
 			})
 			.join("");
@@ -871,10 +959,33 @@ function print_mixing_sheet(state, ctx) {
 					<thead><tr><th>#</th><th>BOPP Ink (kg)</th>${extras_headers}${solvent_headers}<th>Time</th><th>Signature</th></tr></thead>
 					<tbody>${rows_html(set)}</tbody></table>`;
 			}
+			const names = set.item_names || {};
+			const summary = [
+				m.PP ? `PP: <b>${m.PP}</b>` : "",
+				m.Filler ? `Filler: <b>${m.Filler}</b>` : "",
+				m.Masterbatch ? `MB: <b>${m.Masterbatch}</b>` : "",
+				m.Antistatic ? `Anti: <b>${m.Antistatic}</b>` : "",
+				m.PPA ? `Modifier: <b>${m.PPA}</b>` : "",
+			]
+				.filter(Boolean)
+				.join(" | ");
+			const gsm_headers = [
+				has_material(m, "PP") ? `<th>${names.PP || m.PP || "PP"}</th>` : "",
+				extras_print_headers(set, "PP"),
+				has_material(m, "Filler") ? `<th>${names.Filler || m.Filler || "Filler"}</th>` : "",
+				extras_print_headers(set, "Filler"),
+				has_material(m, "Masterbatch") ? `<th>${names.Masterbatch || m.Masterbatch || "MB"}</th>` : "",
+				extras_print_headers(set, "Masterbatch"),
+				has_material(m, "Antistatic") ? `<th>${names.Antistatic || m.Antistatic || "Anti"}</th>` : "",
+				extras_print_headers(set, "Antistatic"),
+				has_material(m, "PPA") ? `<th>${names.PPA || m.PPA || "Modifier"}</th>` : "",
+				extras_print_headers(set, "PPA"),
+				extras_print_headers(set, "Other"),
+			].join("");
 			return `<h3>Raw Material Set ${si + 1}</h3>
-				<p>PP: <b>${m.PP || "-"}</b> | Filler: <b>${m.Filler || "-"}</b> | MB: <b>${m.Masterbatch || "-"}</b></p>
+				<p>${summary || "-"}</p>
 				<table border="1" cellpadding="6" style="width:100%;font-size:12px;border-collapse:collapse">
-				<thead><tr><th>#</th><th>Mixing Type</th><th>PP</th><th>Filler</th><th>MB</th><th>Anti</th><th>Modifier</th>${extras_headers}<th>Time</th><th>Signature</th></tr></thead>
+				<thead><tr><th>#</th><th>Mixing Type</th>${gsm_headers}<th>Time</th><th>Signature</th></tr></thead>
 				<tbody>${rows_html(set)}</tbody></table>`;
 		})
 		.join("");
