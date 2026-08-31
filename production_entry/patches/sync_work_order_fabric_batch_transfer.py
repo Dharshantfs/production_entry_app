@@ -2,6 +2,8 @@ import os
 
 import frappe
 
+CLIENT_SCRIPT_NAME = "Work Order Fabric Batch Transfer"
+
 
 def execute():
 	"""Disable old Work Order batch-pick client scripts and sync the fabric-only picker."""
@@ -16,7 +18,7 @@ def execute():
 	for cs in frappe.get_all("Client Script", filters={"dt": "Work Order"}, fields=["name"]):
 		doc = frappe.get_doc("Client Script", cs.name)
 		body = doc.script or ""
-		if "wo_is_fabric_roll_item" in body:
+		if "wo_is_fabric_roll_item" in body or doc.name == CLIENT_SCRIPT_NAME:
 			synced = doc
 			continue
 		if "wo_fabric_rm_rows" in body or "wo_open_fabric_batch_pick_dialog" in body:
@@ -27,16 +29,28 @@ def execute():
 		synced.script = script
 		synced.enabled = 1
 		synced.save(ignore_permissions=True)
+	elif frappe.db.exists("Client Script", CLIENT_SCRIPT_NAME):
+		doc = frappe.get_doc("Client Script", CLIENT_SCRIPT_NAME)
+		doc.script = script
+		doc.dt = "Work Order"
+		doc.view = "Form"
+		doc.enabled = 1
+		doc.save(ignore_permissions=True)
 	else:
-		frappe.get_doc(
+		# Client Script autoname is Prompt — newer Frappe only accepts __newname.
+		doc = frappe.get_doc(
 			{
 				"doctype": "Client Script",
+				"name": CLIENT_SCRIPT_NAME,
+				"__newname": CLIENT_SCRIPT_NAME,
 				"dt": "Work Order",
 				"view": "Form",
 				"enabled": 1,
 				"script": script,
 			}
-		).insert(ignore_permissions=True)
+		)
+		doc.flags.name_set = True
+		doc.insert(ignore_permissions=True, ignore_if_duplicate=True)
 
 	for ss in frappe.get_all("Server Script", fields=["name", "api_method"]):
 		if str(ss.get("api_method") or "").strip() == "auto_material_transfer":
