@@ -789,7 +789,7 @@ def open_gsm_shift_session(
 	}
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist()
 def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=None):
 	"""Ensure shift can close — submitted SPRs, no draft rolls blocking."""
 	if not _gsm_shift_session_table_exists():
@@ -826,7 +826,7 @@ def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=
 	return {"ok": not errors, "errors": errors}
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist()
 def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None):
 	"""Close the open GSM shift session and return Shift Wise redirect payload."""
 	if not _gsm_shift_session_table_exists():
@@ -2781,8 +2781,39 @@ def _gsm_is_real_batch_no(val) -> bool:
 		return False
 
 
+def _gsm_lookup_patty_stock_doctype(batch_no="", name=""):
+	"""Load one Patty Stock row by batch_no or document name."""
+	if not frappe.db.exists("DocType", "Patty Stock"):
+		return None
+	meta = frappe.get_meta("Patty Stock")
+	fields = ["name"]
+	for fn in (
+		"batch_no",
+		"item_code",
+		"item_name",
+		"quality",
+		"colour",
+		"color",
+		"gsm",
+		"width_inch",
+		"balance_quantity",
+		"meter_roll_mtrs",
+		"no_of_shafts",
+	):
+		if meta.has_field(fn):
+			fields.append(fn)
+	if batch_no and meta.has_field("batch_no"):
+		rows = frappe.get_all("Patty Stock", filters={"batch_no": batch_no}, fields=fields, limit=1)
+		if rows:
+			return rows[0]
+	name = _cstr(name).strip()
+	if name and frappe.db.exists("Patty Stock", name):
+		return frappe.db.get_value("Patty Stock", name, fields, as_dict=True)
+	return None
+
+
 def _gsm_hydrate_patty_selection(sel) -> dict:
-	"""Fill available_kg / width / specs from Batch when the client payload omitted them."""
+	"""Fill available_kg / width / specs from Patty Stock when the client payload omitted them."""
 	out = _gsm_coerce_patty_selection(sel)
 	batch_no = _cstr(_pick_value(out, ["batch_no", "batch", "source_roll"], "")).strip()
 	if not _gsm_is_real_batch_no(batch_no):
@@ -2801,6 +2832,7 @@ def _gsm_hydrate_patty_selection(sel) -> dict:
 		"available",
 		"available_qty",
 		"qty",
+		"balance_quantity",
 		"batch_qty",
 		"actual_qty",
 		"wastage",
@@ -2824,30 +2856,32 @@ def _gsm_hydrate_patty_selection(sel) -> dict:
 		)
 	)
 	quality = _cstr(_pick_value(out, ["quality"], ""))
-	color = _cstr(_pick_value(out, ["color"], ""))
+	color = _cstr(_pick_value(out, ["color", "colour"], ""))
 	gsm = cint(_pick_value(out, ["gsm"], 0))
 	item_code = _cstr(_pick_value(out, ["item_code", "item"], ""))
 
-	if batch_no and (qty <= 0 or width <= 0 or not quality or not color or gsm <= 0):
-		if qty <= 0:
-			qty = flt(_gsm_batch_available_kg(batch_no, item_code))
-		if (width <= 0 or not quality or not color or gsm <= 0) and frappe.db.exists("Batch", batch_no):
-			bdoc = frappe.get_doc("Batch", batch_no).as_dict()
+	if (qty <= 0 or width <= 0 or not quality or not color or gsm <= 0) and (
+		batch_no or _cstr(out.get("name") or out.get("patty_stock") or "")
+	):
+		ps = _gsm_lookup_patty_stock_doctype(batch_no, out.get("name") or out.get("patty_stock"))
+		if ps:
 			if not item_code:
-				item_code = _cstr(bdoc.get("item") or bdoc.get("item_code") or "")
-			info = _gsm_patty_stock_from_batch_doc(bdoc, item_code, qty)
+				item_code = _cstr(ps.get("item_code") or "")
 			if width <= 0:
-				width = flt(info.get("width_inch") or 0)
+				width = flt(ps.get("width_inch") or 0)
 			if not quality:
-				quality = _cstr(info.get("quality") or "")
+				quality = _cstr(ps.get("quality") or "")
 			if not color:
-				color = _cstr(info.get("color") or "")
+				color = _cstr(ps.get("colour") or ps.get("color") or "")
 			if gsm <= 0:
-				gsm = cint(info.get("gsm") or 0)
-			if not item_code:
-				item_code = _cstr(info.get("item_code") or "")
+				gsm = cint(ps.get("gsm") or 0)
 			if qty <= 0:
-				qty = flt(info.get("available_kg") or 0)
+				qty = flt(ps.get("balance_quantity") or 0)
+			if not batch_no:
+				batch_no = _cstr(ps.get("batch_no") or "")
+				if batch_no:
+					out["batch_no"] = batch_no
+					out["source_roll"] = batch_no
 
 	out["available_kg"] = qty
 	out["available"] = qty
@@ -3804,7 +3838,7 @@ def _gsm_submittable_pp_to_spr(pp_to_spr: dict, rolls_by_pp: dict) -> dict:
 	return out
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist()
 def submit_gsm_production_entry(
 	run_date=None,
 	shift=None,
@@ -4972,12 +5006,27 @@ def get_gsm_spr_wastage_context(spr_name):
 	}
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist()
 def get_gsm_available_patty_stock(spr_name):
-	"""Patty stock for GSM recycle — SPR wastage rows, then computed preview from roll lines."""
+	"""Patty stock for GSM recycle — Patty Stock DocType first, then SPR wastage preview."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name:
 		frappe.throw(_("SPR is required"))
+
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		get_available_patty_stock,
+	)
+
+	try:
+		doctype_stock = get_available_patty_stock(spr_name) or []
+	except Exception:
+		doctype_stock = []
+	if doctype_stock:
+		return {
+			"stock": doctype_stock,
+			"source": "Patty Stock",
+			"spr_name": spr_name,
+		}
 
 	fallback_stock = _gsm_fallback_patty_stock_from_spr(spr_name)
 	if fallback_stock:

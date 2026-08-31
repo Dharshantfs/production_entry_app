@@ -8,6 +8,15 @@ export function sprFlt(v) {
 	return Number.isFinite(n) ? n : 0;
 }
 
+/** Produced length is always a whole metre — no decimal places. */
+export function sprWholeMtrs(v) {
+	if (v === null || v === undefined || v === "") {
+		return "";
+	}
+	const n = Math.round(sprFlt(v));
+	return Number.isFinite(n) && n > 0 ? n : "";
+}
+
 export function sprNormalizeGrossWeightInput(val) {
 	if (val === null || val === undefined || val === '') {
 		return 0;
@@ -56,7 +65,7 @@ export function sprRoundNetWeightKg(v) {
 }
 
 export function sprResolveLengthMeters(row) {
-	const pl = sprFlt(row?.produced_length_mtrs);
+	const pl = sprWholeMtrs(row?.produced_length_mtrs);
 	if (pl > 0) {
 		return pl;
 	}

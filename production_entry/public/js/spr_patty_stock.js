@@ -49,7 +49,7 @@ function _normalizeStockRow(row) {
 		name: row.batch_no || row.name || "",
 		batch_no: row.batch_no || (String(row.name || "").includes("/") ? row.name : "") || "",
 		quality: row.quality || "",
-		color: row.color || "",
+		color: row.color || row.colour || "",
 		gsm: row.gsm != null && row.gsm !== "" ? row.gsm : "",
 		width_inch: (function () {
 			const w = parseFloat(row.width_inch != null && row.width_inch !== "" ? row.width_inch : row.width);

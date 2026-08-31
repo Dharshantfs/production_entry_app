@@ -11364,7 +11364,7 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 		elif dst == "gsm":
 			row.set(dst, cint(val))
 		elif dst == "produced_length_mtrs":
-			row.set(dst, flt(val))
+			row.set(dst, cint(round(flt(val))))
 		else:
 			row.set(dst, _cstr(val))
 
@@ -11423,7 +11423,7 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 
 	pl_m = payload.get("produced_length_mtrs")
 	if pl_m not in (None, "") and spi_meta.has_field("custom_produced_length_mtrs"):
-		row.custom_produced_length_mtrs = flt(pl_m)
+		row.custom_produced_length_mtrs = cint(round(flt(pl_m)))
 
 	is_bundle = cint(payload.get("is_bundle_row") or 0)
 	preserve_net = is_bundle and flt(getattr(row, "net_weight", 0) or payload.get("net_weight")) > 0
@@ -11913,85 +11913,82 @@ def _gsm_batch_available_kg(batch_no: str, item_code: str = "") -> float:
 	return flt((rows[0] or {}).get("qty") or 0) if rows else 0.0
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+def _patty_stock_doctype_row(row) -> dict:
+	"""Map Patty Stock DocType fields to the View Patty Stock dialog payload."""
+	row = row or {}
+	avail = flt(row.get("balance_quantity") or row.get("available_kg") or 0)
+	color = _cstr(row.get("colour") or row.get("color") or "")
+	return {
+		"name": _cstr(row.get("name") or ""),
+		"patty_stock": _cstr(row.get("name") or ""),
+		"batch_no": _cstr(row.get("batch_no") or ""),
+		"item_code": _cstr(row.get("item_code") or ""),
+		"item_name": _cstr(row.get("item_name") or ""),
+		"quality": _cstr(row.get("quality") or ""),
+		"color": color,
+		"colour": color,
+		"gsm": cint(row.get("gsm") or 0),
+		"width_inch": flt(row.get("width_inch") or 0),
+		"available_kg": avail,
+		"meter_per_roll": flt(row.get("meter_roll_mtrs") or 0),
+		"no_of_shafts": _cstr(row.get("no_of_shafts") or ""),
+	}
+
+
+@frappe.whitelist()
 def get_available_patty_stock(spr_name=None):
-	"""Patty wastage batches with positive stock — global pool (desk View Patty Stock)."""
+	"""Available rows from the Patty Stock DocType (not Batch)."""
 	_ = _cstr(spr_name).strip()
-	batch_meta = frappe.get_meta("Batch")
-	select_fields = ["name", "item as item_code"]
+	if not frappe.db.exists("DocType", "Patty Stock"):
+		frappe.throw(_("Patty Stock DocType is not installed."))
+
+	meta = frappe.get_meta("Patty Stock")
+	fields = ["name"]
 	for fn in (
-		"custom_quality",
+		"batch_no",
+		"item_code",
+		"item_name",
 		"quality",
-		"custom_color",
+		"colour",
 		"color",
-		"custom_gsm",
 		"gsm",
-		"custom_width_inch",
 		"width_inch",
-		"custom_width",
-		"width",
-		"batch_qty",
+		"balance_quantity",
+		"meter_roll_mtrs",
+		"no_of_shafts",
 	):
-		if batch_meta.has_field(fn) and fn not in select_fields and f"{fn} as" not in " ".join(select_fields):
-			select_fields.append(fn)
+		if meta.has_field(fn):
+			fields.append(fn)
 
-	candidates = frappe.get_all(
-		"Batch",
-		filters=[
-			["name", "like", "%W/%"],
-		],
-		fields=select_fields,
-		limit_page_length=500,
-		order_by="modified desc",
-	) or []
+	filters = []
+	if meta.has_field("balance_quantity"):
+		filters.append(["balance_quantity", ">", 0])
 
-	seen = set()
+	rows = (
+		frappe.get_all(
+			"Patty Stock",
+			fields=fields,
+			filters=filters,
+			limit_page_length=2000,
+			order_by="modified desc",
+		)
+		or []
+	)
 	out = []
-	for batch_doc in candidates:
-		bn = _cstr(batch_doc.get("name") or "").strip()
-		if not bn or bn in seen:
+	for row in rows:
+		mapped = _patty_stock_doctype_row(row)
+		if flt(mapped.get("available_kg") or 0) <= 0:
 			continue
-		item_code = _cstr(batch_doc.get("item_code") or batch_doc.get("item") or "").strip()
-		avail = flt(batch_doc.get("batch_qty") or 0)
-		if avail <= 0:
-			avail = _gsm_batch_available_kg(bn, item_code)
-		if avail <= 0:
-			continue
-		seen.add(bn)
-		out.append(_gsm_patty_stock_from_batch_doc(batch_doc, item_code, avail))
-
-	if not out:
-		rows = frappe.db.sql(
-			"""
-			SELECT sle.batch_no, sle.item_code, SUM(sle.actual_qty) AS available_kg
-			FROM `tabStock Ledger Entry` sle
-			WHERE IFNULL(sle.is_cancelled, 0) = 0
-			  AND IFNULL(sle.batch_no, '') != ''
-			  AND (sle.batch_no LIKE '%%W/%%' OR sle.batch_no LIKE '%%11W/%%')
-			GROUP BY sle.batch_no, sle.item_code
-			HAVING SUM(sle.actual_qty) > 0.001
-			ORDER BY sle.batch_no DESC
-			LIMIT 500
-			""",
-			as_dict=True,
-		) or []
-		for r in rows:
-			bn = _cstr(r.get("batch_no")).strip()
-			if not bn or bn in seen:
-				continue
-			item_code = _cstr(r.get("item_code")).strip()
-			bdoc = frappe.db.get_value("Batch", bn, "*", as_dict=True) if frappe.db.exists("Batch", bn) else {"name": bn}
-			seen.add(bn)
-			out.append(_gsm_patty_stock_from_batch_doc(bdoc, item_code, flt(r.get("available_kg") or 0)))
+		out.append(mapped)
 	return out
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist()
 def spr_get_available_patty_stock(spr_name=None):
 	return get_available_patty_stock(spr_name)
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist()
 def get_patty_stock_for_spr(spr_name=None):
 	return get_available_patty_stock(spr_name)
 

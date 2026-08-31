@@ -6,6 +6,7 @@ import {
   sprCalcProducedGsm,
   sprFlt,
   sprNormalizeGrossWeightInput,
+  sprWholeMtrs,
   sprRecalcRollRow,
 } from "./spr_roll_entry_utils.js";
 
@@ -218,7 +219,7 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
     batch_no: line.batch_no || "",
     roll_no: line.roll_no || "",
     meter_roll: 0,
-    produced_length_mtrs: line.produced_length_mtrs ?? "",
+    produced_length_mtrs: sprWholeMtrs(line.produced_length_mtrs),
     produced_gsm: line.produced_gsm || 0,
     net_weight: line.net_weight || 0,
     gross_weight: line.gross_weight != null ? String(line.gross_weight) : "",
@@ -250,7 +251,7 @@ export function buildMixRollSavePayload(row) {
     batch_no: row.batch_no,
     roll_no: row.roll_no,
     meter_roll: 0,
-    produced_length_mtrs: row.produced_length_mtrs,
+    produced_length_mtrs: sprWholeMtrs(row.produced_length_mtrs) || 0,
     produced_gsm: updated.produced_gsm,
     net_weight: updated.net_weight,
     gross_weight: gross,

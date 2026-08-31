@@ -120,9 +120,8 @@
   },
   {
    "fieldname": "produced_length_mtrs",
-   "fieldtype": "Float",
-   "label": "Produced Length (Mtrs)",
-   "precision": "2"
+   "fieldtype": "Int",
+   "label": "Produced Length (Mtrs)"
   },
   {
    "fieldname": "net_weight",

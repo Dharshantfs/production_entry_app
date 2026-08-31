@@ -513,7 +513,7 @@
                   <td>{{ row.gsm }}</td>
                   <td>{{ row.width_inch }}"</td>
                   <td>
-                    <input v-model.number="row.produced_length_mtrs" type="number" step="0.01" class="gpe-inp gpe-inp-len" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
+                    <input v-model.number="row.produced_length_mtrs" type="number" step="1" min="0" inputmode="numeric" class="gpe-inp gpe-inp-len" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
                   </td>
                   <td>{{ row.batch_no }}</td>
                   <td>{{ formatKg(row.net_weight) }}</td>
@@ -590,7 +590,9 @@
                   <input
                     v-model.number="row.produced_length_mtrs"
                     type="number"
-                    step="0.01"
+                    step="1"
+                    min="0"
+                    inputmode="numeric"
                     class="gpe-inp gpe-inp-len"
                     :disabled="row.row_locked || row.is_bundle_row"
                     @input="onRowEdit(row)"
@@ -958,7 +960,7 @@
                     <td class="gpe-num">{{ row.gsm }}</td>
                     <td class="gpe-num">{{ widthDisplay(row) }}</td>
                     <td class="gpe-num">{{ row.meter_roll }}</td>
-                    <td class="gpe-num">{{ row.produced_length_mtrs }}</td>
+                    <td class="gpe-num">{{ formatMtrs(row.produced_length_mtrs) }}</td>
                     <td>{{ row.produced_gsm }}</td>
                     <td>{{ row.batch_no }}</td>
                     <td>{{ formatKg(row.net_weight) }}</td>
@@ -1183,7 +1185,7 @@
                     <td class="gpe-num">{{ row.gsm }}</td>
                     <td class="gpe-num">{{ widthDisplay(row) }}</td>
                     <td class="gpe-num">{{ row.meter_roll }}</td>
-                    <td class="gpe-num">{{ row.produced_length_mtrs }}</td>
+                    <td class="gpe-num">{{ formatMtrs(row.produced_length_mtrs) }}</td>
                     <td>{{ row.produced_gsm }}</td>
                     <td>{{ row.batch_no }}</td>
                     <td>{{ formatKg(row.net_weight) }}</td>
@@ -1424,7 +1426,7 @@
                   <td class="gpe-num">{{ row.gsm }}</td>
                   <td class="gpe-num">{{ widthDisplay(row) }}</td>
                   <td class="gpe-num">{{ row.meter_roll }}</td>
-                  <td class="gpe-num">{{ row.produced_length_mtrs }}</td>
+                  <td class="gpe-num">{{ formatMtrs(row.produced_length_mtrs) }}</td>
                   <td>{{ row.produced_gsm }}</td>
                   <td>{{ row.batch_no }}</td>
                   <td>{{ formatKg(row.net_weight) }}</td>
@@ -1839,6 +1841,7 @@ import {
   sprComputePlannedQtyKg,
   sprFlt,
   sprFormatKg,
+  sprWholeMtrs,
   sprGsmBandClass,
   sprGrossWeightDisplay,
   sprNormalizeGrossWeightInput,
@@ -2978,6 +2981,22 @@ const vClickOutside = {
 
 function formatKg(v) {
   return sprFormatKg(v);
+}
+
+function formatMtrs(v) {
+  const n = sprWholeMtrs(v);
+  return n === "" ? "—" : String(n);
+}
+
+function coerceProducedLengthMtrs(row) {
+  if (!row) {
+    return;
+  }
+  const v = row.produced_length_mtrs;
+  if (v === "" || v === null || v === undefined) {
+    return;
+  }
+  row.produced_length_mtrs = sprWholeMtrs(v);
 }
 
 function formatCbm(v) {
@@ -4300,6 +4319,7 @@ async function removeMixRollRow(row) {
 }
 
 function onMixRowEdit(row) {
+  coerceProducedLengthMtrs(row);
   recalcMixRollRow(row);
   syncMixRollRowViews(row);
   scheduleAutosave();
@@ -5086,6 +5106,7 @@ function onRowEdit(row) {
   if (row.row_locked) {
     return;
   }
+  coerceProducedLengthMtrs(row);
   if (row.is_mix_roll_row) {
     recalcMixRollRow(row);
     syncMixRollRowViews(row);
@@ -5204,7 +5225,7 @@ async function handleBundleApplyResult(m, ppId) {
     roll_numbers: m.roll_numbers || "",
     combination: m.combination || "",
     meter_roll: m.meter_roll || 0,
-    produced_length_mtrs: m.produced_length_mtrs || 0,
+    produced_length_mtrs: sprWholeMtrs(m.produced_length_mtrs) || 0,
     produced_gsm: 0,
     net_weight: m.sticker_bundle_weight_kg || 0,
     gross_weight: m.whole_gross_kg != null && m.whole_gross_kg !== "" ? String(m.whole_gross_kg) : "",
@@ -5308,7 +5329,7 @@ function buildRollPayload(row) {
     roll_no: row.roll_no,
     width_inch: row.width_inch,
     meter_roll: row.meter_roll,
-    produced_length_mtrs: row.produced_length_mtrs,
+    produced_length_mtrs: sprWholeMtrs(row.produced_length_mtrs) || 0,
     produced_gsm: row.produced_gsm,
     net_weight: row.net_weight,
     gross_weight: sprNormalizeGrossWeightInput(row.gross_weight),
@@ -6656,6 +6677,7 @@ function applyResumePayload(msg, options = {}) {
       ...r,
       ...normalizeSpiDiameterCbm(r),
       gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
+      produced_length_mtrs: sprWholeMtrs(r.produced_length_mtrs),
       _id: r._id || `resume-${idx}-${Date.now()}`,
       creation_seq: cint(r.creation_seq) || msg.roll_lines.length - idx,
       is_bundle_row: !!cint(r.is_bundle_row),
