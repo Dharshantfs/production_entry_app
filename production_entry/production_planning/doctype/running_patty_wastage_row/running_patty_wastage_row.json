@@ -12,7 +12,8 @@
   "width_inch",
   "meter_per_roll",
   "no_of_shafts",
-  "wastage"
+  "wastage",
+  "recycle_to_next"
  ],
  "fields": [
   {"fieldname": "job_id", "fieldtype": "Data", "in_list_view": 1, "label": "Job ID"},
@@ -22,12 +23,13 @@
   {"fieldname": "width_inch", "fieldtype": "Float", "label": "Width (Inch)"},
   {"fieldname": "meter_per_roll", "fieldtype": "Float", "label": "Meter / Roll"},
   {"fieldname": "no_of_shafts", "fieldtype": "Int", "label": "No of Shafts"},
-  {"fieldname": "wastage", "fieldtype": "Float", "label": "Wastage"}
+  {"fieldname": "wastage", "fieldtype": "Float", "label": "Wastage"},
+  {"fieldname": "recycle_to_next", "fieldtype": "Check", "in_list_view": 1, "label": "Recycle to Next"}
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-04-03 00:00:00.000000",
+ "modified": "2026-08-31 11:20:00.000000",
  "module": "Production Planning",
  "name": "Running Patty Wastage Row",
  "owner": "Administrator",

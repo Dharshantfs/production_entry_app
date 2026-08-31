@@ -4211,6 +4211,7 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 	"source_roll": ("source_roll", "batch_no", "batch"),
 	"source_roll_waste_row": ("source_roll_waste_row", "roll_waste_row", "spr_item_name"),
 	"spr_item_name": ("spr_item_name", "source_roll_waste_row"),
+	"recycle_to_next": ("recycle_to_next", "custom_recycle_to_next"),
 }
 
 
@@ -4247,6 +4248,8 @@ def _gsm_child_writable_fields(child_doctype: str) -> set[str]:
 		"batch_no",
 		"source_roll",
 		"source_roll_waste_row",
+		"recycle_to_next",
+		"custom_recycle_to_next",
 	):
 		try:
 			if frappe.db.has_column(child_doctype, fn):
@@ -4909,6 +4912,15 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 	if not computed:
 		return None
 
+	saved_flags = {}
+	for row in spr.get(field) or []:
+		jid = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+		if not jid:
+			continue
+		saved_flags[jid] = cint(
+			getattr(row, "recycle_to_next", None) or getattr(row, "custom_recycle_to_next", None) or 0
+		)
+
 	base = base_payload or {}
 	columns = base.get("columns") or _gsm_child_table_columns("Running Patty Wastage Row")
 	preview_rows = []
@@ -4917,12 +4929,15 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 			continue
 		row_dict = dict(logical)
 		jid = _cstr(row_dict.get("job_id") or "")
+		flag = saved_flags.get(jid, cint(logical.get("recycle_to_next") or 0))
+		row_dict["recycle_to_next"] = flag
 		row_dict["parentfield"] = field
 		row_dict["name"] = f"preview::{jid}" if jid else ""
 		try:
 			row_dict = _gsm_write_child_row("Running Patty Wastage Row", row_dict)
 			row_dict["parentfield"] = field
 			row_dict["name"] = f"preview::{jid}" if jid else ""
+			row_dict["recycle_to_next"] = flag
 		except Exception:
 			pass
 		preview_rows.append(_gsm_enrich_child_row_from_spr(spr, row_dict, "Running Patty Wastage Row"))
@@ -4940,6 +4955,88 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 		"source": "gsm_preview_from_spr",
 		"read_only": True,
 	}
+
+
+@frappe.whitelist()
+def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_to_next=0):
+	"""Toggle Running Patty Wastage Row.recycle_to_next from the GSM wastage popup."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_gsm_publish_session_update,
+		_spr_compute_patty_wastage_by_job,
+		_spr_operation_lock,
+		_spr_patty_wastage_fieldname,
+		_spr_write_patty_child_row,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	row_name = _cstr(row_name).strip()
+	job_id = _cstr(job_id).strip()
+	flag = 1 if cint(recycle_to_next) else 0
+
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+
+	child_dt = "Running Patty Wastage Row"
+	child_meta = frappe.get_meta(child_dt) if frappe.db.exists("DocType", child_dt) else None
+	flag_field = None
+	if child_meta:
+		for cand in ("recycle_to_next", "custom_recycle_to_next"):
+			if child_meta.has_field(cand):
+				flag_field = cand
+				break
+	if not flag_field:
+		frappe.throw(_("Recycle to Next is not on Running Patty Wastage. Please migrate."))
+
+	if row_name.startswith("preview::"):
+		job_id = job_id or row_name.split("::", 1)[-1]
+		row_name = ""
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=60):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot update a submitted Shaft Production Run"))
+
+		field = _spr_patty_wastage_fieldname()
+		if not field:
+			frappe.throw(_("Running Patty Wastage is not configured on Shaft Production Run"))
+
+		target = None
+		for row in spr.get(field) or []:
+			if row_name and _cstr(row.name) == row_name:
+				target = row
+				break
+			row_job = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+			if job_id and row_job == job_id:
+				target = row
+				break
+
+		if not target:
+			computed = _spr_compute_patty_wastage_by_job(spr) or {}
+			logical = None
+			if job_id and computed.get(job_id):
+				logical = computed.get(job_id)
+			elif len(computed) == 1:
+				logical = next(iter(computed.values()))
+			if not logical:
+				frappe.throw(_("Patty wastage row not found to recycle"))
+			payload = dict(logical)
+			payload["recycle_to_next"] = flag
+			values = _spr_write_patty_child_row(payload)
+			values[flag_field] = flag
+			target = spr.append(field, values)
+		else:
+			target.set(flag_field, flag)
+
+		spr.flags._spr_incremental_roll_save = True
+		spr.save(ignore_permissions=True)
+		_gsm_publish_session_update(spr)
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"row_name": _cstr(getattr(target, "name", "") or ""),
+			"job_id": _cstr(getattr(target, "job_id", None) or job_id),
+			"recycle_to_next": flag,
+		}
 
 
 @frappe.whitelist(methods=["GET", "POST"])

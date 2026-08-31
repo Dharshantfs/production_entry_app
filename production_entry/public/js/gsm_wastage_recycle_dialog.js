@@ -57,6 +57,7 @@ const DESK_PATTY_COLS = [
 	{ field: "no_of_shafts", label: __("No of Shafts"), num: true },
 	{ field: "wastage", label: __("Wastage Qty"), num: true },
 	{ field: "net_wastage", label: __("Net Wastage (Kgs)"), num: true },
+	{ field: "recycle_to_next", label: __("Recycle to Next"), check: true },
 ];
 
 function _flt(v) {
@@ -160,6 +161,23 @@ function _injectGwmStyles() {
   word-break: break-word;
 }
 .gwm-kv.gwm-kv-wide { grid-column: 1 / -1; }
+.gwm-recycle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  cursor: pointer;
+  user-select: none;
+}
+.gwm-recycle-label input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #2563eb;
+}
 .gwm-card-foot {
   margin-top: 10px;
   padding-top: 8px;
@@ -263,6 +281,24 @@ function _val(row, ...keys) {
 	return "";
 }
 
+function _cint(v) {
+	if (typeof cint === "function") {
+		return cint(v) ? 1 : 0;
+	}
+	return v === true || v === 1 || v === "1" ? 1 : 0;
+}
+
+function _recycleNextCheckboxHtml(row, opts = {}) {
+	const printKey = _printRowKey(row);
+	const checked = _cint(row.recycle_to_next) ? " checked" : "";
+	const label = opts.showLabel === false ? "" : `<span>${__("Recycle to Next")}</span>`;
+	return `<label class="gwm-recycle-label">
+		<input type="checkbox" class="gwm-recycle-next-cb"${checked}
+			data-row="${_esc(printKey)}" data-job="${_esc(row.job_id || "")}" />
+		${label}
+	</label>`;
+}
+
 function _fmtNum(v, decimals = 3) {
 	const n = _flt(v);
 	if (!n && n !== 0) {
@@ -281,9 +317,12 @@ function _apiColsToDesk(apiCols, fallbackCols) {
 		.map((c) => ({
 			field: c.fieldname,
 			label: c.label || c.fieldname,
+			check: c.fieldtype === "Check" || c.fieldname === "recycle_to_next",
 			num:
-				numericTypes.has(c.fieldtype) ||
-				/width|meter|wastage|recycled|available|shaft|gsm|qty|kg/i.test(c.fieldname),
+				c.fieldtype !== "Check" &&
+				c.fieldname !== "recycle_to_next" &&
+				(numericTypes.has(c.fieldtype) ||
+					/width|meter|wastage|recycled|available|shaft|gsm|qty|kg/i.test(c.fieldname)),
 		}));
 }
 
@@ -367,6 +406,7 @@ function _normalizePattyRow(row) {
 		order_code: _val(row, "order_code", "party_code"),
 		party_code: _val(row, "party_code", "order_code"),
 		job_id: jobId,
+		recycle_to_next: _cint(_val(row, "recycle_to_next", "custom_recycle_to_next")),
 	};
 	return normalized;
 }
@@ -416,6 +456,9 @@ function _deskTableHtml(cols, rows, opts = {}) {
 				const printKey = _printRowKey(row);
 				const cells = cols
 					.map((c) => {
+						if (c.check || c.field === "recycle_to_next") {
+							return `<td class="gwm-check">${_recycleNextCheckboxHtml(row, { showLabel: false })}</td>`;
+						}
 						let v = _cellValue(row, c.field);
 						if (c.num) {
 							v = _fmtNum(v, c.field === "gsm" || c.field === "no_of_shafts" ? 0 : 3);
@@ -472,6 +515,7 @@ function _dataCardsHtml(rows, opts = {}) {
 					<div class="gwm-kv"><span>${__("Shafts")}</span><strong>${_esc(row.no_of_shafts)}</strong></div>
 					<div class="gwm-kv"><span>${__("Wastage Qty")}</span><strong>${_esc(_fmtNum(row.wastage))}</strong></div>
 					<div class="gwm-kv"><span>${__("Net Wastage")}</span><strong>${_esc(_fmtNum(row.net_wastage || row.wastage))} Kg</strong></div>
+					<div class="gwm-kv gwm-kv-wide">${_recycleNextCheckboxHtml(row)}</div>
 					${row.recycled ? `<div class="gwm-kv"><span>${__("Recycled")}</span><strong>${_esc(_fmtNum(row.recycled))} Kg</strong></div>` : ""}
 				</div>
 				${
@@ -696,6 +740,9 @@ async function _renderPattyWastageView(sprName) {
 		return row;
 	});
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
+	if (!pattyCols.some((c) => c.field === "recycle_to_next" || c.field === "custom_recycle_to_next")) {
+		pattyCols.push({ field: "recycle_to_next", label: __("Recycle to Next"), check: true });
+	}
 	const isPreview =
 		table.source === "gsm_preview_from_spr" || table.source === "gsm_preview_from_roll_lines";
 	const hint = isPreview
@@ -778,6 +825,41 @@ function _rowDataFromPrintBtn($btn, rows) {
 	);
 }
 
+async function _bindRecycleToNext($wrapper, sprName, rows, onSaved) {
+	$wrapper.off("change.gwmRecycle").on("change.gwmRecycle", ".gwm-recycle-next-cb", async function () {
+		const $cb = $(this);
+		const checked = $cb.is(":checked") ? 1 : 0;
+		$cb.prop("disabled", true);
+		try {
+			await frappe.call({
+				method: "production_entry.production_planning.unified_production_entry_api.set_gsm_patty_recycle_to_next",
+				args: {
+					spr_name: sprName,
+					row_name: String($cb.attr("data-row") || "").trim(),
+					job_id: String($cb.attr("data-job") || "").trim(),
+					recycle_to_next: checked,
+				},
+			});
+			frappe.show_alert({
+				message: checked ? __("Recycle to Next saved on SPR") : __("Recycle to Next cleared on SPR"),
+				indicator: "green",
+			});
+			if (typeof onSaved === "function") {
+				await onSaved();
+			}
+		} catch (e) {
+			$cb.prop("checked", !checked);
+			frappe.msgprint({
+				title: __("Could not save Recycle to Next"),
+				message: e?.message || e,
+				indicator: "red",
+			});
+		} finally {
+			$cb.prop("disabled", false);
+		}
+	});
+}
+
 async function _bindWastagePrint($wrapper, sprName, tableField, rows) {
 	$wrapper.off("click.gwmPrint").on("click.gwmPrint", ".gwm-print-btn", async function () {
 		const $btn = $(this);
@@ -839,21 +921,27 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		},
 	});
 	d.show();
-	_bindWastagePrint(
-		d.$wrapper,
-		sprName,
-		initial.table.resolved_fieldname || "custom_running_patty_wastage",
-		initial.rows
-	);
-	_bindGwmLiveRefresh(d, async (dialog) => {
-		const view = await _renderPattyWastageView(sprName);
-		dialog.fields_dict.grid_html.$wrapper.html(view.content);
+
+	const paint = async (view) => {
+		d.fields_dict.grid_html.$wrapper.html(view.content);
 		_bindWastagePrint(
-			dialog.$wrapper,
+			d.$wrapper,
 			sprName,
 			view.table.resolved_fieldname || "custom_running_patty_wastage",
 			view.rows
 		);
+		_bindRecycleToNext(d.$wrapper, sprName, view.rows, async () => {
+			const next = await _renderPattyWastageView(sprName);
+			await paint(next);
+		});
+	};
+	await paint(initial);
+	_bindGwmLiveRefresh(d, async () => {
+		if (d.$wrapper.find(".gwm-recycle-next-cb:disabled").length) {
+			return;
+		}
+		const view = await _renderPattyWastageView(sprName);
+		await paint(view);
 	});
 }
 

@@ -12054,6 +12054,7 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage"),
 		"recycled": ("recycled", "recycled_qty", "recycled_kg"),
 		"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
+		"recycle_to_next": ("recycle_to_next", "custom_recycle_to_next"),
 	}
 	out: dict = {}
 	for key, val in (logical or {}).items():
@@ -12332,6 +12333,7 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			"net_wastage": tail,
 			"recycled": 0,
 			"recycled_qty": 0,
+			"recycle_to_next": 0,
 			"order_code": party_code,
 			"party_code": party_code,
 		}
