@@ -187,7 +187,7 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 			'<div class="wo-fabric-pick" style="max-height:72vh;overflow-y:auto;padding-right:4px">' +
 			'<p class="text-muted small">' +
 			__(
-				'Tick fabric roll batches only. PP and other raw materials transfer automatically from the Raw Materials warehouse.'
+				'Tick complete fabric rolls. Total can be more or less than BOM remaining. PP and other raw materials transfer automatically.'
 			) +
 			'</p>';
 
@@ -222,10 +222,12 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 				__('Total selected') +
 				': <b id="wo-sum-' +
 				idx +
-				'">0</b> / ' +
-				__('need') +
+				'">0</b> &nbsp;' +
+				'<span class="text-muted">(' +
+				__('BOM remaining') +
 				' ' +
 				String(rem) +
+				')</span>' +
 				'</p>' +
 				'<div id="wo-loading-' +
 				idx +
@@ -272,30 +274,9 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 			size: 'extra-large',
 			primary_action_label: __('Start Transfer'),
 			primary_action: function () {
-				/* Validation: each fabric RM must have enough selected. */
-				for (let i = 0; i < fabric_rows.length; i++) {
-					const ic = cstr(fabric_rows[i].item_code).trim();
-					const need = flt(fabric_rows[i].remaining_qty);
-					const sum = lp_sum_for_item(ic);
-					if (sum + 1e-6 < need) {
-						frappe.msgprint(
-							'<b>' +
-								ic +
-								'</b>: ' +
-								__('selected') +
-								' ' +
-								String(flt(sum, 3)) +
-								' / ' +
-								__('remaining') +
-								' ' +
-								String(need)
-						);
-						return;
-					}
-				}
 				const payload = lp_all_picks();
 				if (!payload.length) {
-					frappe.msgprint(__('No batch picks captured. Tick Use or enter a Use qty, then try again.'));
+					frappe.msgprint(__('Tick the fabric rolls to send to WIP, then Start Transfer.'));
 					return;
 				}
 				d.hide();

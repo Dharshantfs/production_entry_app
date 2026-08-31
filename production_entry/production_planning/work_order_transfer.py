@@ -350,7 +350,7 @@ def _append_se_item(se, wo, item_code, source_wh, qty, stock_uom, batch_no=None)
 
 @frappe.whitelist()
 def auto_material_transfer(work_order=None, fabric_batch_picks=None, **kwargs):
-	"""Transfer remaining BOM qty to WIP. Fabric rolls use picked batches; PP/other RM auto-FIFO from RM store."""
+	"""Transfer RM to WIP. Fabric rolls: whole picked batches (qty may differ from BOM). PP/other RM: auto-FIFO."""
 	wo_id = work_order or frappe.form_dict.get("work_order") or frappe.form_dict.get("wo_id")
 	if not wo_id:
 		frappe.throw("Work Order Missing")
@@ -416,10 +416,13 @@ def auto_material_transfer(work_order=None, fabric_batch_picks=None, **kwargs):
 			continue
 		already = flt(rm_map.get(item_code) or 0.0)
 		remaining = max(0.0, req_qty - already)
-		if remaining <= 1e-9:
+		fabric = is_fabric_roll_item_code(item_code)
+		use_manual_fabric = fg_manual and fabric
+		fabric_pool = picks_pool_for_item(fabric_picks, item_code) if use_manual_fabric else []
+		# Whole-roll fabric may exceed or fall short of BOM remaining; still transfer the picks.
+		if remaining <= 1e-9 and not fabric_pool:
 			continue
 
-		fabric = is_fabric_roll_item_code(item_code)
 		source_wh = source_warehouse_for_row(wo, row, fabric)
 		has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
 
@@ -434,15 +437,15 @@ def auto_material_transfer(work_order=None, fabric_batch_picks=None, **kwargs):
 			items_added = True
 			continue
 
-		total = get_total_qty(item_code, source_wh)
-		if total < remaining:
-			frappe.throw(
-				f"{item_code} need remaining {flt(remaining, 4)} stock {total} in {source_wh}"
-			)
+		if not use_manual_fabric:
+			total = get_total_qty(item_code, source_wh)
+			if total < remaining:
+				frappe.throw(
+					f"{item_code} need remaining {flt(remaining, 4)} stock {total} in {source_wh}"
+				)
 
-		use_manual_fabric = fg_manual and fabric
 		if use_manual_fabric:
-			pool = picks_pool_for_item(fabric_picks, item_code)
+			pool = fabric_pool
 			if not pool:
 				frappe.throw(
 					f"Select batches for fabric item {item_code}. PP and other RM transfer automatically."
@@ -462,11 +465,8 @@ def auto_material_transfer(work_order=None, fabric_batch_picks=None, **kwargs):
 				allocated += use_qty
 				batch_reserved[rk] = used_here + use_qty
 				items_added = True
-			if allocated + 1e-9 < remaining:
-				frappe.throw(
-					f"{item_code}: fabric picks cover {flt(allocated, 4)} but remaining BOM need is "
-					f"{flt(remaining, 4)} in {source_wh}."
-				)
+			if allocated <= 1e-9:
+				frappe.throw(f"{item_code}: selected rolls have 0 stock in {source_wh}.")
 			continue
 
 		pending = remaining
@@ -492,8 +492,15 @@ def auto_material_transfer(work_order=None, fabric_batch_picks=None, **kwargs):
 	if not items_added:
 		frappe.throw("No materials left to transfer for this Work Order (all lines already satisfied in WIP).")
 
-	se.insert(ignore_permissions=True)
-	se.submit()
+	# Whole fabric rolls can exceed BOM remaining; skip ERPNext excess-transfer cap.
+	se.flags.ignore_validate_work_order = True
+	se.flags.ignore_permissions = True
+	frappe.flags.spr_skip_wo_transfer_qty_validation = True
+	try:
+		se.insert(ignore_permissions=True)
+		se.submit()
+	finally:
+		frappe.flags.spr_skip_wo_transfer_qty_validation = False
 	frappe.db.commit()
 
 	wo.reload()
