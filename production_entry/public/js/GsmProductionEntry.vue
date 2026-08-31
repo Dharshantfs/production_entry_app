@@ -353,19 +353,31 @@
                   :disabled="!canOpenWastageRecycle"
                   @click="openRecycleDialog"
                 >Recycle</button>
-                <div class="gpe-quality-check-wrap" v-click-outside="closeQualityMenu">
+                  <div class="gpe-quality-check-wrap" v-click-outside="closeQualityMenu">
+                    <button
+                      type="button"
+                      class="gpe-btn"
+                      :disabled="!canOpenQualityCheck"
+                      @click.stop="toggleQualityMenu"
+                    >Quality Check ▾</button>
+                    <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-quality-menu">
+                      <button type="button" @click="runQualityCheck('round_gsm')">Round Cutting GSM Test</button>
+                      <button type="button" @click="runQualityCheck('patty_gsm')">Patty Cutting GSM Test</button>
+                      <button type="button" @click="runQualityCheck('tensile')">Tensile Testing</button>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     class="gpe-btn"
-                    :disabled="!canOpenQualityCheck"
-                    @click.stop="toggleQualityMenu"
-                  >Quality Check ▾</button>
-                  <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-quality-menu">
-                    <button type="button" @click="runQualityCheck('round_gsm')">Round Cutting GSM Test</button>
-                    <button type="button" @click="runQualityCheck('patty_gsm')">Patty Cutting GSM Test</button>
-                    <button type="button" @click="runQualityCheck('tensile')">Tensile Testing</button>
-                  </div>
-                </div>
+                    :disabled="!canOpenLotSample"
+                    @click="openLotSampleDialog"
+                  >Lot Sample</button>
+                  <button
+                    type="button"
+                    class="gpe-btn"
+                    :disabled="!canOpenShiftConsumables"
+                    @click="openShiftConsumablesDialog"
+                  >Shift Consumables</button>
               </div>
               <label v-if="shiftOpened">Operator <input :value="operator" type="text" readonly /></label>
               <label v-if="shiftOpened">Supervisor <input :value="supervisor" type="text" readonly /></label>
@@ -1804,6 +1816,8 @@ import {
 } from "./gsm_wastage_recycle_dialog.js";
 import { openGsmMixingSheetDialog } from "./gsm_mixing_sheet_dialog.js";
 import { openGsmBreakdownDialog } from "./gsm_breakdown_dialog.js";
+import { openGsmLotSampleDialog } from "./gsm_lot_sample_dialog.js";
+import { openGsmShiftConsumablesDialog } from "./gsm_shift_consumables_dialog.js";
 import {
   fetchGsmMixRollCandidates,
   activateGsmMixRollForSession,
@@ -4021,6 +4035,22 @@ const canOpenQualityCheck = computed(
   () => shiftOpened.value && sessionSprList.value.length > 0
 );
 
+const canOpenLotSample = computed(
+  () =>
+    shiftOpened.value &&
+    !!(headerUnit.value || filterUnit.value) &&
+    !!runDate.value &&
+    !!shift.value
+);
+
+const canOpenShiftConsumables = computed(
+  () =>
+    shiftOpened.value &&
+    !!(headerUnit.value || filterUnit.value) &&
+    !!runDate.value &&
+    !!shift.value
+);
+
 const MIXING_EXCLUDED_UNITS = [
   "TTT- L3 - OYANG C900 BAG MAKING LINE",
   "TTT- L2 - OYANG C700 BAG MAKING LINE",
@@ -4501,6 +4531,26 @@ function openMixingDialog() {
 
 function openBreakdownDialog() {
   openGsmBreakdownDialog({
+    headerUnit: headerUnit.value || filterUnit.value,
+    runDate: runDate.value,
+    shift: shift.value,
+    shiftSessionId: shiftSession.value?.name || "",
+  });
+}
+
+function openLotSampleDialog() {
+  openGsmLotSampleDialog({
+    headerUnit: headerUnit.value || filterUnit.value,
+    runDate: runDate.value,
+    shift: shift.value,
+    shiftSessionId: shiftSession.value?.name || "",
+    sessionSprList: wastageRecycleSprList.value,
+    selectedPpIds: selectedEntries.value.map((e) => e.ppId).filter(Boolean),
+  });
+}
+
+function openShiftConsumablesDialog() {
+  openGsmShiftConsumablesDialog({
     headerUnit: headerUnit.value || filterUnit.value,
     runDate: runDate.value,
     shift: shift.value,

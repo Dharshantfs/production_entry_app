@@ -4123,6 +4123,7 @@ def _gsm_load_spr_child_rows(spr_doc, preferred_fieldname: str, child_doctype: s
 				fields=["*"],
 				order_by="idx asc",
 				limit=500,
+				ignore_permissions=True,
 			)
 			if alt_rows:
 				parentfield = _cstr(alt_rows[0].get("parentfield") or df.fieldname)
@@ -4135,6 +4136,7 @@ def _gsm_load_spr_child_rows(spr_doc, preferred_fieldname: str, child_doctype: s
 		fields=["*"],
 		order_by="idx asc",
 		limit=500,
+		ignore_permissions=True,
 	)
 	if not db_rows:
 		return resolved, []
@@ -4315,6 +4317,61 @@ def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
 	return out
 
 
+def _gsm_pick_positive_qty(row, keys) -> float:
+	"""Return the first strictly positive qty. Zero is stored on unused aliases and must not win."""
+	if not row:
+		return 0.0
+	if isinstance(row, dict):
+		getter = row.get
+	else:
+		getter = lambda k, d=None: getattr(row, k, d)
+	for k in keys:
+		try:
+			v = flt(getter(k, None) or 0)
+		except Exception:
+			continue
+		if v > 0:
+			return v
+	return 0.0
+
+
+def _gsm_qty_from_spr_item(spr_doc, job_id="", batch_no="", spr_item_name="") -> float:
+	"""Net kg of the source production roll (used when recycled/wastage child qty was saved as 0)."""
+	items = list(getattr(spr_doc, "items", None) or [])
+	if not items:
+		return 0.0
+	spr_item_name = _cstr(spr_item_name)
+	batch_no = _cstr(batch_no)
+	job_id = _cstr(job_id)
+
+	def _item_kg(it) -> float:
+		return _gsm_pick_positive_qty(
+			it,
+			("net_weight", "gross_weight", "qty", "fg_completed_qty"),
+		)
+
+	if spr_item_name:
+		for it in items:
+			if _cstr(getattr(it, "name", None)) == spr_item_name:
+				kg = _item_kg(it)
+				if kg > 0:
+					return kg
+	if batch_no:
+		for it in items:
+			if _cstr(getattr(it, "batch_no", None)) == batch_no:
+				kg = _item_kg(it)
+				if kg > 0:
+					return kg
+	if job_id:
+		for it in items:
+			if _cstr(getattr(it, "job", None) or getattr(it, "job_id", None)) != job_id:
+				continue
+			kg = _item_kg(it)
+			if kg > 0:
+				return kg
+	return 0.0
+
+
 _GSM_STAMP_SKIP_KEYS = {
 	"name",
 	"owner",
@@ -4359,7 +4416,7 @@ def _gsm_stamp_child_values(row, logical: dict) -> None:
 	width_val = flt(
 		_pick_value(logical or {}, ["width_inch", "width", "w", "custom_width_inch", "custom_width"], 0)
 	)
-	qty_val = flt(_pick_value(logical or {}, list(_GSM_QTY_STAMP_KEYS), 0))
+	qty_val = _gsm_pick_positive_qty(logical or {}, list(_GSM_QTY_STAMP_KEYS))
 	for key, val in (logical or {}).items():
 		if key in _GSM_STAMP_SKIP_KEYS:
 			continue
@@ -4546,6 +4603,36 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 	).lower()
 	# Patty-stock recycle rows have no job_id — do not copy production-roll width/meter/batch.
 	skip_spr_roll_fill = is_patty_wastage or (is_recycled and not job_id)
+	if is_recycled:
+		kg = _gsm_pick_positive_qty(
+			out,
+			(
+				"wastage",
+				"wastage_qty",
+				"recycled",
+				"recycled_qty",
+				"available_kg",
+				"available",
+				"net_wastage",
+				"net_weight",
+			),
+		)
+		if kg <= 0:
+			kg = _gsm_qty_from_spr_item(
+				spr_doc,
+				job_id=job_id,
+				batch_no=_cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll") or ""),
+				spr_item_name=_cstr(_gsm_pick_row_val(out, "spr_item_name") or ""),
+			)
+		if kg > 0:
+			if flt(_gsm_pick_row_val(out, "recycled", "recycled_qty") or 0) <= 0:
+				out["recycled"] = kg
+				out["recycled_qty"] = kg
+			if flt(_gsm_pick_row_val(out, "wastage", "wastage_qty") or 0) <= 0:
+				out["wastage"] = kg
+				out["wastage_qty"] = kg
+			out["available_kg"] = out.get("available_kg") or kg
+			out["available"] = out.get("available") or kg
 	if is_recycled and not job_id:
 		bn_now = _cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll") or "")
 		if bn_now and not _gsm_is_real_batch_no(bn_now):
@@ -4731,30 +4818,47 @@ def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) ->
 	}
 
 
-def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
+def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False, spr_doc=None) -> dict:
 	if not from_roll_waste:
 		src = _gsm_hydrate_patty_selection(src)
 	elif not isinstance(src, dict):
 		src = src.as_dict() if hasattr(src, "as_dict") else {}
 
-	available_qty = flt(
-		_pick_value(
-			src,
-			["available_kg", "available", "available_qty", "qty", "batch_qty", "actual_qty"],
-			0,
-		)
+	qty_keys = (
+		"available_kg",
+		"available",
+		"available_qty",
+		"wastage",
+		"wastage_qty",
+		"wastage_qt",
+		"net_wastage",
+		"net_wastage_kg",
+		"net_weight",
+		"gross_weight",
+		"qty",
+		"batch_qty",
+		"actual_qty",
+		"recycled",
+		"recycled_qty",
+		"recycled_kg",
 	)
-	wastage_qty = flt(
-		_pick_value(
-			src,
-			["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight"],
-			0,
-		)
+	available_qty = _gsm_pick_positive_qty(
+		src, ("available_kg", "available", "available_qty", "qty", "batch_qty", "actual_qty")
 	)
-	recycled_qty = flt(_pick_value(src, ["recycled", "recycled_qty", "recycled_kg"], 0))
-	consume_kg = available_qty or wastage_qty
+	wastage_qty = _gsm_pick_positive_qty(
+		src, ("wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight", "gross_weight")
+	)
+	recycled_qty = _gsm_pick_positive_qty(src, ("recycled", "recycled_qty", "recycled_kg"))
+	consume_kg = available_qty or wastage_qty or recycled_qty
+	if consume_kg <= 0 and spr_doc is not None:
+		consume_kg = _gsm_qty_from_spr_item(
+			spr_doc,
+			job_id=_cstr(_pick_value(src, ["job_id", "job"], "")),
+			batch_no=_cstr(_pick_value(src, ["batch_no", "batch", "source_roll"], "")),
+			spr_item_name=_cstr(_pick_value(src, ["spr_item_name"], "")),
+		)
 	if from_roll_waste and consume_kg <= 0:
-		consume_kg = wastage_qty
+		consume_kg = _gsm_pick_positive_qty(src, qty_keys)
 	if wastage_qty <= 0:
 		wastage_qty = consume_kg
 	if recycled_qty <= 0:
@@ -5409,12 +5513,13 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			)
 			_gsm_stamp_qty_on_child(
 				child,
-				flt(
-					row.get("available_kg")
-					or row.get("wastage")
-					or values.get("wastage")
-					or values.get("recycled")
-					or 0
+				_gsm_pick_positive_qty(
+					row,
+					("available_kg", "available", "wastage", "wastage_qty", "recycled", "recycled_qty"),
+				)
+				or _gsm_pick_positive_qty(
+					values,
+					("wastage", "wastage_qty", "recycled", "recycled_qty", "available_kg"),
 				),
 			)
 			real_bn = _cstr(row.get("batch_no") or values.get("batch_no") or "")
@@ -5438,9 +5543,21 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			rw = roll_waste_by_name.get(rn)
 			if not rw:
 				continue
-			values = _gsm_map_to_recycled_row(rw, from_roll_waste=True)
+			values = _gsm_map_to_recycled_row(rw, from_roll_waste=True, spr_doc=spr)
 			child = spr.append("custom_recycled_wastage_details", values)
 			_gsm_stamp_child_values(child, values)
+			waste_kg = _gsm_pick_positive_qty(
+				values,
+				("wastage", "wastage_qty", "recycled", "recycled_qty", "available_kg", "net_weight"),
+			)
+			if waste_kg <= 0:
+				waste_kg = _gsm_qty_from_spr_item(
+					spr,
+					job_id=_cstr(getattr(rw, "job_id", None) or getattr(rw, "job", None) or ""),
+					batch_no=_cstr(getattr(rw, "batch_no", None) or getattr(rw, "source_roll", None) or ""),
+					spr_item_name=_cstr(getattr(rw, "spr_item_name", None) or ""),
+				)
+			_gsm_stamp_qty_on_child(child, waste_kg)
 			roll_waste_to_remove.append(rw)
 			added += 1
 
