@@ -6,6 +6,14 @@
       <button type="button" class="gpe-btn primary" @click="retryPageLoad">Retry</button>
     </div>
     <template v-else>
+    <div v-if="deskSessionExpired" class="gpe-session-expired">
+      <strong>Login expired on this PC</strong>
+      <p>
+        The page is still open, but you are not logged in. Do not click Submit or Close Shift.
+        Log out this operator on other PCs (laptop included), then log in here again.
+      </p>
+      <button type="button" class="gpe-btn primary" @click="reloadGsmForLogin">Log in again</button>
+    </div>
     <div class="gpe-info-strip">
       Create SPRs for selected orders, enter rolls, Save Row saves to server. Submit Entry pushes to SPR and submits.
     </div>
@@ -294,7 +302,7 @@
               v-if="shiftOpened"
               type="button"
               class="gpe-btn gpe-btn-warn gpe-close-shift-btn"
-              :disabled="shiftClosingBusy"
+              :disabled="shiftClosingBusy || deskSessionExpired"
               @click="closeShift"
             >
               {{ shiftClosingBusy ? "Closing…" : "Close Shift" }}
@@ -494,7 +502,7 @@
               </div>
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_shaft_details')" @click="guardedShaftDetails">Shaft Details</button>
-            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_submit')" @click="guardedSubmitEntry">Submit Entry</button>
+            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry || deskSessionExpired" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_submit')" @click="guardedSubmitEntry">Submit Entry</button>
           </div>
         </div>
 
@@ -1903,15 +1911,134 @@ const lastAddRollJobKey = ref("");
 const lastServerSyncAt = ref("");
 const liveSyncLabel = ref("");
 let gsmPollTimer = null;
+let gsmSessionPingTimer = null;
 let gsmRealtimeBound = false;
 let gsmRefreshInFlight = false;
 let gsmRefreshQueued = false;
+let gsmSessionExpiredDialogShown = false;
 
 let gsmRefreshDebounceTimer = null;
 let gsmVisibilityBound = false;
 
+/** Fallback poll only — live updates come from gsm_production_entry_updated. */
+const GSM_LIVE_POLL_MS = 90 * 1000;
+/** Cheap logged-user check so Close Shift does not hit Guest whitelist errors. */
+const GSM_SESSION_PING_MS = 3 * 60 * 1000;
+
+const deskSessionExpired = ref(false);
+
 function gsmPageIsVisible() {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+function gsmErrorText(err) {
+  if (!err) {
+    return "";
+  }
+  const parts = [
+    err.message,
+    err.exc,
+    err.exception,
+    err.status,
+    err.statusText,
+    typeof err._server_messages === "string" ? err._server_messages : "",
+  ];
+  try {
+    parts.push(JSON.stringify(err._server_messages || err.exc || ""));
+  } catch (e) {
+    /* ignore */
+  }
+  return parts.filter(Boolean).join(" ").toLowerCase();
+}
+
+function isGsmSessionDeadError(err) {
+  const user = frappe.session?.user;
+  if (!user || user === "Guest") {
+    return true;
+  }
+  const text = gsmErrorText(err);
+  return (
+    text.includes("not whitelisted") ||
+    text.includes("login to access") ||
+    text.includes("not permitted to access this resource") ||
+    text.includes("method not allowed") ||
+    text.includes("csrftoken") ||
+    text.includes("csrf token") ||
+    text.includes("session expired")
+  );
+}
+
+function markGsmSessionExpired() {
+  deskSessionExpired.value = true;
+  if (gsmPollTimer) {
+    clearInterval(gsmPollTimer);
+    gsmPollTimer = null;
+  }
+  if (gsmSessionExpiredDialogShown) {
+    return;
+  }
+  gsmSessionExpiredDialogShown = true;
+  frappe.msgprint({
+    title: __("Login expired"),
+    indicator: "red",
+    message: __(
+      "This Production Entry tab is still open, but you are not logged in. Do not Submit or Close Shift. Log out this operator on other PCs, then log in on this PC."
+    ),
+  });
+}
+
+function reloadGsmForLogin() {
+  const path = window.location.pathname + window.location.search + window.location.hash;
+  window.location.href = "/login?redirect-to=" + encodeURIComponent(path);
+}
+
+async function ensureGsmDeskSession() {
+  if (deskSessionExpired.value) {
+    markGsmSessionExpired();
+    return false;
+  }
+  if (frappe.session?.user && frappe.session.user === "Guest") {
+    markGsmSessionExpired();
+    return false;
+  }
+  try {
+    const r = await frappe.call({
+      method: "frappe.auth.get_logged_user",
+      error: () => {},
+      silent: true,
+    });
+    const user = r?.message;
+    if (!user || user === "Guest") {
+      markGsmSessionExpired();
+      return false;
+    }
+    return true;
+  } catch (e) {
+    if (isGsmSessionDeadError(e)) {
+      markGsmSessionExpired();
+      return false;
+    }
+    return true;
+  }
+}
+
+function setupGsmSessionWatch() {
+  if (gsmSessionPingTimer) {
+    clearInterval(gsmSessionPingTimer);
+  }
+  gsmSessionPingTimer = setInterval(() => {
+    if (!gsmPageIsVisible() || deskSessionExpired.value) {
+      return;
+    }
+    ensureGsmDeskSession();
+  }, GSM_SESSION_PING_MS);
+}
+
+function teardownGsmSessionWatch() {
+  if (gsmSessionPingTimer) {
+    clearInterval(gsmSessionPingTimer);
+    gsmSessionPingTimer = null;
+  }
 }
 
 function sessionSprRow(ppId) {
@@ -2069,10 +2196,13 @@ function onGsmProductionEntryUpdated(data) {
   if (!data || !shiftOpened.value || !gsmPageIsVisible()) {
     return;
   }
+  if (mixRollBusy.value) {
+    return;
+  }
   const u = data.unit || "";
   const rd = String(data.run_date || "").slice(0, 10);
   const sh = data.shift || "";
-  if (u && headerUnit.value && u !== headerUnit.value) {
+  if (u && headerUnit.value && !sameGsmUnit(u, headerUnit.value)) {
     return;
   }
   if (rd && runDate.value && rd !== runDate.value) {
@@ -2100,10 +2230,13 @@ function setupGsmLiveSync() {
     clearInterval(gsmPollTimer);
   }
   gsmPollTimer = setInterval(() => {
+    if (deskSessionExpired.value) {
+      return;
+    }
     if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight) {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
-  }, 15000);
+  }, GSM_LIVE_POLL_MS);
   if (typeof document !== "undefined" && !gsmVisibilityBound) {
     document.addEventListener("visibilitychange", onGsmVisibilityChange);
     gsmVisibilityBound = true;
@@ -2118,9 +2251,11 @@ function onGsmVisibilityChange() {
     }
     return;
   }
-  if (shiftOpened.value && !gsmRefreshInFlight) {
-    refreshSessionFromServer({ quiet: true, merge: true });
-  }
+  ensureGsmDeskSession().then((ok) => {
+    if (ok && shiftOpened.value && !gsmRefreshInFlight) {
+      refreshSessionFromServer({ quiet: true, merge: true });
+    }
+  });
 }
 
 function teardownGsmLiveSync() {
@@ -2164,6 +2299,10 @@ function clearGsmMixState() {
 
 function mixRowUnit(row) {
   return _cstr(row?.custom_unit || row?.unit || "");
+}
+
+function sameGsmUnit(a, b) {
+  return _cstr(a).trim().toLowerCase() === _cstr(b).trim().toLowerCase();
 }
 
 function clearGsmUnitContextState() {
@@ -4107,7 +4246,7 @@ function formatMixPlanningKey(key) {
   return k || "—";
 }
 
-async function loadMixRollCandidates() {
+async function loadMixRollCandidates(options = {}) {
   const unit = headerUnit.value || filterUnit.value;
   if (!unit) {
     mixRollCandidates.value = [];
@@ -4122,7 +4261,9 @@ async function loadMixRollCandidates() {
       filterMonth: filterMonth.value,
     });
     mixRollCandidates.value = res.mix_rolls || [];
-    await restoreActiveMixRollFromSession();
+    if (!options.skipRestore) {
+      await restoreActiveMixRollFromSession();
+    }
   } catch (e) {
     console.error(e);
     mixRollCandidates.value = [];
@@ -4149,7 +4290,7 @@ async function isMixSprDraft(sprName) {
     const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
     return cint(r?.message?.docstatus) === 0;
   } catch (e) {
-    return false;
+    return true;
   }
 }
 
@@ -4160,29 +4301,23 @@ async function restoreActiveMixRollFromSession() {
   const currentUnit = _cstr(headerUnit.value || filterUnit.value);
   const currentSpr = _cstr(activeMixRoll.value?.spr_name);
   if (currentSpr && !dismissedMixSprs.value.includes(currentSpr)) {
-    if (mixRowUnit(activeMixRoll.value) && mixRowUnit(activeMixRoll.value) !== currentUnit) {
-      clearGsmMixState();
-      return;
-    }
     await refreshMixRollLinesFromSpr();
     return;
   }
-  const mixRow = rollLines.value.find(
-    (r) => r.is_mix_roll_row && r.spr_name && (!mixRowUnit(r) || mixRowUnit(r) === currentUnit)
-  );
+  const mixRow = rollLines.value.find((r) => r.is_mix_roll_row && r.spr_name);
   const savedSpr = _cstr(persistedActiveMixSpr.value);
   const sprName = _cstr(mixRow?.spr_name || savedSpr);
   if (!sprName || dismissedMixSprs.value.includes(sprName)) {
-    if (!currentSpr) {
-      rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
-      mixRollLines.value = [];
-      persistedActiveMixSpr.value = "";
-    }
     return;
   }
   let mixMeta = mixRollCandidates.value.find((m) => m.spr_name === sprName);
-  if (mixMeta && _cstr(mixMeta.unit || mixMeta.custom_unit) && _cstr(mixMeta.unit || mixMeta.custom_unit) !== currentUnit) {
-    mixMeta = null;
+  if (
+    mixMeta &&
+    _cstr(mixMeta.unit || mixMeta.custom_unit) &&
+    currentUnit &&
+    !sameGsmUnit(mixMeta.unit || mixMeta.custom_unit, currentUnit)
+  ) {
+    return;
   }
   if (!mixMeta) {
     mixMeta = {
@@ -4196,21 +4331,11 @@ async function restoreActiveMixRollFromSession() {
       unit: mixRowUnit(mixRow) || currentUnit,
     };
   }
-  const metaUnit = _cstr(mixMeta.unit || mixMeta.custom_unit);
-  if (metaUnit && currentUnit && metaUnit !== currentUnit) {
-    persistedActiveMixSpr.value = "";
-    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
-    mixRollLines.value = [];
-    return;
-  }
   if (sprName) {
     try {
       const r = await frappe.db.get_value("Shaft Production Run", sprName, ["custom_unit", "docstatus"]);
       const sprUnit = _cstr(r?.message?.custom_unit);
-      if (sprUnit && currentUnit && sprUnit !== currentUnit) {
-        persistedActiveMixSpr.value = "";
-        rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
-        mixRollLines.value = [];
+      if (sprUnit && currentUnit && !sameGsmUnit(sprUnit, currentUnit)) {
         return;
       }
     } catch (e) {
@@ -4220,19 +4345,12 @@ async function restoreActiveMixRollFromSession() {
   const sprDate = _cstr(mixMeta.spr_run_date).slice(0, 10);
   const run = _cstr(runDate.value).slice(0, 10);
   if (!mixRow && sprDate && run && sprDate !== run) {
-    persistedActiveMixSpr.value = "";
     return;
   }
   if (!mixRow && mixMeta.spr_shift && _cstr(mixMeta.spr_shift) !== _cstr(shift.value)) {
-    persistedActiveMixSpr.value = "";
     return;
   }
   if (!(await isMixSprDraft(mixMeta.spr_name))) {
-    rollLines.value = rollLines.value.filter(
-      (r) => !(r.is_mix_roll_row && r.spr_name === mixMeta.spr_name)
-    );
-    mixRollLines.value = mixRollLines.value.filter((r) => r.spr_name !== mixMeta.spr_name);
-    persistedActiveMixSpr.value = "";
     return;
   }
   activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name, custom_unit: currentUnit };
@@ -4249,16 +4367,15 @@ async function refreshMixRollLinesFromSpr() {
     const res = await loadGsmMixRollSprRolls(activeMixRoll.value.spr_name);
     const sprUnit = _cstr(res.custom_unit);
     const unitNow = _cstr(headerUnit.value || filterUnit.value);
-    if (sprUnit && unitNow && sprUnit !== unitNow) {
-      clearGsmMixState();
-      return;
-    }
     const rows = (res.roll_lines || []).map((line) =>
       mapMixRollLineFromServer(
-        { ...line, spr_name: res.spr_name, custom_unit: sprUnit || unitNow },
-        { ...activeMixRoll.value, custom_unit: sprUnit || unitNow }
+        { ...line, spr_name: res.spr_name, custom_unit: unitNow || sprUnit },
+        { ...activeMixRoll.value, custom_unit: unitNow || sprUnit }
       )
     );
+    if (!rows.length) {
+      return;
+    }
     attachMixRowsToMainGrid(rows);
   } catch (e) {
     console.error(e);
@@ -4376,7 +4493,8 @@ async function startMixRollProduction(mix) {
       mapMixRollLineFromServer({ ...line, spr_name: res.spr_name }, activeMixRoll.value)
     );
     attachMixRowsToMainGrid(rows);
-    await loadMixRollCandidates();
+    await loadMixRollCandidates({ skipRestore: true });
+    persistDraft();
     frappe.show_alert({ message: __("Mix roll SPR ready: {0}", [res.spr_name]), indicator: "green" });
   } catch (e) {
     console.error(e);
@@ -5852,6 +5970,9 @@ async function submitEntry(overrides = []) {
     frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
     return;
   }
+  if (!(await ensureGsmDeskSession())) {
+    return;
+  }
   const fabricRolls = submitConfirmRolls.value.filter((r) => !r.is_mix_roll_row);
   const missingSpr = [...new Set(fabricRolls.map((r) => r.pp_id).filter(Boolean))].filter(
     (pp) => !sprNameForPp(pp)
@@ -5968,6 +6089,13 @@ async function submitEntry(overrides = []) {
     submitDialogPhase.value = "error";
   } catch (e) {
     console.error(e);
+    if (isGsmSessionDeadError(e)) {
+      markGsmSessionExpired();
+      saveStatus.value = "Login expired";
+      submitErrorMessage.value = __("Login expired. Log in again on this PC, then submit.");
+      submitDialogPhase.value = "error";
+      return;
+    }
     const recovered = await pollGsmSubmitRecovery(sprNamesToSubmit, { delayFirst: true });
     if (recovered) {
       markSessionSprsSubmitted(sprNamesToSubmit.map((sn) => ({ spr_name: sn })));
@@ -6901,12 +7029,12 @@ function applyResumePayload(msg, options = {}) {
     for (const local of rollLines.value) {
       const k = rollRowSyncKey(local);
       if (local.is_mix_roll_row) {
-        const localUnit = mixRowUnit(local);
-        const unitOk = !localUnit || localUnit === _cstr(headerUnit.value);
-        const sprOk = serverRows.some(
-          (sr) => sr.is_mix_roll_row && sr.spr_name && sr.spr_name === local.spr_name
+        const activeSpr = _cstr(activeMixRoll.value?.spr_name);
+        const keepActive = activeSpr && _cstr(local.spr_name) === activeSpr;
+        const onServer = serverRows.some(
+          (sr) => sr.is_mix_roll_row && sr.spr_name === local.spr_name
         );
-        if (unitOk && sprOk && k && !serverByKey.has(k) && !local.is_wasted) {
+        if ((keepActive || onServer) && k && !serverByKey.has(k) && !local.is_wasted) {
           merged.unshift({ ...local });
         }
         continue;
@@ -6934,16 +7062,6 @@ function applyResumePayload(msg, options = {}) {
     rollLines.value = rollLines.value.filter(
       (r) => !r.is_mix_roll_row || !dismissedMixSprs.value.includes(_cstr(r.spr_name))
     );
-  }
-  const unitNow = _cstr(headerUnit.value || filterUnit.value);
-  if (unitNow) {
-    rollLines.value = rollLines.value.filter((r) => {
-      if (!r.is_mix_roll_row) {
-        return true;
-      }
-      const u = mixRowUnit(r);
-      return !u || u === unitNow;
-    });
   }
   rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
   if (shiftOpened.value) {
@@ -7095,6 +7213,9 @@ async function refreshSessionFromServer(options = {}) {
     return count;
   } catch (e) {
     console.warn("refresh session", e);
+    if (isGsmSessionDeadError(e)) {
+      markGsmSessionExpired();
+    }
     return 0;
   } finally {
     gsmRefreshInFlight = false;
@@ -7388,6 +7509,9 @@ async function closeShift() {
   if (!shiftOpened.value || shiftClosingBusy.value) {
     return;
   }
+  if (!(await ensureGsmDeskSession())) {
+    return;
+  }
   shiftClosingBusy.value = true;
   try {
     const validation = await frappe.call({
@@ -7397,6 +7521,11 @@ async function closeShift() {
         shift: shift.value,
         unit: headerUnit.value,
         session_sprs: shiftSessionSprList.value,
+      },
+      error: (r) => {
+        if (isGsmSessionDeadError(r)) {
+          markGsmSessionExpired();
+        }
       },
     });
     const errors = validation.message?.errors || [];
@@ -7421,6 +7550,11 @@ async function closeShift() {
         supervisor: supervisor.value,
         coordinator: coordinator.value,
       },
+      error: (r) => {
+        if (isGsmSessionDeadError(r)) {
+          markGsmSessionExpired();
+        }
+      },
     });
     const nextShift = res.message?.next_shift;
     clearGsmAfterClose();
@@ -7434,6 +7568,9 @@ async function closeShift() {
   } catch (e) {
     if (e?.message !== "cancelled") {
       console.error(e);
+      if (isGsmSessionDeadError(e)) {
+        markGsmSessionExpired();
+      }
     }
   } finally {
     shiftClosingBusy.value = false;
@@ -7934,7 +8071,11 @@ function guardedShaftDetails() {
 function guardedSubmitEntry() {
   if (freezeGsmSubmit.value) { frappe.msgprint(__("Submit Entry is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Submit Entry"); return; }
-  openSubmitConfirmDialog();
+  ensureGsmDeskSession().then((ok) => {
+    if (ok) {
+      openSubmitConfirmDialog();
+    }
+  });
 }
 
 async function addRollRow() {
@@ -8579,6 +8720,7 @@ watch([runDate, shift, operator, supervisor, coordinator], () => scheduleAutosav
 
 onMounted(async () => {
   pageLoadError.value = false;
+  setupGsmSessionWatch();
   try {
     await Promise.all([loadCurrentShift(), loadGsmBoardAccess()]);
     await loadCoreWidthOptions();
@@ -8616,6 +8758,7 @@ onUnmounted(() => {
   stopShiftReminderTimers();
   stopSubmitProgressTimer();
   teardownGsmLiveSync();
+  teardownGsmSessionWatch();
 });
 </script>
 
@@ -10122,6 +10265,24 @@ onUnmounted(() => {
   border: 1px solid #fed7d7;
   background: #fff5f5;
   border-radius: 8px;
+}
+.gpe-session-expired {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid #f87171;
+  background: #fef2f2;
+  border-radius: 8px;
+  color: #7f1d1d;
+}
+.gpe-session-expired strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+.gpe-session-expired p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.45;
 }
 .gpe-load-error h3 {
   color: #c53030;
