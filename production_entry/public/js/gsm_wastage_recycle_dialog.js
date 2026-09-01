@@ -701,7 +701,7 @@ async function _fetchWastageContext(sprName) {
 	return res.message || {};
 }
 
-function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 15000) {
+function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 60000) {
 	let busy = false;
 	const timer = setInterval(async () => {
 		if (!dialog.$wrapper?.is(":visible") || busy) {

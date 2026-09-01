@@ -4596,14 +4596,15 @@ async function addMixRollRow() {
     let batch = null;
     if (sprName) {
       const gsmPrefix = _cstr(seriesPrefix.value || shiftBatchPrefix.value);
-      const existing = unsavedGridBatchNos();
+      syncBatchCounterFromGrid();
+      const existing = allExistingBatchNos();
       const res = await frappe.call({
         method:
           "production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_next_spr_batch_numbers",
         args: {
           shaft_production_run: sprName,
           count: 1,
-          client_max_roll: 0,
+          client_max_roll: maxRollSuffix.value,
           run_date: runDate.value,
           custom_unit: headerUnit.value,
           shift: shift.value,
@@ -7746,9 +7747,6 @@ function syncBatchCounterFromGrid() {
     if (bn) {
       reserved.add(bn);
     }
-    if (!isRowSavedToDb(r)) {
-      continue;
-    }
     const rn = parseInt(r.roll_no, 10);
     if (!Number.isNaN(rn)) {
       mx = Math.max(mx, rn);
@@ -8208,7 +8206,9 @@ async function addRollRow() {
   ]);
   const ordLen = sprFlt(job.meter_roll) || sprFlt(ordLenFromApi);
   let batch = batchInfo;
-  if (batch?.batch_no && rollLines.value.some((r) => r.batch_no === batch.batch_no)) {
+  let attempts = 0;
+  while (batch?.batch_no && rollLines.value.some((r) => r.batch_no === batch.batch_no) && attempts < 12) {
+    attempts += 1;
     batch = await previewNextBatch(line.ppId);
   }
   if (!batch?.batch_no || rollLines.value.some((r) => r.batch_no === batch.batch_no)) {
@@ -8271,10 +8271,8 @@ async function addRollRow() {
 async function previewNextBatch(ppId) {
   const gsmPrefix = _cstr(seriesPrefix.value || shiftBatchPrefix.value);
   const gsmMode = shiftOpened.value && !!gsmPrefix;
-  if (!gsmMode) {
-    syncBatchCounterFromGrid();
-  }
-  const existing = gsmMode ? unsavedGridBatchNos() : allExistingBatchNos();
+  syncBatchCounterFromGrid();
+  const existing = allExistingBatchNos();
   const gsmBatchArgs = gsmMode
     ? { gsm_shift_prefix: 1, client_series_prefix: gsmPrefix }
     : {};
@@ -8287,7 +8285,7 @@ async function previewNextBatch(ppId) {
         args: {
           shaft_production_run: sprName,
           count: 1,
-          client_max_roll: gsmMode ? 0 : maxRollSuffix.value,
+          client_max_roll: maxRollSuffix.value,
           run_date: runDate.value,
           custom_unit: headerUnit.value,
           shift: shift.value,
@@ -8312,7 +8310,7 @@ async function previewNextBatch(ppId) {
       run_date: runDate.value,
       shift: shift.value,
       count: 1,
-      client_max_roll: gsmMode ? 0 : maxRollSuffix.value,
+      client_max_roll: maxRollSuffix.value,
       client_series_prefix: gsmPrefix || undefined,
       existing_batches: JSON.stringify(existing),
       session_local: 1,

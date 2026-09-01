@@ -133,8 +133,9 @@ has_permission = {
 }
 
 # Strip ungranted boards from desk boot (search / Pages sidebar).
+# Do not also hook boot_session — Frappe runs both, and the same function twice
+# doubles Production Board Access work on every Operator login.
 extend_bootinfo = "production_entry.production_planning.board_access.extend_bootinfo"
-boot_session = "production_entry.production_planning.board_access.extend_bootinfo"
 
 # DocType Class
 # ---------------

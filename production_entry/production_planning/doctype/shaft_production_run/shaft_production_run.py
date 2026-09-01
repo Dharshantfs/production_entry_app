@@ -10448,19 +10448,54 @@ def _spr_roll_suffix_from_batch(batch_no: str, series_prefix: str) -> int:
 		return 0
 
 
+def _spr_parse_batch_list(existing_batches) -> list[str]:
+	if not existing_batches:
+		return []
+	if isinstance(existing_batches, str):
+		try:
+			parsed = json.loads(existing_batches) or []
+		except Exception:
+			parsed = [x.strip() for x in existing_batches.split(",") if x.strip()]
+	elif isinstance(existing_batches, (list, tuple)):
+		parsed = list(existing_batches)
+	else:
+		parsed = []
+	out = []
+	for bn in parsed:
+		bn = _cstr(bn).strip()
+		if bn:
+			out.append(bn)
+	return out
+
+
+def _spr_series_max_suffix(series_prefix: str) -> int:
+	"""Highest /N already used for this GSM shift series (all SPRs, mix included)."""
+	series_prefix = _cstr(series_prefix).strip()
+	if not series_prefix:
+		return 0
+	doc = frappe.new_doc("Shaft Production Run")
+	return cint(doc._spr_max_roll_suffix_for_prefix(series_prefix))
+
+
 def _spr_roll_starting_for_gsm_session(
 	series_prefix: str,
 	spr_name: str | None = None,
 	existing_batches=None,
 	client_max_roll=None,
 ) -> int:
-	"""Next roll suffix for GSM — based on saved SPR rows only (not grid counter)."""
+	"""Next roll suffix for the GSM shift series (fabric SPR + mix SPR + grid)."""
 	series_prefix = _cstr(series_prefix).strip()
-	mx = 0
+	mx = _spr_series_max_suffix(series_prefix)
 	if spr_name:
 		for bn in _spr_used_batch_numbers_on_spr(spr_name):
 			mx = max(mx, _spr_roll_suffix_from_batch(bn, series_prefix))
-	# existing_batches / client_max_roll intentionally ignored — GSM increments from DB only.
+	for bn in _spr_parse_batch_list(existing_batches):
+		mx = max(mx, _spr_roll_suffix_from_batch(bn, series_prefix))
+	try:
+		if client_max_roll is not None and cint(client_max_roll) >= 0:
+			mx = max(mx, cint(client_max_roll))
+	except Exception:
+		pass
 	return (mx + 1) if mx > 0 else 1
 
 

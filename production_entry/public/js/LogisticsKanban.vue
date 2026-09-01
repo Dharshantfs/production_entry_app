@@ -1205,7 +1205,7 @@ onMounted(async () => {
     if (despatchSortableBusy.value) return;
     if (mode.value === "despatch") loadDespatchCards();
     else loadCards();
-  }, 5000);
+  }, 60000);
 });
 
 onUnmounted(() => {

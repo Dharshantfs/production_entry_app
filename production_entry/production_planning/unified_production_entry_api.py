@@ -38,6 +38,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_gsm_roll_suffix_from_batch_no,
 	_spr_resolve_roll_line_specs_from_item_code,
 	_spr_roll_starting_for_gsm_session,
+	_spr_next_available_batch_no,
 	_gsm_batch_available_kg,
 	_gsm_patty_stock_from_batch_doc,
 )
@@ -1500,12 +1501,10 @@ def preview_spr_batch_numbers_for_entry(
 			pass
 		next_roll = max(int(next_roll), int(db_start))
 
-	used_batches = set(existing)
+	used_batches = set(_cstr(x).strip() for x in existing if _cstr(x).strip())
 	out = []
 	for _i in range(count):
-		while f"{series_prefix}/{next_roll}" in used_batches:
-			next_roll += 1
-		bn = f"{series_prefix}/{next_roll}"
+		bn, next_roll = _spr_next_available_batch_no(series_prefix, int(next_roll), used_batches)
 		used_batches.add(bn)
 		out.append({"batch_no": bn, "roll_no": next_roll, "series_prefix": series_prefix})
 		next_roll += 1

@@ -202,8 +202,12 @@ def _user_has_operator_role(user: str | None = None) -> bool:
 
 
 def _board_access_schema_ready() -> bool:
-	return bool(frappe.db.exists("DocType", DOCTYPE_ACCESS))
-
+	cached = getattr(frappe.local, "_pe_board_access_schema_ready", None)
+	if cached is not None:
+		return cached
+	ready = bool(frappe.db.exists("DocType", DOCTYPE_ACCESS))
+	frappe.local._pe_board_access_schema_ready = ready
+	return ready
 
 
 def _access_docname_for_user(user: str) -> str | None:
@@ -216,14 +220,21 @@ def _access_docname_for_user(user: str) -> str | None:
 	)
 
 
+_MANAGED_PAGE_SLUGS: set[str] | None = None
+
+
 def _all_managed_page_slugs() -> set[str]:
 	"""Pages controlled by Production Board Access (boards + table aliases + learning)."""
+	global _MANAGED_PAGE_SLUGS
+	if _MANAGED_PAGE_SLUGS is not None:
+		return _MANAGED_PAGE_SLUGS
 	out: set[str] = set()
 	for s in BOARD_SLUGS + BOARD_PICKER_SLUGS:
 		out |= _equivalent_board_slugs(s)
 	# Companion table pages for every *-board
 	for s in list(out):
 		out |= _equivalent_board_slugs(s)
+	_MANAGED_PAGE_SLUGS = out
 	return out
 
 
@@ -654,52 +665,21 @@ def _scope_from_access_doc(access_name: str) -> dict:
 	}
 
 
-def get_user_board_scope(user: str | None = None) -> dict:
-	user = user or frappe.session.user
+def _unlimited_scope() -> dict:
+	return {
+		"unlimited": True,
+		"allowed_units": [],
+		"allowed_boards": list(BOARD_SLUGS),
+		"min_date": None,
+		"max_date": None,
+		"date_mode": "Unlimited",
+		"allowed_dates": [],
+		"date_picker_frozen": False,
+		"view_scope_locked": False,
+	}
 
-	if not _board_access_schema_ready():
-		if _is_privileged_user(user):
-			return {
-				"unlimited": True,
-				"allowed_units": [],
-				"allowed_boards": list(BOARD_SLUGS),
-				"min_date": None,
-				"max_date": None,
-				"date_mode": "Unlimited",
-				"allowed_dates": [],
-				"date_picker_frozen": False,
-				"view_scope_locked": False,
-			}
-		return {
-			"unlimited": False,
-			"allowed_units": [],
-			"allowed_boards": [],
-			"min_date": today(),
-			"max_date": today(),
-			"date_mode": "Today",
-			"allowed_dates": [today()],
-			"date_picker_frozen": True,
-			"view_scope_locked": True,
-		}
 
-	# Explicit Production Board Access row always wins (even for System Manager).
-	access_name = _access_docname_for_user(user)
-	if access_name:
-		return _scope_from_access_doc(access_name)
-
-	if _is_privileged_user(user):
-		return {
-			"unlimited": True,
-			"allowed_units": [],
-			"allowed_boards": list(BOARD_SLUGS),
-			"min_date": None,
-			"max_date": None,
-			"date_mode": "Unlimited",
-			"allowed_dates": [],
-			"date_picker_frozen": False,
-			"view_scope_locked": False,
-		}
-
+def _empty_restricted_scope() -> dict:
 	return {
 		"unlimited": False,
 		"allowed_units": [],
@@ -711,6 +691,37 @@ def get_user_board_scope(user: str | None = None) -> dict:
 		"date_picker_frozen": True,
 		"view_scope_locked": True,
 	}
+
+
+def get_user_board_scope(user: str | None = None) -> dict:
+	"""Per-request cached scope. page_has_permission runs this for every Page on login."""
+	user = user or frappe.session.user
+	cache = getattr(frappe.local, "_pe_board_scope_by_user", None)
+	if cache is None:
+		cache = {}
+		frappe.local._pe_board_scope_by_user = cache
+	if user in cache:
+		return cache[user]
+	scope = _load_user_board_scope(user)
+	cache[user] = scope
+	return scope
+
+
+def _load_user_board_scope(user: str) -> dict:
+	if not _board_access_schema_ready():
+		if _is_privileged_user(user):
+			return _unlimited_scope()
+		return _empty_restricted_scope()
+
+	# Explicit Production Board Access row always wins (even for System Manager).
+	access_name = _access_docname_for_user(user)
+	if access_name:
+		return _scope_from_access_doc(access_name)
+
+	if _is_privileged_user(user):
+		return _unlimited_scope()
+
+	return _empty_restricted_scope()
 
 
 def _date_window_for_mode(date_mode: str, window_days: int) -> tuple[str | None, str | None]:

@@ -934,7 +934,7 @@ function updateUrlParams() {
   if (isWCutDCutTable.value && wCutDCutFamily.value) q.set("family", wCutDCutFamily.value);
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
-function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
+function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 60000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
 
 onMounted(async () => {

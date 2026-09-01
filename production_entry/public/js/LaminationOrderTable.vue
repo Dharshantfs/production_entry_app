@@ -1984,7 +1984,7 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(() => {
     if (document.visibilityState !== "visible") return;
     fetchData();
-  }, 15000);
+  }, 60000);
 }
 
 function updateUrlParams() {
