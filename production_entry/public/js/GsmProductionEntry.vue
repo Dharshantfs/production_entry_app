@@ -2233,7 +2233,7 @@ function setupGsmLiveSync() {
     if (deskSessionExpired.value) {
       return;
     }
-    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight) {
+    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight && !mixRollBusy.value) {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
   }, GSM_LIVE_POLL_MS);
@@ -4452,8 +4452,11 @@ function attachMixRowsToMainGrid(rows) {
     const existing = rollLines.value.find((row) => row.is_mix_roll_row && mixRollRowKey(row) === key);
     if (existing) {
       const keepSeq = cint(existing.creation_seq);
+      const keepId = existing._id;
       Object.assign(existing, incoming);
-      if (keepSeq && !cint(incoming.creation_seq)) {
+      existing._id = keepId || existing._id;
+      existing.is_mix_roll_row = 1;
+      if (keepSeq) {
         existing.creation_seq = keepSeq;
       }
       attached.push(existing);
@@ -7034,7 +7037,19 @@ function applyResumePayload(msg, options = {}) {
         const onServer = serverRows.some(
           (sr) => sr.is_mix_roll_row && sr.spr_name === local.spr_name
         );
-        if ((keepActive || onServer) && k && !serverByKey.has(k) && !local.is_wasted) {
+        if (k && serverByKey.has(k) && !local.row_locked && !local.is_wasted) {
+          const sr = serverByKey.get(k);
+          sr.produced_length_mtrs = local.produced_length_mtrs;
+          sr.gross_weight = local.gross_weight;
+          sr.net_weight = local.net_weight;
+          sr.produced_gsm = local.produced_gsm;
+          sr.custom_diameter_inches = local.custom_diameter_inches;
+          sr.custom_cbm_cubic_meters = local.custom_cbm_cubic_meters;
+          sr._id = local._id || sr._id;
+          sr.creation_seq = cint(local.creation_seq) || sr.creation_seq;
+          sr.row_locked = 0;
+          sr.row_ready_for_print = 0;
+        } else if ((keepActive || onServer) && k && !serverByKey.has(k) && !local.is_wasted) {
           merged.unshift({ ...local });
         }
         continue;
