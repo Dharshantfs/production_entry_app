@@ -8884,6 +8884,8 @@ onUnmounted(() => {
   gap: 2px;
   font-size: 12px;
   color: #475569;
+  margin-bottom: 10px;
+  line-height: 1.4;
 }
 .gpe-mix-counts {
   display: inline-block;
@@ -8894,14 +8896,6 @@ onUnmounted(() => {
   color: #3730a3;
   font-weight: 700;
   font-size: 12px;
-}
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  color: #334155;
-  margin-bottom: 10px;
-  line-height: 1.4;
 }
 .gpe-mix-active-banner {
   margin-top: 8px;
