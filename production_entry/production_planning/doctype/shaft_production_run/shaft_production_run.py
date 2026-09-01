@@ -1140,28 +1140,74 @@ def _spr_expand_outbound_lines_by_batch(se) -> None:
 			se.items.append(row)
 
 
+def _spr_batch_qty_from_sle_and_bundle(item_code: str, warehouse: str, batch_no: str) -> float:
+	"""Warehouse qty for a batch: classic SLE.batch_no plus bundle-only SLEs.
+
+	v15 Material Transfer for Manufacture often posts the outbound/inbound SLE with an
+	empty batch_no and a Serial and Batch Bundle. Summing SLE.batch_no alone then still
+	shows the pre-transfer qty at the source warehouse (FG) and duplicates it at WIP.
+	"""
+	classic = flt(
+		frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(actual_qty), 0)
+			FROM `tabStock Ledger Entry`
+			WHERE item_code = %s AND warehouse = %s AND batch_no = %s
+			  AND IFNULL(is_cancelled, 0) = 0
+			""",
+			(item_code, warehouse, batch_no),
+		)[0][0]
+		or 0
+	)
+	bundle = 0.0
+	if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle") and frappe.db.exists(
+		"DocType", "Serial and Batch Entry"
+	):
+		try:
+			sb_meta = frappe.get_meta("Serial and Batch Entry")
+			batch_field = next(
+				(fn for fn in ("batch_no", "batch", "batch_id") if sb_meta.has_field(fn)),
+				"",
+			)
+			qty_field = next((fn for fn in ("qty", "quantity") if sb_meta.has_field(fn)), "")
+			if batch_field and qty_field:
+				bundle = flt(
+					frappe.db.sql(
+						f"""
+						SELECT COALESCE(SUM(
+							CASE
+								WHEN IFNULL(sle.actual_qty, 0) < 0
+									THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+								ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+							END
+						), 0)
+						FROM `tabStock Ledger Entry` sle
+						INNER JOIN `tabSerial and Batch Entry` sbe
+							ON sbe.parent = sle.serial_and_batch_bundle
+						WHERE sle.item_code = %s
+						  AND sle.warehouse = %s
+						  AND IFNULL(sle.is_cancelled, 0) = 0
+						  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+						  AND IFNULL(sle.batch_no, '') = ''
+						  AND IFNULL(sbe.`{batch_field}`, '') = %s
+						""",
+						(item_code, warehouse, batch_no),
+					)[0][0]
+					or 0
+				)
+		except Exception:
+			bundle = 0.0
+	return classic + bundle
+
+
 def _spr_batch_available_qty(item_code: str, warehouse: str, batch_no: str) -> float:
-	"""Batch qty in warehouse (SLE sum / ERPNext helper)."""
+	"""Batch qty in this warehouse, including v15 serial/batch-bundle transfers."""
 	item_code = _cstr(item_code).strip()
 	warehouse = _cstr(warehouse).strip()
 	batch_no = _cstr(batch_no).strip()
 	if not item_code or not warehouse or not batch_no:
 		return 0.0
-	try:
-		from erpnext.stock.utils import get_batch_qty
-
-		return flt(get_batch_qty(batch_no, warehouse, item_code))
-	except Exception:
-		pass
-	row = frappe.db.sql(
-		"""
-		SELECT COALESCE(SUM(actual_qty), 0)
-		FROM `tabStock Ledger Entry`
-		WHERE item_code = %s AND warehouse = %s AND batch_no = %s AND is_cancelled = 0
-		""",
-		(item_code, warehouse, batch_no),
-	)
-	return flt(row[0][0] if row else 0)
+	return _spr_batch_qty_from_sle_and_bundle(item_code, warehouse, batch_no)
 
 
 def _spr_parse_max_transferable_kg(exc_msg: str) -> float:
@@ -2552,7 +2598,13 @@ class ShaftProductionRun(Document):
 		self._spr_prune_recycled_when_waste_removed()
 
 	def _spr_prune_recycled_when_waste_removed(self):
-		"""When roll-waste / patty-waste child rows are deleted on desk, drop linked recycled rows."""
+		"""When roll-waste / patty-waste child rows are deleted on desk, drop linked recycled rows.
+
+		Do not drop recycled rows created in the same save (GSM Consume Selected moves
+		waste onto Recycled Wastage Details and removes the waste source together).
+		"""
+		if getattr(self.flags, "gsm_recycle_consume", False):
+			return
 		if self.is_new() or not self.name:
 			return
 		try:
@@ -2597,9 +2649,19 @@ class ShaftProductionRun(Document):
 		if not removed_roll_waste and not removed_patty:
 			return
 
+		old_recycled_names = {
+			_cstr(getattr(r, "name", "") or "")
+			for r in (getattr(old, recycled_field, None) or [])
+			if _cstr(getattr(r, "name", "") or "")
+		}
+
 		drop_batches = roll_batches | patty_batches
 		keep = []
 		for row in getattr(self, recycled_field, None) or []:
+			row_name = _cstr(getattr(row, "name", "") or "")
+			if not row_name or row_name not in old_recycled_names:
+				keep.append(row)
+				continue
 			drop = False
 			for lf in link_fields:
 				val = _cstr(getattr(row, lf, "") or "").strip()
@@ -4560,7 +4622,13 @@ class ShaftProductionRun(Document):
 			except Exception:
 				pass
 
-		out = [{"batch_no": bn, "qty": flt(q)} for bn, q in acc.items() if bn and flt(q) > 0]
+		out = []
+		for bn, _stale in acc.items():
+			if not bn:
+				continue
+			live = _spr_batch_available_qty(item_code, warehouse, bn)
+			if live > 0.0001:
+				out.append({"batch_no": bn, "qty": live})
 		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
 		return out
 
@@ -4648,8 +4716,16 @@ class ShaftProductionRun(Document):
 			except Exception:
 				pass
 
-		out = [{"batch_no": bn, "qty": flt(q), "warehouse": wh} for (bn, wh), q in acc.items() if bn and flt(q) > 0]
-		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
+		# Re-read live warehouse qty. Classic SLE.batch_no sums ignore bundle transfers,
+		# which made the same batch appear at FG and WIP with identical kg after MTFM.
+		out = []
+		for (bn, wh), _stale in acc.items():
+			if not bn or not wh:
+				continue
+			q = _spr_batch_available_qty(item_code, wh, bn)
+			if q > 0.0001:
+				out.append({"batch_no": bn, "qty": q, "warehouse": wh})
+		out.sort(key=lambda x: (0 if "progress" in _cstr(x.get("warehouse")).lower() else 1, -flt(x.get("qty") or 0)))
 		return out
 
 	def _mtfm_batch_nos_for_wo_item(self, wo_name: str, item_code: str) -> set[str]:
@@ -4676,6 +4752,35 @@ class ShaftProductionRun(Document):
 			bn = _cstr(r.get("batch_no")).strip()
 			if bn:
 				out.add(bn)
+		if frappe.db.exists("DocType", "Serial and Batch Entry"):
+			try:
+				sb_meta = frappe.get_meta("Serial and Batch Entry")
+				batch_field = next(
+					(fn for fn in ("batch_no", "batch", "batch_id") if sb_meta.has_field(fn)),
+					"",
+				)
+				if batch_field:
+					for r in frappe.db.sql(
+						f"""
+						SELECT DISTINCT IFNULL(sbe.`{batch_field}`, '') AS batch_no
+						FROM `tabStock Entry` se
+						INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+						INNER JOIN `tabSerial and Batch Entry` sbe
+							ON sbe.parent = IFNULL(sed.serial_and_batch_bundle, '')
+						WHERE se.docstatus = 1
+						  AND IFNULL(se.work_order, '') = %s
+						  AND IFNULL(se.purpose, '') = 'Material Transfer for Manufacture'
+						  AND IFNULL(sed.item_code, '') = %s
+						  AND IFNULL(sbe.`{batch_field}`, '') != ''
+						""",
+						(wo_name, item_code),
+						as_dict=True,
+					):
+						bn = _cstr(r.get("batch_no")).strip()
+						if bn:
+							out.add(bn)
+			except Exception:
+				pass
 		return out
 
 	def _available_batches_for_wo_transfer(self, wo_doc, item_code: str) -> list[dict]:
