@@ -1951,8 +1951,12 @@ function rollBatchSuffix(batchNo) {
 }
 
 function lifoSortKey(row) {
+  // Mix SPR batch numbers are a separate series from fabric rolls on this
+  // grid. Prefer creation_seq (when the operator added the row) so a new mix
+  // line always lands on top instead of sorting into the middle by batch.
   const batchSeq = rollBatchSuffix(row?.batch_no);
-  return batchSeq > 0 ? batchSeq : cint(row?.creation_seq);
+  const seq = cint(row?.creation_seq);
+  return Math.max(batchSeq, seq);
 }
 
 function sortRollLinesLifo(rows) {
@@ -4271,7 +4275,11 @@ function attachMixRowsToMainGrid(rows) {
     const key = mixRollRowKey(incoming);
     const existing = rollLines.value.find((row) => row.is_mix_roll_row && mixRollRowKey(row) === key);
     if (existing) {
+      const keepSeq = cint(existing.creation_seq);
       Object.assign(existing, incoming);
+      if (keepSeq && !cint(incoming.creation_seq)) {
+        existing.creation_seq = keepSeq;
+      }
       attached.push(existing);
     } else {
       rollLines.value = sortRollLinesLifo([incoming, ...rollLines.value]);
