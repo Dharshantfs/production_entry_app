@@ -734,12 +734,66 @@ def _fabric_gsm_from_planning_for_pp(pp_name: str) -> int:
 	return 0
 
 
+# Company RM store for manufacture transfers. Unit-based lookup can return Jayashree
+# RM on a Thusma SPR/WO; ERPNext then throws "warehouse does not belong to company".
+SPR_COMPANY_RM_WAREHOUSE = {
+	"Jayashree Spun Bond - 1ZT": "Raw Materials - JSB-1ZT",
+	"Thusma SMS Nonwovens Private Limited - 1Z0": "Raw Materials Warehouse - TSNPL",
+}
+SPR_COMPANY_WIP_WAREHOUSE = {
+	"Thusma SMS Nonwovens Private Limited - 1Z0": "Work In Progress Warehouse - TSNPL",
+}
+
+
+def _spr_warehouse_company(warehouse: str) -> str:
+	wh = _cstr(warehouse).strip()
+	if not wh or not frappe.db.exists("Warehouse", wh):
+		return ""
+	return _cstr(frappe.db.get_value("Warehouse", wh, "company"))
+
+
+def _spr_wh_belongs_to_company(warehouse: str, company: str) -> bool:
+	company = _cstr(company).strip()
+	wh = _cstr(warehouse).strip()
+	if not wh or not company:
+		return False
+	return _spr_warehouse_company(wh) == company
+
+
+def _spr_company_wip_warehouse(company: str) -> str:
+	company = _cstr(company).strip()
+	if not company:
+		return ""
+	mapped = SPR_COMPANY_WIP_WAREHOUSE.get(company)
+	if mapped and frappe.db.exists("Warehouse", mapped) and _spr_wh_belongs_to_company(mapped, company):
+		return mapped
+	from production_entry.production_planning.spr_unit_warehouses import _company_wip_warehouse
+
+	return _company_wip_warehouse(company)
+
+
+def _spr_ok_rm_wh(warehouse: str, wip_wh: str = "", company: str = "") -> str:
+	"""Return warehouse only if it is a non-WIP store that belongs to company."""
+	wh = _cstr(warehouse).strip()
+	wip_wh = _cstr(wip_wh).strip()
+	company = _cstr(company).strip()
+	if not wh or wh == wip_wh:
+		return ""
+	if company and not _spr_wh_belongs_to_company(wh, company):
+		return ""
+	return wh
+
+
 def _spr_company_rm_warehouse(company: str, wip_wh: str = "") -> str:
 	"""Best-effort raw-material warehouse for a company (lamination PP/LD, etc.)."""
 	company = _cstr(company).strip()
 	wip_wh = _cstr(wip_wh).strip()
 	if not company:
 		return ""
+	mapped = SPR_COMPANY_RM_WAREHOUSE.get(company)
+	if mapped and frappe.db.exists("Warehouse", mapped):
+		if _spr_wh_belongs_to_company(mapped, company) and mapped != wip_wh:
+			return mapped
 	patterns = (
 		"%Raw Material%",
 		"%Raw Materials%",
@@ -801,11 +855,11 @@ def _spr_wo_rm_source_warehouse(wo_doc, item_code: str, wip_wh: str = "") -> str
 
 	for req in getattr(wo_doc, "required_items", None) or []:
 		if _cstr(getattr(req, "item_code", None)).strip() == item_code:
-			src = _cstr(getattr(req, "source_warehouse", None)).strip()
-			if src and src != wip_wh:
+			src = _spr_ok_rm_wh(getattr(req, "source_warehouse", None), wip_wh, company)
+			if src:
 				return src
-	header_src = _cstr(getattr(wo_doc, "source_warehouse", None)).strip()
-	if header_src and header_src != wip_wh:
+	header_src = _spr_ok_rm_wh(getattr(wo_doc, "source_warehouse", None), wip_wh, company)
+	if header_src:
 		return header_src
 
 	if wo_name and item_code:
@@ -826,8 +880,8 @@ def _spr_wo_rm_source_warehouse(wo_doc, item_code: str, wip_wh: str = "") -> str
 			as_dict=True,
 		)
 		if prev:
-			src = _cstr(prev[0].get("s_warehouse")).strip()
-			if src and src != wip_wh:
+			src = _spr_ok_rm_wh(prev[0].get("s_warehouse"), wip_wh, company)
+			if src:
 				return src
 
 	bom_no = _cstr(getattr(wo_doc, "bom_no", None)).strip()
@@ -837,8 +891,8 @@ def _spr_wo_rm_source_warehouse(wo_doc, item_code: str, wip_wh: str = "") -> str
 			{"parent": bom_no, "item_code": item_code},
 			"source_warehouse",
 		)
-		bom_wh = _cstr(bom_wh).strip()
-		if bom_wh and bom_wh != wip_wh:
+		bom_wh = _spr_ok_rm_wh(bom_wh, wip_wh, company)
+		if bom_wh:
 			return bom_wh
 
 	if company and item_code:
@@ -847,8 +901,8 @@ def _spr_wo_rm_source_warehouse(wo_doc, item_code: str, wip_wh: str = "") -> str
 			{"parent": item_code, "company": company},
 			"default_warehouse",
 		)
-		item_wh = _cstr(item_wh).strip()
-		if item_wh and item_wh != wip_wh:
+		item_wh = _spr_ok_rm_wh(item_wh, wip_wh, company)
+		if item_wh:
 			return item_wh
 
 	co_rm = _spr_company_rm_warehouse(company, wip_wh)
@@ -856,8 +910,12 @@ def _spr_wo_rm_source_warehouse(wo_doc, item_code: str, wip_wh: str = "") -> str
 		return co_rm
 
 	try:
-		default_wh = _cstr(frappe.db.get_single_value("Stock Settings", "default_warehouse")).strip()
-		if default_wh and default_wh != wip_wh:
+		default_wh = _spr_ok_rm_wh(
+			frappe.db.get_single_value("Stock Settings", "default_warehouse"),
+			wip_wh,
+			company,
+		)
+		if default_wh:
 			return default_wh
 	except Exception:
 		pass
@@ -5417,10 +5475,12 @@ class ShaftProductionRun(Document):
 		wip_wh = _cstr(wh_ctx.get("wip_warehouse"))
 		source_wh = _cstr(wh_ctx.get("source_warehouse"))
 		if company:
-			if not wip_wh:
-				wip_wh = _company_wip_warehouse(company)
-			if not source_wh:
-				source_wh = _company_rm_warehouse(company, wip_wh=wip_wh)
+			if not wip_wh or not _spr_wh_belongs_to_company(wip_wh, company):
+				wip_wh = _spr_company_wip_warehouse(company) or _company_wip_warehouse(company)
+			if not source_wh or not _spr_wh_belongs_to_company(source_wh, company):
+				source_wh = _company_rm_warehouse(company, wip_wh=wip_wh) or _spr_company_rm_warehouse(
+					company, wip_wh
+				)
 		return {
 			"company": company,
 			"wip_warehouse": wip_wh,
@@ -5432,16 +5492,16 @@ class ShaftProductionRun(Document):
 		item_code = _cstr(item_code).strip()
 		wip_wh = _cstr(wip_wh).strip()
 		ctx = self._spr_company_warehouse_ctx()
-		strict_rm = _cstr(ctx.get("source_warehouse")).strip()
-		if strict_rm and strict_rm != wip_wh:
+		company = _cstr(getattr(wo_doc, "company", None)).strip() or _cstr(ctx.get("company"))
+		strict_rm = _spr_ok_rm_wh(ctx.get("source_warehouse"), wip_wh, company)
+		if strict_rm:
 			return strict_rm
 		wo_doc = self._reload_work_order_doc(wo_doc)
-		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)).strip()
-		company = _cstr(getattr(wo_doc, "company", None)).strip() or _cstr(ctx.get("company"))
+		raw_source_wh = _spr_ok_rm_wh(getattr(wo_doc, "source_warehouse", None), wip_wh, company)
 		src = _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh)
-		if src and src != wip_wh:
+		if src:
 			return src
-		if raw_source_wh and raw_source_wh != wip_wh:
+		if raw_source_wh:
 			return raw_source_wh
 		co_rm = _spr_company_rm_warehouse(company, wip_wh)
 		if co_rm:
@@ -6124,8 +6184,16 @@ class ShaftProductionRun(Document):
 				se.stock_entry_type = se_type
 				se.work_order = wo_name
 				se.company = wo.company
-				se.from_warehouse = wo.source_warehouse
-				se.to_warehouse = wo.wip_warehouse
+				ctx = self._spr_company_warehouse_ctx()
+				wo_company = _cstr(wo.company)
+				wip_wh = _cstr(wo.wip_warehouse)
+				if not _spr_wh_belongs_to_company(wip_wh, wo_company):
+					wip_wh = _cstr(ctx.get("wip_warehouse")) or _spr_company_wip_warehouse(wo_company)
+				source_wh = _cstr(ctx.get("source_warehouse"))
+				if not _spr_wh_belongs_to_company(source_wh, wo_company):
+					source_wh = ""
+				se.from_warehouse = source_wh
+				se.to_warehouse = wip_wh
 				se.from_bom = 0
 				
 				chunk_total = sum(flt(e.get("chunk_total_qty")) for e in events)
@@ -6143,11 +6211,18 @@ class ShaftProductionRun(Document):
 						if flt(need) <= 0:
 							continue
 						stock_uom = frappe.db.get_value("Item", it, "stock_uom") or "Nos"
+						item_src = self._resolve_rm_source_warehouse_for_transfer(wo, it, wip_wh)
+						if not item_src:
+							item_src = source_wh
+						if not item_src:
+							continue
+						if not se.from_warehouse:
+							se.from_warehouse = item_src
 						se.append("items", {
 							"item_code": it,
 							"qty": need,
-							"s_warehouse": wo.source_warehouse or wh or wo.wip_warehouse,
-							"t_warehouse": wo.wip_warehouse,
+							"s_warehouse": item_src,
+							"t_warehouse": wip_wh or wo.wip_warehouse,
 							"uom": stock_uom,
 							"stock_uom": stock_uom,
 							"conversion_factor": 1.0,
@@ -10776,11 +10851,15 @@ def _build_mix_roll_result_lines_for_job(
 	max_job_rolls = _spr_job_max_roll_lines(job_row, spr_doc)
 
 	if exact_n > 0:
-		current = _spr_count_roll_lines_for_job(spr_doc, job_id)
-		if current + exact_n > max_job_rolls:
-			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current)
-		n_rolls = max(1, exact_n)
-		planned_total_rolls = max_job_rolls
+		if spr_doc_is_mix_roll(spr_doc):
+			n_rolls = max(1, exact_n)
+			planned_total_rolls = max(max_job_rolls, 1)
+		else:
+			current = _spr_count_roll_lines_for_job(spr_doc, job_id)
+			if current + exact_n > max_job_rolls:
+				_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current)
+			n_rolls = max(1, exact_n)
+			planned_total_rolls = max_job_rolls
 	elif widths:
 		n_rolls = max(len(widths), len(item_codes)) * rolls_per_shaft
 		planned_total_rolls = n_rolls

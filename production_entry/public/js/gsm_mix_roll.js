@@ -199,6 +199,46 @@ export function mixRollMaxRows(mixRow) {
   return mixRollShaftCount(mixRow) * segs;
 }
 
+export function mixGridRowsForSpr(rows, sprName) {
+  const spr = String(sprName || "").trim();
+  return (rows || []).filter(
+    (r) =>
+      r &&
+      r.is_mix_roll_row &&
+      !r.is_wasted &&
+      (!spr || String(r.spr_name || "").trim() === spr) &&
+      (r.batch_no || r.spr_item_name)
+  );
+}
+
+export function mixProducedRollCount(mixRow, gridRows) {
+  const fromGrid = mixGridRowsForSpr(gridRows, mixRow?.spr_name).length;
+  if (fromGrid > 0) {
+    return fromGrid;
+  }
+  return Number(mixRow?.spr_roll_count || 0) || 0;
+}
+
+export function mixProducedShaftCount(mixRow, gridRows) {
+  const rows = mixGridRowsForSpr(gridRows, mixRow?.spr_name);
+  const shafts = new Set();
+  for (const r of rows) {
+    const n = Number(r.custom_no_of_shaft || 0);
+    if (Number.isFinite(n) && n > 0) {
+      shafts.add(Math.floor(n));
+    }
+  }
+  if (shafts.size) {
+    return Math.min(mixRollShaftCount(mixRow), shafts.size);
+  }
+  const segs = Math.max(1, mixRollWidthOptions(mixRow).length);
+  const rolls = mixProducedRollCount(mixRow, gridRows);
+  if (rolls <= 0) {
+    return 0;
+  }
+  return Math.min(mixRollShaftCount(mixRow), Math.ceil(rolls / segs));
+}
+
 export function normalizeSpiDiameterCbm(line = {}) {
   const dia = sprFlt(line.custom_diameter_inches ?? line.custom_diameter ?? line.diameter);
   const cbm = sprFlt(line.custom_cbm_cubic_meters ?? line.custom_cbm ?? line.cbm);

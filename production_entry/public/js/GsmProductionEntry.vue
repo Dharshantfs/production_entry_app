@@ -181,7 +181,11 @@
             </div>
             <div class="gpe-mix-roll-meta">
               <span>{{ mix.color_transition }}</span>
-              <span>{{ mix.gsm }} GSM · {{ mix.shaft || "—" }} · {{ mixRollShaftCount(mix) }} shaft(s)</span>
+              <span>{{ mix.gsm }} GSM · {{ mix.shaft || "—" }}</span>
+              <span class="gpe-mix-counts">
+                Shafts {{ mixProducedShafts(mix) }}/{{ mixRollShaftCount(mix) }}
+                · Rolls {{ mixProducedRolls(mix) }}/{{ mixRollMaxRows(mix) }}
+              </span>
               <span class="gpe-muted">Chart: {{ formatMixPlanningKey(mix.planning_date_key) }}</span>
               <span v-if="mix.spr_name" class="gpe-muted">SPR: {{ mix.spr_name }}</span>
               <span
@@ -1625,7 +1629,7 @@
     <!-- Add Roll wizard: Job → Width -->
     <div v-if="showAddRollWizard" class="gpe-dialog-overlay" @click.self="cancelAddRollWizard">
       <div class="gpe-dialog gpe-card gpe-add-roll-wizard">
-        <h3>{{ addRollWizardStep === 1 ? "Choose job for new roll" : "Choose width" }}</h3>
+        <h3>{{ addRollWizardStep === 1 ? "Choose order for new roll" : "Choose width" }}</h3>
         <div v-if="addRollWizardStep === 1 && !addRollWizardSkipJobStep" class="gpe-picker-list">
           <label
             v-for="entry in wizardJobChoices"
@@ -1633,8 +1637,16 @@
             class="gpe-picker-row"
             :class="{ 'gpe-picker-maxed': entry.maxed }"
           >
-            <input v-model="addRollJobChoice" type="radio" :value="entry.key" />
+            <input v-model="addRollJobChoice" type="radio" :value="entry.key" :disabled="entry.maxed && entry.is_mix" />
             <span>
+              <template v-if="entry.is_mix">
+                {{ entry.orderCode }} · Mix · {{ entry.gsm }} GSM
+                <em class="gpe-picker-sub">
+                  {{ entry.shaft || "" }}
+                  <strong v-if="entry.maxed" class="gpe-picker-maxed-tag"> · MAX</strong>
+                </em>
+              </template>
+              <template v-else>
               {{ entry.orderCode }} · Job {{ entry.jobId || entry.job_id }} · {{ entry.gsm }} GSM
               <strong v-if="entry.is_manual" class="gpe-picker-manual-tag"> · Manual</strong>
               <em v-if="entry.board" class="gpe-picker-sub">
@@ -1642,6 +1654,7 @@
                 {{ entry.board.job_rolls_produced }}/{{ entry.board.max_rolls }} rolls
                 <strong v-if="entry.maxed" class="gpe-picker-maxed-tag"> · MAX — Manual Job only</strong>
               </em>
+              </template>
             </span>
           </label>
         </div>
@@ -1684,7 +1697,7 @@
             class="gpe-btn primary"
             :disabled="addRollWizardStep === 1 ? !addRollJobChoice : addRollWidthChoice == null"
             @click="proceedAddRollWizard"
-          >{{ addRollWizardStep === 1 ? "Next" : "Add row" }}</button>
+          >{{ addRollJobChoice === MIX_WIZARD_KEY || addRollWizardStep === 2 ? "Add row" : "Next" }}</button>
         </div>
       </div>
     </div>
@@ -1781,6 +1794,7 @@ import {
   fetchGsmMixRollCandidates,
   activateGsmMixRollForSession,
   loadGsmMixRollSprRolls,
+  addGsmMixRollLine,
   saveGsmMixRollLine,
   submitGsmMixRollSpr,
   mixRollItemOptions,
@@ -1788,6 +1802,9 @@ import {
   nextMixRollCombinationSlot,
   mixRollMaxRows,
   mixRollShaftCount,
+  mixGridRowsForSpr,
+  mixProducedRollCount,
+  mixProducedShaftCount,
   mapMixRollLineFromServer,
   buildMixRollSavePayload,
   recalcMixRollRow,
@@ -1880,6 +1897,7 @@ const addRollWizardStep = ref(1);
 const addRollWizardSkipJobStep = ref(false);
 const addRollJobChoice = ref("");
 const addRollWidthChoice = ref(null);
+const MIX_WIZARD_KEY = "__gsm_mix_roll__";
 let pendingAddRowResolve = null;
 const lastAddRollJobKey = ref("");
 const lastServerSyncAt = ref("");
@@ -3400,12 +3418,23 @@ const wizardJobChoices = computed(() => {
       maxed: !canJobAddOneMoreRoll(board),
     });
   }
+  if (mixSprReady.value && activeMixRoll.value) {
+    const mixExisting = mixRowsForActive();
+    base.unshift({
+      key: MIX_WIZARD_KEY,
+      is_mix: true,
+      orderCode: activeMixRoll.value.label || "Mix Roll",
+      gsm: activeMixRoll.value.gsm,
+      shaft: activeMixRoll.value.shaft || activeMixRoll.value.combination || "",
+      maxed: mixExisting.length >= mixRollMaxRows(activeMixRoll.value),
+    });
+  }
   return base;
 });
 
 const wizardSelectedJob = computed(() => {
   const key = addRollJobChoice.value;
-  if (!key) {
+  if (!key || key === MIX_WIZARD_KEY) {
     return null;
   }
   const raw = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
@@ -4155,9 +4184,7 @@ async function restoreActiveMixRollFromSession() {
   }
   activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name };
   persistedActiveMixSpr.value = mixMeta.spr_name;
-  if (!mixRollLines.value.length) {
-    await refreshMixRollLinesFromSpr();
-  }
+  await refreshMixRollLinesFromSpr();
 }
 
 async function refreshMixRollLinesFromSpr() {
@@ -4174,6 +4201,30 @@ async function refreshMixRollLinesFromSpr() {
   } catch (e) {
     console.error(e);
   }
+}
+
+function mixRowsForActive() {
+  const spr = activeMixRoll.value?.spr_name;
+  return mixGridRowsForSpr(rollLines.value, spr);
+}
+
+function mixProducedRolls(mix) {
+  if (activeMixRoll.value?.spr_name && mix?.spr_name === activeMixRoll.value.spr_name) {
+    return mixProducedRollCount(mix, rollLines.value);
+  }
+  return mixProducedRollCount(mix, []);
+}
+
+function mixProducedShafts(mix) {
+  if (activeMixRoll.value?.spr_name && mix?.spr_name === activeMixRoll.value.spr_name) {
+    return mixProducedShaftCount(mix, rollLines.value);
+  }
+  const segs = Math.max(1, mixRollWidthOptions(mix).length);
+  const rolls = mixProducedRolls(mix);
+  if (rolls <= 0) {
+    return 0;
+  }
+  return Math.min(mixRollShaftCount(mix), Math.ceil(rolls / segs));
 }
 
 function mixRollRowKey(row) {
@@ -4325,15 +4376,15 @@ async function addMixRollRow() {
     frappe.msgprint(__("Start mix roll production first."));
     return;
   }
-  const existing = (mixRollLines.value || []).filter(
-    (r) => !activeMixRoll.value.spr_name || r.spr_name === activeMixRoll.value.spr_name
-  );
+  const existing = mixRowsForActive();
   const maxRows = mixRollMaxRows(activeMixRoll.value);
   if (existing.length >= maxRows) {
     frappe.msgprint(
-      __("This mix roll allows {0} shaft(s) with combination {1}.", [
+      __("This mix roll allows {0} shaft(s) / {1} rolls with combination {2}. {3} roll(s) already entered.", [
         mixRollShaftCount(activeMixRoll.value),
+        maxRows,
         activeMixRoll.value.shaft || activeMixRoll.value.combination || "",
+        existing.length,
       ])
     );
     return;
@@ -4402,7 +4453,26 @@ async function addMixRollRow() {
     }
     line.creation_seq = nextCreationSeq();
     const segs = Math.max(1, mixRollWidthOptions(activeMixRoll.value).length);
-    line.custom_no_of_shaft = Math.floor(existing.length / segs) + 1;
+    line.custom_no_of_shaft = Math.floor(mixRowsForActive().length / segs) + 1;
+    if (sprName) {
+      try {
+        const added = await addGsmMixRollLine({
+          sprName,
+          itemCode,
+          widthInch,
+          batchNo: batch.batch_no,
+          gsm: activeMixRoll.value.gsm,
+        });
+        if (added?.row_name) {
+          line.spr_item_name = added.row_name;
+        }
+        if (added?.roll_line?.batch_no) {
+          line.batch_no = added.roll_line.batch_no;
+        }
+      } catch (apiErr) {
+        console.warn("add_gsm_mix_roll_line", apiErr);
+      }
+    }
     mixRollLines.value = [line, ...mixRollLines.value];
     rollLines.value = sortRollLinesLifo([line, ...rollLines.value]);
     reserveBatchNo(batch.batch_no, batch.roll_no);
@@ -7542,10 +7612,33 @@ async function loadCoreWidthOptions() {
 }
 
 function pickJobAndWidthForRow() {
+  if (mixSprReady.value && !selectedEntries.value.length) {
+    const mixExisting = mixRowsForActive();
+    if (mixExisting.length >= mixRollMaxRows(activeMixRoll.value)) {
+      frappe.msgprint(
+        __("This mix roll allows {0} shaft(s) with combination {1}.", [
+          mixRollShaftCount(activeMixRoll.value),
+          activeMixRoll.value.shaft || activeMixRoll.value.combination || "",
+        ])
+      );
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({ is_mix: true });
+  }
   if (!selectedEntries.value.length) {
     return Promise.resolve(null);
   }
   const entries = selectedEntries.value;
+  if (mixSprReady.value) {
+    addRollWizardSkipJobStep.value = false;
+    addRollWizardStep.value = 1;
+    addRollJobChoice.value = defaultAddRollJobKey(entries);
+    addRollWidthChoice.value = null;
+    showAddRollWizard.value = true;
+    return new Promise((resolve) => {
+      pendingAddRowResolve = resolve;
+    });
+  }
   if (entries.length === 1) {
     const entry = entries[0];
     const key = entry.key || entryKeyJob(entry.ppId, entry.jobId || entry.job_id);
@@ -7656,6 +7749,16 @@ async function openManualJobForAllMaxed() {
 }
 
 function proceedAddRollWizard() {
+  if (addRollJobChoice.value === MIX_WIZARD_KEY) {
+    showAddRollWizard.value = false;
+    addRollWizardStep.value = 1;
+    addRollWizardSkipJobStep.value = false;
+    if (pendingAddRowResolve) {
+      pendingAddRowResolve({ is_mix: true });
+      pendingAddRowResolve = null;
+    }
+    return;
+  }
   if (addRollWizardStep.value === 1) {
     if (!addRollJobChoice.value) {
       return;
@@ -7684,13 +7787,19 @@ function _sprNotCreatedMsg(action) {
 
 function guardedAddRollRow() {
   if (freezeGsmAddRow.value) { frappe.msgprint(__("Add Roll Row is disabled for your access.")); return; }
-  if (activeMixRoll.value?.spr_name) {
+  if (mixSprReady.value && !selectedEntries.value.length) {
     if (mixRollBusy.value) return;
     addMixRollRow();
     return;
   }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Add Roll Row"); return; }
-  if (!canAddRow.value || addRollInProgress.value) return;
+  if (!canAddRow.value || addRollInProgress.value) {
+    if (mixSprReady.value && selectedEntries.value.length) {
+      addRollRow();
+      return;
+    }
+    return;
+  }
   addRollRow();
 }
 function guardedStartShift() {
@@ -7748,6 +7857,10 @@ async function addRollRow() {
   try {
   const pick = await pickJobAndWidthForRow();
   if (!pick) {
+    return;
+  }
+  if (pick.is_mix) {
+    await addMixRollRow();
     return;
   }
   const { widthInch, job: pickedJob } = pick;
@@ -8766,6 +8879,22 @@ onUnmounted(() => {
   color: #1e293b;
 }
 .gpe-mix-roll-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #475569;
+}
+.gpe-mix-counts {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-weight: 700;
+  font-size: 12px;
+}
   display: flex;
   flex-direction: column;
   gap: 4px;

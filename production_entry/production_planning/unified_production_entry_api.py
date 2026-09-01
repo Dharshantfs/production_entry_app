@@ -5762,6 +5762,14 @@ def _serialize_mix_roll_candidate(date_key: str, entry: dict) -> dict:
 			spr_run_date = _cstr(res.run_date)
 			spr_shift = _cstr(res.shift)
 			spr_status = "Submitted" if spr_docstatus == 1 else "Draft"
+	spr_roll_count = 0
+	if spr_name and frappe.db.exists("Shaft Production Run Item"):
+		try:
+			spr_roll_count = cint(
+				frappe.db.count("Shaft Production Run Item", {"parent": spr_name})
+			)
+		except Exception:
+			spr_roll_count = 0
 	return {
 		**entry,
 		"date_key": date_key,
@@ -5772,6 +5780,7 @@ def _serialize_mix_roll_candidate(date_key: str, entry: dict) -> dict:
 		"spr_docstatus": spr_docstatus,
 		"spr_run_date": spr_run_date,
 		"spr_shift": spr_shift,
+		"spr_roll_count": spr_roll_count,
 		"label": _cstr(entry.get("mixName") or entry.get("mix_name") or "Mix Roll"),
 		"color_transition": f"{_cstr(entry.get('color1'))} → {_cstr(entry.get('color2'))}",
 	}
