@@ -381,6 +381,7 @@
               </div>
               <label v-if="shiftOpened">Operator <input :value="operator" type="text" readonly /></label>
               <label v-if="shiftOpened">Supervisor <input :value="supervisor" type="text" readonly /></label>
+              <label v-if="shiftOpened">Co-ordinator <input :value="coordinator" type="text" readonly /></label>
             </div>
             <div v-if="sessionSprList.length" class="gpe-spr-table-wrap gpe-spr-inline">
               <div class="gpe-spr-table-title">Order · Label Type · SPR</div>
@@ -1454,6 +1455,13 @@
               <button type="button" class="gpe-btn" @click="pickEmployeeLink('supervisor', 'Supervisor')">Pick</button>
             </div>
           </label>
+          <label class="gpe-emp-link">
+            Co-ordinator
+            <div class="gpe-emp-link-row">
+              <input :value="coordinator" type="text" readonly placeholder="Select employee" />
+              <button type="button" class="gpe-btn" @click="pickEmployeeLink('coordinator', 'Co-ordinator')">Pick</button>
+            </div>
+          </label>
           <div v-if="shiftReopenRequired" class="gpe-shift-reopen-fields">
             <label>
               Re-open reason
@@ -1501,7 +1509,7 @@
           <h3>Submit entry — review</h3>
           <p class="gpe-hint">
             {{ shift }} · {{ formatPlannedDate(runDate) }} · Batch {{ shiftBatchPrefix || seriesPrefix || "—" }}
-            · Operator {{ operator || "—" }} · Supervisor {{ supervisor || "—" }}
+            · Operator {{ operator || "—" }} · Supervisor {{ supervisor || "—" }} · Co-ordinator {{ coordinator || "—" }}
           </p>
           <div class="gpe-submit-summary-totals">
             <span><strong>{{ submitConfirmRolls.length }}</strong> roll(s)</span>
@@ -1869,6 +1877,7 @@ const shift = ref("Day Shift");
 const headerUnit = ref("");
 const operator = ref("");
 const supervisor = ref("");
+const coordinator = ref("");
 /** Warehouse Bay options for current session unit (additive Bay column). */
 const bayOptions = ref([]);
 
@@ -3944,7 +3953,7 @@ const showShiftOpeningPanel = computed(
 const shiftOpenPromptVisible = computed(() => showShiftOpeningPanel.value);
 
 const canConfirmShiftOpen = computed(() => {
-  if (!operator.value || !supervisor.value || !shiftPreviewBatch.value) {
+  if (!operator.value || !supervisor.value || !coordinator.value || !shiftPreviewBatch.value) {
     return false;
   }
   if (shiftReopenRequired.value) {
@@ -5034,6 +5043,7 @@ async function runTool(kind) {
       shift: shift.value,
       operator: operator.value,
       supervisor: supervisor.value,
+      coordinator: coordinator.value,
       onSuccess: attachTrialSprToSession,
     });
     return;
@@ -5459,6 +5469,7 @@ async function createSprs() {
         unit: headerUnit.value,
         operator: operator.value,
         supervisor: supervisor.value,
+        coordinator: coordinator.value,
         entries: JSON.stringify(entries),
         force_new_session:
           forceNewSprSession.value ||
@@ -5650,6 +5661,7 @@ async function openShiftDialog() {
   }
   operator.value = "";
   supervisor.value = "";
+  coordinator.value = "";
   shiftReopenReason.value = "";
   shiftReopenRemarks.value = "";
   shiftReopenRequired.value = false;
@@ -5699,6 +5711,7 @@ async function callSubmitGsm(overrides = []) {
       unit: headerUnit.value,
       operator: operator.value,
       supervisor: supervisor.value,
+      coordinator: coordinator.value,
       rolls: JSON.stringify(buildSubmitRollsPayload()),
       session_sprs: JSON.stringify(buildSessionSprsPayload()),
       tolerance_overrides: JSON.stringify(overrides),
@@ -6060,6 +6073,7 @@ async function printQcLabel(row) {
     await gsmPrintQcLabel(sprName, itemName, row, {
       operator: operator.value,
       supervisor: supervisor.value,
+      coordinator: coordinator.value,
     });
   } catch (e) {
     console.error(e);
@@ -6496,7 +6510,8 @@ async function promptQualityCheckJobId(ppId) {
 }
 
 function pickEmployeeLink(fieldKey, label) {
-  const targetRef = fieldKey === "supervisor" ? supervisor : operator;
+  const targetRef =
+    fieldKey === "coordinator" ? coordinator : fieldKey === "supervisor" ? supervisor : operator;
   const d = new frappe.ui.Dialog({
     title: label,
     fields: [
@@ -6507,6 +6522,12 @@ function pickEmployeeLink(fieldKey, label) {
         options: "Employee",
         reqd: 1,
         default: targetRef.value || "",
+        ignore_user_permissions: 1,
+        get_query() {
+          return {
+            query: "production_entry.production_planning.unified_production_entry_api.gsm_employee_link_query",
+          };
+        },
       },
     ],
     primary_action_label: __("Select"),
@@ -6525,6 +6546,7 @@ function applyShiftSessionHydration(session) {
   if (session && session.status === "Open") {
     operator.value = session.operator || "";
     supervisor.value = session.supervisor || "";
+    coordinator.value = session.coordinator || "";
     shiftBatchPrefix.value = session.batch_series_prefix || "";
     if (session.batch_series_prefix) {
       seriesPrefix.value = session.batch_series_prefix;
@@ -6533,6 +6555,7 @@ function applyShiftSessionHydration(session) {
   } else {
     operator.value = "";
     supervisor.value = "";
+    coordinator.value = "";
     shiftBatchPrefix.value = "";
     shiftResumeBanner.value = "";
     selectedEntries.value = [];
@@ -6784,6 +6807,9 @@ function applyResumePayload(msg, options = {}) {
   }
   if (msg.session?.supervisor) {
     supervisor.value = msg.session.supervisor;
+  }
+  if (msg.session?.coordinator) {
+    coordinator.value = msg.session.coordinator;
   }
   if (msg.session?.batch_series_prefix) {
     shiftBatchPrefix.value = msg.session.batch_series_prefix;
@@ -7059,7 +7085,7 @@ async function refreshShiftSession() {
 
 async function startShift() {
   if (!canConfirmShiftOpen.value) {
-    frappe.msgprint(__("Complete operator, supervisor, and re-open reason if required."));
+    frappe.msgprint(__("Complete operator, supervisor, co-ordinator, and re-open reason if required."));
     return;
   }
   shiftOpeningBusy.value = true;
@@ -7072,6 +7098,7 @@ async function startShift() {
         unit: headerUnit.value,
         operator: operator.value,
         supervisor: supervisor.value,
+        coordinator: coordinator.value,
         reopen_reason: shiftReopenRequired.value ? shiftReopenReason.value : undefined,
         reopen_remarks: shiftReopenRequired.value ? shiftReopenRemarks.value : undefined,
       },
@@ -7118,6 +7145,7 @@ function clearGsmAfterClose() {
   sessionJobApiBaseline.value = {};
   operator.value = "";
   supervisor.value = "";
+  coordinator.value = "";
   forceNewSprSession.value = true;
   resetBatchSeriesCache();
   try {
@@ -7237,6 +7265,7 @@ async function closeShift() {
         unit: headerUnit.value,
         operator: operator.value,
         supervisor: supervisor.value,
+        coordinator: coordinator.value,
       },
     });
     const nextShift = res.message?.next_shift;
@@ -7263,6 +7292,7 @@ function onShiftHeaderChange() {
   if (!shiftOpened.value) {
     operator.value = "";
     supervisor.value = "";
+    coordinator.value = "";
   }
   refreshShiftSession();
   scheduleAutosave();
@@ -8129,6 +8159,7 @@ function persistDraft() {
       headerUnit: headerUnit.value,
       operator: operator.value,
       supervisor: supervisor.value,
+      coordinator: coordinator.value,
       filterUnit: filterUnit.value,
       filterDate: filterDate.value,
       seriesPrefix: seriesPrefix.value,
@@ -8337,7 +8368,7 @@ watch([runDate, shift, headerUnit], () => {
   refreshShiftSession();
 });
 
-watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
+watch([runDate, shift, operator, supervisor, coordinator], () => scheduleAutosave());
 
 onMounted(async () => {
   pageLoadError.value = false;

@@ -85,12 +85,12 @@ export async function openGsmShiftConsumablesDialog(opts = {}) {
 	const linkControls = [];
 
 	const d = new frappe.ui.Dialog({
-		title: `${__("Shift Consumables")} — ${ctx.run_date} · ${ctx.shift} · ${ctx.custom_unit}`,
+		title: `${__("Shift Wise Consumable List")} — ${ctx.run_date} · ${ctx.shift} · ${ctx.custom_unit}`,
 		size: "large",
 		primary_action_label: __("Save"),
 		primary_action: async () => {
 			await saveRows();
-			frappe.show_alert({ message: __("Shift consumables saved"), indicator: "green" });
+			frappe.show_alert({ message: __("Shift wise consumable list saved"), indicator: "green" });
 		},
 	});
 

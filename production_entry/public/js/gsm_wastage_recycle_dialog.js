@@ -1275,7 +1275,7 @@ async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
 			}
 			d.get_primary_btn().prop("disabled", true);
 			try {
-				await frappe.call({
+				const res = await frappe.call({
 					method:
 						"production_entry.production_planning.unified_production_entry_api.consume_gsm_recycled_wastage",
 					args: {
@@ -1283,7 +1283,14 @@ async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
 						roll_waste_row_names: JSON.stringify(names),
 					},
 				});
-				frappe.show_alert({ message: __("Added to Recycled Wastage Details"), indicator: "green" });
+				const recycledRows = res.message?.recycled?.rows || [];
+				if (!recycledRows.length) {
+					frappe.msgprint(
+						__("Recycle did not stay on Recycled Wastage Details. Refresh the SPR and try again.")
+					);
+				} else {
+					frappe.show_alert({ message: __("Added to Recycled Wastage Details"), indicator: "green" });
+				}
 				d.hide();
 				if (typeof onDone === "function") {
 					onDone();

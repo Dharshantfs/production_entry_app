@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Shift Consumables — one document per date + shift + unit."""
+"""Shift Wise Consumable List — one document per date + shift + unit.
+
+Replaces the old Shift Consumables DocType for GSM. Method names stay stable
+so the GSM dialog keeps calling get/save_shift_consumables.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,8 @@ import json
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate
+
+DOCTYPE = "Shift Wise Consumable List"
 
 
 def _cstr(val) -> str:
@@ -65,9 +71,15 @@ def _doc_payload(doc) -> dict:
 	}
 
 
+def _doctype_ready() -> bool:
+	return bool(frappe.db.exists("DocType", DOCTYPE))
+
+
 def _find_doc(run_date=None, shift=None, custom_unit=None, gsm_shift_session=None, name=None):
+	if not _doctype_ready():
+		return None
 	name = _cstr(name)
-	if name and frappe.db.exists("Shift Consumables", name):
+	if name and frappe.db.exists(DOCTYPE, name):
 		return name
 	session = _cstr(gsm_shift_session)
 	unit = _cstr(custom_unit)
@@ -75,7 +87,7 @@ def _find_doc(run_date=None, shift=None, custom_unit=None, gsm_shift_session=Non
 	rd = getdate(run_date) if run_date else None
 	if session and unit:
 		found = frappe.db.get_value(
-			"Shift Consumables",
+			DOCTYPE,
 			{"gsm_shift_session": session, "custom_unit": unit},
 			"name",
 			order_by="modified desc",
@@ -84,7 +96,7 @@ def _find_doc(run_date=None, shift=None, custom_unit=None, gsm_shift_session=Non
 			return found
 	if rd and shift_n and unit:
 		found = frappe.db.get_value(
-			"Shift Consumables",
+			DOCTYPE,
 			{"run_date": rd, "shift": shift_n, "custom_unit": unit},
 			"name",
 			order_by="modified desc",
@@ -95,6 +107,8 @@ def _find_doc(run_date=None, shift=None, custom_unit=None, gsm_shift_session=Non
 
 
 def _get_or_create(run_date=None, shift=None, custom_unit=None, gsm_shift_session=None, name=None):
+	if not _doctype_ready():
+		frappe.throw(_("Shift Wise Consumable List is not installed. Run bench migrate."))
 	found = _find_doc(
 		run_date=run_date,
 		shift=shift,
@@ -103,14 +117,14 @@ def _get_or_create(run_date=None, shift=None, custom_unit=None, gsm_shift_sessio
 		name=name,
 	)
 	if found:
-		doc = frappe.get_doc("Shift Consumables", found)
+		doc = frappe.get_doc(DOCTYPE, found)
 	else:
 		unit = _cstr(custom_unit)
 		shift_n = _normalize_shift(shift)
 		rd = getdate(run_date) if run_date else None
 		if not (rd and shift_n and unit):
 			frappe.throw(_("Date, Shift, and Unit are required to save shift consumables."))
-		doc = frappe.new_doc("Shift Consumables")
+		doc = frappe.new_doc(DOCTYPE)
 		doc.run_date = rd
 		doc.shift = shift_n
 		doc.custom_unit = unit
@@ -136,7 +150,7 @@ def get_shift_consumables(
 		name=doc_name,
 	)
 	if found:
-		return _doc_payload(frappe.get_doc("Shift Consumables", found))
+		return _doc_payload(frappe.get_doc(DOCTYPE, found))
 	return {
 		"name": "",
 		"run_date": str(run_date or ""),

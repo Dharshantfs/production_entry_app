@@ -22,6 +22,7 @@
   "section_break_people",
   "operator",
   "supervisor",
+  "coordinator",
   "section_break_selection",
   "selection_locked",
   "locked_jobs",
@@ -140,6 +141,7 @@
   {
    "fieldname": "operator",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Operator",
    "options": "Employee",
    "reqd": 1
@@ -147,9 +149,17 @@
   {
    "fieldname": "supervisor",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Supervisor",
    "options": "Employee",
    "reqd": 1
+  },
+  {
+   "fieldname": "coordinator",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Co-ordinator",
+   "options": "Employee"
   },
   {
    "fieldname": "section_break_selection",
@@ -201,7 +211,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-07 12:00:00.000000",
+ "modified": "2026-09-01 12:00:00.000000",
  "module": "Production Planning",
  "name": "GSM Shift Session",
  "naming_rule": "By \"Naming Series\" field",

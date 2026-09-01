@@ -208,6 +208,17 @@ def _gsm_shift_session_table_exists() -> bool:
 	return bool(frappe.db.table_exists(_GSM_SHIFT_SESSION_DOCTYPE))
 
 
+def _gsm_session_has_coordinator() -> bool:
+	return bool(frappe.db.has_column(_GSM_SHIFT_SESSION_DOCTYPE, "coordinator"))
+
+
+def _gsm_session_with_coordinator(fields: list[str]) -> list[str]:
+	out = list(fields)
+	if _gsm_session_has_coordinator() and "coordinator" not in out:
+		out.append("coordinator")
+	return out
+
+
 def _normalize_gsm_shift_label(shift) -> str:
 	s = _cstr(shift).strip()
 	if not s:
@@ -234,7 +245,9 @@ def _serialize_gsm_shift_session(doc) -> dict:
 		"unit": row.get("custom_unit") or "",
 		"operator": row.get("operator") or "",
 		"supervisor": row.get("supervisor") or "",
+		"coordinator": row.get("coordinator") or "",
 		"batch_series_prefix": row.get("batch_series_prefix") or "",
+
 		"status": row.get("status") or "",
 		"opened_at": str(row.get("opened_at") or ""),
 		"closed_at": str(row.get("closed_at") or ""),
@@ -431,6 +444,35 @@ def _gsm_validate_employee_link(employee: str, label: str):
 	return employee
 
 
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def gsm_employee_link_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Active employees for GSM Operator / Supervisor / Co-ordinator pickers.
+
+	Ignores User Permissions so shop-floor logins can see every Active employee.
+	"""
+	if doctype != "Employee":
+		return []
+	txt = _cstr(txt)
+	start = cint(start)
+	page_len = cint(page_len) or 20
+	conds = ["status = 'Active'"]
+	params = {"start": start, "page_len": page_len}
+	if txt:
+		conds.append("(name LIKE %(txt)s OR IFNULL(employee_name, '') LIKE %(txt)s)")
+		params["txt"] = f"%{txt}%"
+	return frappe.db.sql(
+		f"""
+		SELECT name, employee_name
+		FROM `tabEmployee`
+		WHERE {" AND ".join(conds)}
+		ORDER BY IFNULL(employee_name, name)
+		LIMIT %(start)s, %(page_len)s
+		""",
+		params,
+	)
+
+
 def _gsm_employee_id_and_name(employee) -> tuple[str, str]:
 	emp_id = _cstr(employee).strip()
 	if not emp_id:
@@ -495,11 +537,15 @@ def _gsm_coordinator_from_shift_sprs(run_date, shift, unit) -> str:
 	return ""
 
 
-def _gsm_shift_wise_route_options(doc, operator=None, supervisor=None) -> dict:
+def _gsm_shift_wise_route_options(doc, operator=None, supervisor=None, coordinator=None) -> dict:
 	"""Prefill Shift Wise Production Entry from the closed GSM session."""
 	operator = _cstr(operator).strip() or _cstr(getattr(doc, "operator", "")).strip()
 	supervisor = _cstr(supervisor).strip() or _cstr(getattr(doc, "supervisor", "")).strip()
-	coordinator = _gsm_coordinator_from_shift_sprs(doc.run_date, doc.shift, doc.custom_unit)
+	coordinator = (
+		_cstr(coordinator).strip()
+		or _cstr(getattr(doc, "coordinator", "")).strip()
+		or _gsm_coordinator_from_shift_sprs(doc.run_date, doc.shift, doc.custom_unit)
+	)
 	opts = {
 		"posting_date": str(doc.run_date),
 		"shift": doc.shift,
@@ -658,7 +704,7 @@ def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
 		open_row = frappe.db.get_value(
 			_GSM_SHIFT_SESSION_DOCTYPE,
 			{"run_date": rd, "shift": shift, "custom_unit": unit, "status": "Open"},
-			["name", "status", "batch_series_prefix", "operator", "supervisor"],
+			_gsm_session_with_coordinator(["name", "status", "batch_series_prefix", "operator", "supervisor"]),
 			as_dict=True,
 		)
 		if open_row:
@@ -667,7 +713,7 @@ def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
 			closed_rows = frappe.get_all(
 				_GSM_SHIFT_SESSION_DOCTYPE,
 				filters={"run_date": rd, "shift": shift, "custom_unit": unit, "status": "Closed"},
-				fields=["name", "status", "batch_series_prefix", "operator", "supervisor"],
+				fields=_gsm_session_with_coordinator(["name", "status", "batch_series_prefix", "operator", "supervisor"]),
 				order_by="modified desc",
 				limit=1,
 			)
@@ -681,6 +727,7 @@ def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
 				"batch_series_prefix": row.batch_series_prefix or "",
 				"operator": row.operator or "",
 				"supervisor": row.supervisor or "",
+				"coordinator": _cstr(row.get("coordinator") if isinstance(row, dict) else getattr(row, "coordinator", "")),
 			}
 	return {"ready": True, "shifts": out}
 
@@ -692,6 +739,7 @@ def open_gsm_shift_session(
 	unit=None,
 	operator=None,
 	supervisor=None,
+	coordinator=None,
 	reopen_reason=None,
 	reopen_remarks=None,
 ):
@@ -704,6 +752,7 @@ def open_gsm_shift_session(
 		frappe.throw(_("Run Date, Unit, and Shift are required."))
 	operator = _gsm_validate_employee_link(operator, _("Operator"))
 	supervisor = _gsm_validate_employee_link(supervisor, _("Supervisor"))
+	coordinator = _gsm_validate_employee_link(coordinator, _("Co-ordinator"))
 
 	existing_name = frappe.db.get_value(
 		_GSM_SHIFT_SESSION_DOCTYPE,
@@ -723,6 +772,9 @@ def open_gsm_shift_session(
 			changed = True
 		if doc.supervisor != supervisor:
 			doc.supervisor = supervisor
+			changed = True
+		if _gsm_session_has_coordinator() and _cstr(getattr(doc, "coordinator", "")) != coordinator:
+			doc.coordinator = coordinator
 			changed = True
 		if changed:
 			doc.save(ignore_permissions=True)
@@ -781,6 +833,8 @@ def open_gsm_shift_session(
 	)
 	if batch_reused and frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE).has_field("reused_from_session"):
 		doc.reused_from_session = prefix_info.get("reused_from_session") or ""
+	if _gsm_session_has_coordinator():
+		doc.coordinator = coordinator
 	doc.insert(ignore_permissions=True)
 	return {
 		"session": _serialize_gsm_shift_session(doc),
@@ -827,7 +881,7 @@ def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=
 
 
 @frappe.whitelist()
-def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None):
+def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None, coordinator=None):
 	"""Close the open GSM shift session and return Shift Wise redirect payload."""
 	if not _gsm_shift_session_table_exists():
 		frappe.throw(_("GSM Shift Session DocType is not installed. Run bench migrate."))
@@ -848,10 +902,13 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None,
 	doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, name)
 	fallback_operator = _cstr(operator).strip()
 	fallback_supervisor = _cstr(supervisor).strip()
+	fallback_coordinator = _cstr(coordinator).strip()
 	if fallback_operator and not _cstr(doc.operator).strip():
 		doc.operator = fallback_operator
 	if fallback_supervisor and not _cstr(doc.supervisor).strip():
 		doc.supervisor = fallback_supervisor
+	if fallback_coordinator and _gsm_session_has_coordinator() and not _cstr(getattr(doc, "coordinator", "")).strip():
+		doc.coordinator = fallback_coordinator
 	prefix = _cstr(doc.batch_series_prefix).strip()
 	zero_prod = not _gsm_batch_prefix_has_rolls(prefix)
 	if frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE).has_field("zero_production_close"):
@@ -879,6 +936,7 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None,
 				doc,
 				operator=fallback_operator or doc.operator,
 				supervisor=fallback_supervisor or doc.supervisor,
+				coordinator=fallback_coordinator or getattr(doc, "coordinator", None),
 			),
 		},
 	}
@@ -895,7 +953,7 @@ def get_open_gsm_shift_for_unit(unit=None):
 	row = frappe.db.get_value(
 		_GSM_SHIFT_SESSION_DOCTYPE,
 		{"custom_unit": unit, "status": "Open"},
-		["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status"],
+		_gsm_session_with_coordinator(["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status"]),
 		as_dict=True,
 	)
 	if not row:
@@ -1289,7 +1347,7 @@ def get_gsm_session_full_state(unit=None):
 	row = frappe.db.get_value(
 		_GSM_SHIFT_SESSION_DOCTYPE,
 		{"status": "Open", "custom_unit": unit},
-		["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status", "modified"],
+		_gsm_session_with_coordinator(["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status", "modified"]),
 		as_dict=True,
 	)
 	if not row:
@@ -2952,7 +3010,9 @@ def _gsm_patty_stock_rows_cached() -> list:
 	return rows
 
 
-def _apply_gsm_session_header_to_spr(spr, run_date=None, shift=None, unit=None, operator=None, supervisor=None):
+def _apply_gsm_session_header_to_spr(
+	spr, run_date=None, shift=None, unit=None, operator=None, supervisor=None, coordinator=None
+):
 	"""Set GSM session header fields on draft SPR without touching desk SPR flows."""
 	changed = False
 	if unit and _cstr(spr.get("custom_unit")) != _cstr(unit):
@@ -2967,6 +3027,7 @@ def _apply_gsm_session_header_to_spr(spr, run_date=None, shift=None, unit=None, 
 	for value, candidates in (
 		(operator, ("operator", "custom_operator", "custom_shift_operator")),
 		(supervisor, ("supervisor", "custom_supervisor", "custom_shift_supervisor")),
+		(coordinator, ("coordinator", "custom_coordinator")),
 	):
 		val = _cstr(value).strip()
 		if not val:
@@ -3604,6 +3665,7 @@ def create_gsm_sprs_for_session(
 	unit=None,
 	operator=None,
 	supervisor=None,
+	coordinator=None,
 	entries=None,
 	force_new_session=0,
 ):
@@ -3655,7 +3717,7 @@ def create_gsm_sprs_for_session(
 			continue
 		spr_name = result["spr_name"]
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
-		if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
+		if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor, coordinator):
 			spr.save(ignore_permissions=True)
 		label_type = _gsm_label_type_for_pp_spr(pp_id, spr_name)
 		sprs_out.append(
@@ -3845,6 +3907,7 @@ def submit_gsm_production_entry(
 	unit=None,
 	operator=None,
 	supervisor=None,
+	coordinator=None,
 	rolls=None,
 	session_sprs=None,
 	tolerance_overrides=None,
@@ -3948,7 +4011,7 @@ def submit_gsm_production_entry(
 					}
 				)
 				continue
-			if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
+			if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor, coordinator):
 				spr.save(ignore_permissions=True)
 			res = import_gsm_roll_lines_to_spr(spr_name, payloads, shift=shift)
 			imported.append({"pp_id": pp_id, "spr_name": spr_name, **res})
@@ -5567,6 +5630,8 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 		if not added:
 			frappe.throw(_("No recycled rows were added"))
 
+		spr.flags.gsm_recycle_consume = True
+		spr.flags._spr_incremental_roll_save = True
 		spr.save(ignore_permissions=True)
 		return {
 			"status": "ok",
