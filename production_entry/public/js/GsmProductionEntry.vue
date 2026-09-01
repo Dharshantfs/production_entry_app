@@ -4137,44 +4137,43 @@ async function isMixSprDraft(sprName) {
 }
 
 async function restoreActiveMixRollFromSession() {
-  if (!shiftOpened.value || activeMixRoll.value) {
+  if (!shiftOpened.value) {
+    return;
+  }
+  const currentSpr = _cstr(activeMixRoll.value?.spr_name);
+  if (currentSpr && !dismissedMixSprs.value.includes(currentSpr)) {
+    await refreshMixRollLinesFromSpr();
     return;
   }
   const mixRow = rollLines.value.find((r) => r.is_mix_roll_row && r.spr_name);
   const savedSpr = _cstr(persistedActiveMixSpr.value);
   const sprName = _cstr(mixRow?.spr_name || savedSpr);
   if (!sprName || dismissedMixSprs.value.includes(sprName)) {
-    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
-    mixRollLines.value = [];
-    persistedActiveMixSpr.value = "";
+    if (!currentSpr) {
+      rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+      mixRollLines.value = [];
+      persistedActiveMixSpr.value = "";
+    }
     return;
   }
   let mixMeta = mixRollCandidates.value.find((m) => m.spr_name === sprName);
   if (!mixMeta) {
-    if (!mixRow) {
-      persistedActiveMixSpr.value = "";
-      return;
-    }
     mixMeta = {
       spr_name: sprName,
-      label: mixRow.party_code || "Mix Roll",
-      gsm: mixRow.gsm,
-      color_transition: mixRow.color || "",
-      shaft: String(mixRow.width_inch || ""),
+      label: mixRow?.party_code || "Mix Roll",
+      gsm: mixRow?.gsm,
+      color_transition: mixRow?.color || "",
+      shaft: String(mixRow?.width_inch || ""),
       date_key: "",
     };
   }
   const sprDate = _cstr(mixMeta.spr_run_date).slice(0, 10);
   const run = _cstr(runDate.value).slice(0, 10);
-  if (sprDate && run && sprDate !== run) {
-    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
-    mixRollLines.value = [];
+  if (!mixRow && sprDate && run && sprDate !== run) {
     persistedActiveMixSpr.value = "";
     return;
   }
-  if (mixMeta.spr_shift && _cstr(mixMeta.spr_shift) !== _cstr(shift.value)) {
-    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
-    mixRollLines.value = [];
+  if (!mixRow && mixMeta.spr_shift && _cstr(mixMeta.spr_shift) !== _cstr(shift.value)) {
     persistedActiveMixSpr.value = "";
     return;
   }
@@ -4552,6 +4551,7 @@ async function saveMixRollRow(row) {
     }
     row.planned_qty = 0;
     syncMixRollRowViews(row);
+    persistDraft();
     scheduleAutosave();
     frappe.show_alert({ message: __("Mix roll row saved"), indicator: "green" });
   } catch (e) {
@@ -6828,10 +6828,14 @@ function applyResumePayload(msg, options = {}) {
     }
     const merged = [...serverRows];
     for (const local of rollLines.value) {
+      const k = rollRowSyncKey(local);
+      if (local.is_mix_roll_row && k && !serverByKey.has(k) && !local.is_wasted) {
+        merged.unshift({ ...local });
+        continue;
+      }
       if (local.row_locked || local.is_wasted) {
         continue;
       }
-      const k = rollRowSyncKey(local);
       if (!k || serverByKey.has(k)) {
         continue;
       }

@@ -1107,6 +1107,41 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	return out
 
 
+def _gsm_mix_sprs_for_session(run_date, shift, unit) -> list[dict]:
+	"""Draft/submitted mix-roll SPRs for the open GSM shift (same date + shift + unit)."""
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		return []
+	if not frappe.db.has_column("Shaft Production Run", "is_mix_roll"):
+		return []
+	rows = frappe.get_all(
+		"Shaft Production Run",
+		filters={
+			"docstatus": ["in", [0, 1]],
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"is_mix_roll": 1,
+		},
+		fields=["name", "custom_order_code", "docstatus"],
+		order_by="modified desc",
+		limit=20,
+	)
+	out = []
+	for row in rows or []:
+		out.append(
+			{
+				"pp_id": "",
+				"spr_name": row.name,
+				"order_code": _cstr(row.get("custom_order_code") or ""),
+				"is_mix_roll": 1,
+				"label_type": "Mix Roll",
+			}
+		)
+	return out
+
+
 def _gsm_session_roll_revision(session_doc, session_sprs: list) -> str:
 	"""Revision token that changes when any session SPR roll or waste row changes."""
 	parts = [_cstr(getattr(session_doc, "name", "")), str(getattr(session_doc, "modified", "") or "")]
@@ -1259,6 +1294,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 
 	session_doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, session_name)
 	session_sprs = _gsm_draft_sprs_for_session(run_date, shift, unit)
+	mix_sprs = _gsm_mix_sprs_for_session(run_date, shift, unit)
 	roll_lines = []
 	job_keys = set()
 
@@ -1267,26 +1303,27 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	# order's rows as a block. The shift batch suffix is assigned globally when
 	# the roll is created, so it is the durable creation order across all SPRs.
 	staged: list[tuple] = []
-	for spr_row in session_sprs:
+	for spr_row in list(session_sprs) + list(mix_sprs):
 		spr_name = spr_row.get("spr_name")
 		pp_id = spr_row.get("pp_id")
 		if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 			continue
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
-		is_mix_roll = spr_doc_is_mix_roll(spr)
-		if is_mix_roll:
-			# Mix rolls stay in the mix workspace. Do not inject them into the
-			# main GSM grid on resume — that re-checks mix after the operator
-			# removed it from this shift (or after another shift was closed).
-			continue
+		is_mix_roll = spr_doc_is_mix_roll(spr) or cint(spr_row.get("is_mix_roll"))
 		for line in _gsm_serialize_spr_roll_lines_for_grid(spr):
 			line["is_mix_roll_row"] = 1 if is_mix_roll else 0
+			if is_mix_roll:
+				line["planned_qty"] = 0
+				if not _cstr(line.get("party_code")).strip():
+					line["party_code"] = _cstr(spr.get("custom_order_code") or "")
 			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
 			child_idx = cint(line.get("child_idx") or 0)
 			staged.append((batch_suffix, child_idx, spr_name, pp_id, line, False))
 			jid = _cstr(line.get("job_id") or "")
-			if jid and pp_id:
+			if jid and pp_id and not is_mix_roll:
 				job_keys.add((pp_id, jid))
+		if is_mix_roll:
+			continue
 		seen_waste_batches = set()
 		for waste in spr.get("custom_roll_waste") or []:
 			line = _gsm_serialize_roll_waste_for_grid(spr, waste, pp_id)
@@ -1318,7 +1355,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 
 	# roll_lines already newest-first via creation_seq descending assignment above.
 
-	server_revision = _gsm_session_roll_revision(session_doc, session_sprs)
+	server_revision = _gsm_session_roll_revision(session_doc, list(session_sprs) + list(mix_sprs))
 
 	return {
 		"status": "ok",
