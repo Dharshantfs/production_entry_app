@@ -198,6 +198,8 @@
           </div>
           <div v-if="shiftOpened && activeMixRoll" class="gpe-mix-active-banner">
             Active: <strong>{{ activeMixRoll.label }}</strong>
+            <span class="gpe-muted">{{ activeMixRoll.color_transition }} · {{ activeMixRoll.gsm }} GSM · {{ activeMixRoll.shaft }}</span>
+            <span class="gpe-muted">Use Add Roll Row — order code {{ activeMixRoll.label }}</span>
             <button type="button" class="gpe-link-btn" @click="clearActiveMixRoll">Remove from this shift</button>
           </div>
         </div>
@@ -450,7 +452,7 @@
         <div class="gpe-toolbar">
           <div class="gpe-toolbar-left">
             <button
-              v-if="allSelectedJobsMaxed && selectedEntries.length"
+              v-if="allSelectedJobsMaxed && selectedEntries.length && !mixSprReady"
               type="button"
               class="gpe-btn warn"
               @click="openManualJobForAllMaxed"
@@ -489,27 +491,6 @@
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_shaft_details')" @click="guardedShaftDetails">Shaft Details</button>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_submit')" @click="guardedSubmitEntry">Submit Entry</button>
-          </div>
-        </div>
-
-        <div v-if="shiftOpened && activeMixRoll" class="gpe-mix-roll-workspace gpe-card">
-          <div class="gpe-mix-roll-workspace-head">
-            <div class="gpe-mix-roll-title">
-              <strong>Mix Roll · {{ activeMixRoll.label }}</strong>
-              <span>{{ activeMixRoll.color_transition }} · {{ activeMixRoll.gsm }} GSM · {{ activeMixRoll.shaft }} · {{ mixRollShaftCount(activeMixRoll) }} shaft(s)</span>
-              <a v-if="activeMixRoll.spr_name" href="#" @click.prevent="openSpr(activeMixRoll.spr_name)">
-                {{ activeMixRoll.spr_name }}
-              </a>
-              <span class="gpe-muted">Rows appear in the production table below — Save Row, then print labels.</span>
-            </div>
-            <div class="gpe-mix-roll-workspace-actions">
-              <button type="button" class="gpe-btn primary" :disabled="mixRollBusy || !activeMixRoll?.spr_name" @click="addMixRollRow">
-                {{ mixRollBusy ? "…" : "Add Mix Roll Row" }}
-              </button>
-              <button type="button" class="gpe-btn gpe-btn-warn" :disabled="mixRollBusy" @click="clearActiveMixRoll">
-                Remove from this shift
-              </button>
-            </div>
           </div>
         </div>
 
@@ -562,7 +543,7 @@
                   {{ row.party_code }}
                   <span v-if="row.is_mix_roll_row" class="gpe-chip gpe-chip-mix">Mix</span>
                 </td>
-                <td class="gpe-num">{{ row.job_id || row.job || "—" }}</td>
+                <td class="gpe-num">{{ row.is_mix_roll_row ? "—" : (row.job_id || row.job || "—") }}</td>
                 <td>{{ row.quality }}</td>
                 <td>{{ row.color }}</td>
                 <td class="gpe-num">{{ row.gsm }}</td>
@@ -3814,6 +3795,9 @@ const canAddRow = computed(() => {
 });
 
 const addRollDisabledHint = computed(() => {
+  if (mixSprReady.value) {
+    return __("Add mix roll using order code {0}", [activeMixRoll.value?.label || ""]);
+  }
   if (canAddRow.value) {
     return "";
   }
@@ -7700,6 +7684,11 @@ function _sprNotCreatedMsg(action) {
 
 function guardedAddRollRow() {
   if (freezeGsmAddRow.value) { frappe.msgprint(__("Add Roll Row is disabled for your access.")); return; }
+  if (activeMixRoll.value?.spr_name) {
+    if (mixRollBusy.value) return;
+    addMixRollRow();
+    return;
+  }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Add Roll Row"); return; }
   if (!canAddRow.value || addRollInProgress.value) return;
   addRollRow();

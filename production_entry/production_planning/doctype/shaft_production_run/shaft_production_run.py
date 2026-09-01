@@ -10653,6 +10653,11 @@ def _gsm_job_row_for_quota(spr, pp_id: str, job_id: str):
 
 
 def _gsm_spr_names_for_pp_job_counts(pp_id: str, unit: str | None = None) -> list[str]:
+	pp_id = _cstr(pp_id).strip()
+	if not pp_id:
+		# Empty PP must not scan the unit: Frappe can drop blank Link filters and then
+		# job "1" on mix SPR is counted against every fabric SPR in the same warehouse.
+		return []
 	filters = {"production_plan": pp_id, "docstatus": ["<", 2]}
 	if unit:
 		filters["custom_unit"] = _cstr(unit).strip()
@@ -10699,6 +10704,19 @@ def _gsm_enforce_job_roll_quota_on_add(
 ) -> None:
 	"""Block new GSM roll lines past PP job max rolls / per-width caps."""
 	if _gsm_find_item_row_by_batch(spr, batch_no):
+		return
+	# Mix SPRs have no Production Plan. Job id is always "1", so a unit-wide
+	# job-1 count picks up fabric rolls (e.g. six 21" lines) and blocks the first mix save.
+	if spr_doc_is_mix_roll(spr):
+		job_row = _gsm_job_row_for_quota(spr, "", job_id)
+		if not job_row:
+			return
+		max_rolls = _spr_job_max_roll_lines(job_row, spr)
+		if max_rolls <= 0:
+			return
+		current = _spr_count_roll_lines_for_job(spr, job_id)
+		if current >= max_rolls:
+			_spr_throw_roll_quota_exceeded(job_id, max_rolls, current)
 		return
 	job_row = _gsm_job_row_for_quota(spr, pp_id, job_id)
 	if not job_row:
