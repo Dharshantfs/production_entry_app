@@ -1961,6 +1961,11 @@ function lifoSortKey(row) {
 
 function sortRollLinesLifo(rows) {
   return [...rows].sort((a, b) => {
+    const mixA = a?.is_mix_roll_row ? 1 : 0;
+    const mixB = b?.is_mix_roll_row ? 1 : 0;
+    if (mixA !== mixB) {
+      return mixB - mixA;
+    }
     const keyA = lifoSortKey(a);
     const keyB = lifoSortKey(b);
     if (keyA !== keyB) {
@@ -2150,12 +2155,24 @@ function currentBatchContextKey() {
   return `${runDate.value}|${shift.value}|${headerUnit.value}`;
 }
 
+function clearGsmMixState() {
+  activeMixRoll.value = null;
+  persistedActiveMixSpr.value = "";
+  mixRollLines.value = [];
+  rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+}
+
+function mixRowUnit(row) {
+  return _cstr(row?.custom_unit || row?.unit || "");
+}
+
 function clearGsmUnitContextState() {
   selectedEntries.value = [];
   selectionLocked.value = false;
   shiftResumeBanner.value = "";
   bayOptions.value = [];
   if (!shiftOpened.value) {
+    clearGsmMixState();
     rollLines.value = [];
     sessionSprs.value = {};
     sessionJobApiBaseline.value = {};
@@ -4140,12 +4157,19 @@ async function restoreActiveMixRollFromSession() {
   if (!shiftOpened.value) {
     return;
   }
+  const currentUnit = _cstr(headerUnit.value || filterUnit.value);
   const currentSpr = _cstr(activeMixRoll.value?.spr_name);
   if (currentSpr && !dismissedMixSprs.value.includes(currentSpr)) {
+    if (mixRowUnit(activeMixRoll.value) && mixRowUnit(activeMixRoll.value) !== currentUnit) {
+      clearGsmMixState();
+      return;
+    }
     await refreshMixRollLinesFromSpr();
     return;
   }
-  const mixRow = rollLines.value.find((r) => r.is_mix_roll_row && r.spr_name);
+  const mixRow = rollLines.value.find(
+    (r) => r.is_mix_roll_row && r.spr_name && (!mixRowUnit(r) || mixRowUnit(r) === currentUnit)
+  );
   const savedSpr = _cstr(persistedActiveMixSpr.value);
   const sprName = _cstr(mixRow?.spr_name || savedSpr);
   if (!sprName || dismissedMixSprs.value.includes(sprName)) {
@@ -4157,6 +4181,9 @@ async function restoreActiveMixRollFromSession() {
     return;
   }
   let mixMeta = mixRollCandidates.value.find((m) => m.spr_name === sprName);
+  if (mixMeta && _cstr(mixMeta.unit || mixMeta.custom_unit) && _cstr(mixMeta.unit || mixMeta.custom_unit) !== currentUnit) {
+    mixMeta = null;
+  }
   if (!mixMeta) {
     mixMeta = {
       spr_name: sprName,
@@ -4165,7 +4192,30 @@ async function restoreActiveMixRollFromSession() {
       color_transition: mixRow?.color || "",
       shaft: String(mixRow?.width_inch || ""),
       date_key: "",
+      custom_unit: mixRowUnit(mixRow) || currentUnit,
+      unit: mixRowUnit(mixRow) || currentUnit,
     };
+  }
+  const metaUnit = _cstr(mixMeta.unit || mixMeta.custom_unit);
+  if (metaUnit && currentUnit && metaUnit !== currentUnit) {
+    persistedActiveMixSpr.value = "";
+    rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+    mixRollLines.value = [];
+    return;
+  }
+  if (sprName) {
+    try {
+      const r = await frappe.db.get_value("Shaft Production Run", sprName, ["custom_unit", "docstatus"]);
+      const sprUnit = _cstr(r?.message?.custom_unit);
+      if (sprUnit && currentUnit && sprUnit !== currentUnit) {
+        persistedActiveMixSpr.value = "";
+        rollLines.value = rollLines.value.filter((r) => !r.is_mix_roll_row);
+        mixRollLines.value = [];
+        return;
+      }
+    } catch (e) {
+      console.warn("mix spr unit", e);
+    }
   }
   const sprDate = _cstr(mixMeta.spr_run_date).slice(0, 10);
   const run = _cstr(runDate.value).slice(0, 10);
@@ -4185,7 +4235,7 @@ async function restoreActiveMixRollFromSession() {
     persistedActiveMixSpr.value = "";
     return;
   }
-  activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name };
+  activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name, custom_unit: currentUnit };
   persistedActiveMixSpr.value = mixMeta.spr_name;
   await refreshMixRollLinesFromSpr();
 }
@@ -4197,8 +4247,17 @@ async function refreshMixRollLinesFromSpr() {
   }
   try {
     const res = await loadGsmMixRollSprRolls(activeMixRoll.value.spr_name);
+    const sprUnit = _cstr(res.custom_unit);
+    const unitNow = _cstr(headerUnit.value || filterUnit.value);
+    if (sprUnit && unitNow && sprUnit !== unitNow) {
+      clearGsmMixState();
+      return;
+    }
     const rows = (res.roll_lines || []).map((line) =>
-      mapMixRollLineFromServer({ ...line, spr_name: res.spr_name }, activeMixRoll.value)
+      mapMixRollLineFromServer(
+        { ...line, spr_name: res.spr_name, custom_unit: sprUnit || unitNow },
+        { ...activeMixRoll.value, custom_unit: sprUnit || unitNow }
+      )
     );
     attachMixRowsToMainGrid(rows);
   } catch (e) {
@@ -4271,6 +4330,7 @@ function attachMixRowsToMainGrid(rows) {
   const attached = [];
   for (const incoming of rows || []) {
     incoming.is_mix_roll_row = 1;
+    incoming.custom_unit = incoming.custom_unit || headerUnit.value || filterUnit.value || "";
     const key = mixRollRowKey(incoming);
     const existing = rollLines.value.find((row) => row.is_mix_roll_row && mixRollRowKey(row) === key);
     if (existing) {
@@ -4303,7 +4363,13 @@ async function startMixRollProduction(mix) {
       shift: shift.value,
       unit: headerUnit.value || filterUnit.value,
     });
-    activeMixRoll.value = { ...mix, ...(res.mix || {}), spr_name: res.spr_name };
+    activeMixRoll.value = {
+      ...mix,
+      ...(res.mix || {}),
+      spr_name: res.spr_name,
+      custom_unit: headerUnit.value || filterUnit.value,
+      unit: headerUnit.value || filterUnit.value,
+    };
     dismissedMixSprs.value = dismissedMixSprs.value.filter((n) => n !== res.spr_name);
     persistedActiveMixSpr.value = res.spr_name;
     const rows = (res.roll_lines || []).map((line) =>
@@ -6442,6 +6508,10 @@ function onUnitChange() {
 }
 
 async function switchGsmUnit(nextUnit) {
+  clearGsmMixState();
+  rollLines.value = [];
+  sessionSprs.value = {};
+  sessionJobApiBaseline.value = {};
   clearGsmUnitContextState();
   applyShiftSessionHydration(null);
   headerUnit.value = nextUnit || "";
@@ -6804,6 +6874,7 @@ function applyResumePayload(msg, options = {}) {
       is_bundle_row: !!cint(r.is_bundle_row),
       is_wasted: !!cint(r.is_wasted),
       is_mix_roll_row: isMix,
+      custom_unit: r.custom_unit || (isMix ? headerUnit.value : "") || "",
       planned_qty: isMix ? 0 : r.planned_qty,
       row_readonly: !!cint(r.row_readonly),
       row_locked: isMix
@@ -6829,8 +6900,15 @@ function applyResumePayload(msg, options = {}) {
     const merged = [...serverRows];
     for (const local of rollLines.value) {
       const k = rollRowSyncKey(local);
-      if (local.is_mix_roll_row && k && !serverByKey.has(k) && !local.is_wasted) {
-        merged.unshift({ ...local });
+      if (local.is_mix_roll_row) {
+        const localUnit = mixRowUnit(local);
+        const unitOk = !localUnit || localUnit === _cstr(headerUnit.value);
+        const sprOk = serverRows.some(
+          (sr) => sr.is_mix_roll_row && sr.spr_name && sr.spr_name === local.spr_name
+        );
+        if (unitOk && sprOk && k && !serverByKey.has(k) && !local.is_wasted) {
+          merged.unshift({ ...local });
+        }
         continue;
       }
       if (local.row_locked || local.is_wasted) {
@@ -6856,6 +6934,16 @@ function applyResumePayload(msg, options = {}) {
     rollLines.value = rollLines.value.filter(
       (r) => !r.is_mix_roll_row || !dismissedMixSprs.value.includes(_cstr(r.spr_name))
     );
+  }
+  const unitNow = _cstr(headerUnit.value || filterUnit.value);
+  if (unitNow) {
+    rollLines.value = rollLines.value.filter((r) => {
+      if (!r.is_mix_roll_row) {
+        return true;
+      }
+      const u = mixRowUnit(r);
+      return !u || u === unitNow;
+    });
   }
   rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
   if (shiftOpened.value) {
@@ -8283,6 +8371,7 @@ function persistDraft() {
       sessionHeaderCollapsed: sessionHeaderCollapsed.value,
       dismissedMixSprs: dismissedMixSprs.value,
       activeMixSpr: activeMixRoll.value?.spr_name || persistedActiveMixSpr.value || "",
+      activeMixSprUnit: headerUnit.value || filterUnit.value || "",
     };
     if (shiftOpened.value) {
       payload.selectedEntries = selectedEntries.value;
@@ -8325,7 +8414,11 @@ function restoreDraft(options = {}) {
       dismissedMixSprs.value = d.dismissedMixSprs.filter(Boolean);
     }
     if (d.activeMixSpr && !dismissedMixSprs.value.includes(d.activeMixSpr)) {
-      persistedActiveMixSpr.value = d.activeMixSpr;
+      const mixUnit = _cstr(d.activeMixSprUnit || d.headerUnit || d.filterUnit || "");
+      const nowUnit = _cstr(headerUnit.value || filterUnit.value || d.headerUnit || "");
+      if (!mixUnit || !nowUnit || mixUnit === nowUnit) {
+        persistedActiveMixSpr.value = d.activeMixSpr;
+      }
     }
     if (d.filterDate) {
       filterDate.value = d.filterDate;

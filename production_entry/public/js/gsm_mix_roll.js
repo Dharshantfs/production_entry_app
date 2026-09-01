@@ -257,6 +257,7 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
   return {
     _id: `mix-${line.spr_item_name || line.batch_no || Date.now()}`,
     is_mix_roll_row: 1,
+    custom_unit: line.custom_unit || mixMeta.custom_unit || mixMeta.unit || "",
     spr_name: line.spr_name || mixMeta.spr_name || "",
     spr_item_name: line.spr_item_name || line.name || "",
     party_code: line.party_code || mixMeta.label || "",

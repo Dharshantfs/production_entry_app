@@ -1109,7 +1109,7 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 
 def _gsm_mix_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	"""Draft/submitted mix-roll SPRs for the open GSM shift (same date + shift + unit)."""
-	unit = _cstr(unit).strip()
+	unit = _normalize_mix_unit(unit)
 	shift = _normalize_gsm_shift_label(shift)
 	if not unit or not run_date or not shift:
 		return []
@@ -1124,17 +1124,21 @@ def _gsm_mix_sprs_for_session(run_date, shift, unit) -> list[dict]:
 			"custom_unit": unit,
 			"is_mix_roll": 1,
 		},
-		fields=["name", "custom_order_code", "docstatus"],
+		fields=["name", "custom_order_code", "custom_unit", "docstatus"],
 		order_by="modified desc",
 		limit=20,
 	)
 	out = []
 	for row in rows or []:
+		row_unit = _normalize_mix_unit(row.get("custom_unit") or "")
+		if row_unit and row_unit != unit:
+			continue
 		out.append(
 			{
 				"pp_id": "",
 				"spr_name": row.name,
 				"order_code": _cstr(row.get("custom_order_code") or ""),
+				"custom_unit": row_unit or unit,
 				"is_mix_roll": 1,
 				"label_type": "Mix Roll",
 			}
@@ -1314,6 +1318,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			line["is_mix_roll_row"] = 1 if is_mix_roll else 0
 			if is_mix_roll:
 				line["planned_qty"] = 0
+				line["custom_unit"] = _cstr(spr.get("custom_unit") or "")
 				if not _cstr(line.get("party_code")).strip():
 					line["party_code"] = _cstr(spr.get("custom_order_code") or "")
 			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
@@ -6043,6 +6048,7 @@ def get_gsm_mix_roll_spr_rolls(spr_name):
 	return {
 		"spr_name": spr_name,
 		"docstatus": cint(spr.docstatus),
+		"custom_unit": _cstr(spr.get("custom_unit") or ""),
 		"order_code": _cstr(spr.get("custom_order_code") or ""),
 		"roll_lines": _gsm_serialize_spr_roll_lines_for_grid(spr),
 	}
