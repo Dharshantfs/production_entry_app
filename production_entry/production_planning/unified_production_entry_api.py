@@ -18,6 +18,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_spr_count_roll_lines_for_job,
 	_spr_count_roll_lines_for_job_width,
 	_spr_is_real_roll_item_row,
+	_spr_roll_has_production,
 	_spr_job_keys_match,
 	_spr_job_max_roll_lines,
 	_spr_job_rows,
@@ -116,17 +117,36 @@ def _shaft_gsm(shaft_row) -> int:
 		return 0
 
 
-def _find_draft_spr_for_pp(pp_id: str) -> str | None:
-	"""Return draft (docstatus=0) SPR for PP, or None."""
+def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None) -> str | None:
+	"""Return draft (docstatus=0) SPR for PP, preferring this GSM session's unit/date/shift."""
 	if not pp_id:
 		return None
-	row = frappe.db.get_value(
-		"Shaft Production Run",
-		{"production_plan": pp_id, "docstatus": 0},
-		"name",
-		order_by="modified desc",
-	)
-	return _cstr(row).strip() or None
+	unit = _cstr(unit).strip()
+	shift = _cstr(shift).strip()
+	run_d = getdate(run_date) if run_date else None
+
+	def _lookup(filters: dict) -> str | None:
+		row = frappe.db.get_value(
+			"Shaft Production Run",
+			filters,
+			"name",
+			order_by="modified desc",
+		)
+		return _cstr(row).strip() or None
+
+	if unit and run_d and shift:
+		found = _lookup(
+			{"production_plan": pp_id, "docstatus": 0, "custom_unit": unit, "run_date": run_d, "shift": shift}
+		)
+		if found:
+			return found
+	if unit:
+		found = _lookup({"production_plan": pp_id, "docstatus": 0, "custom_unit": unit})
+		if found:
+			return found
+		# GSM must not reuse another unit's draft (it can already hold a full job of planned lines).
+		return None
+	return _lookup({"production_plan": pp_id, "docstatus": 0})
 
 
 def _find_spr_for_pp(pp_id: str, prefer_draft: bool = True) -> str | None:
@@ -1853,7 +1873,7 @@ def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_dat
 		frappe.throw(_("Planning Table row name(s) required"))
 
 	if not cint(force_new):
-		existing = _find_draft_spr_for_pp(pp_id)
+		existing = _find_draft_spr_for_pp(pp_id, unit=unit, run_date=run_date, shift=shift)
 		if existing:
 			return {"status": "ok", "spr_name": existing, "reused": 1}
 
@@ -3323,6 +3343,8 @@ def _gsm_job_production_stats(
 			if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
 				continue
 			if not _spr_is_real_roll_item_row(it):
+				continue
+			if not _spr_roll_has_production(it):
 				continue
 			job_rolls += 1
 			job_produced_kg += flt(getattr(it, "net_weight", None) or 0)

@@ -2124,14 +2124,7 @@ function currentShaftNoForJob(job) {
 }
 
 function gridRollCountForJob(ppId, jobId) {
-  const jid = String(jobId || "");
-  return rollLines.value.filter(
-    (row) =>
-      !row.is_bundle_row &&
-      !row.is_wasted &&
-      row.pp_id === ppId &&
-      String(row.job_id || row.job || "") === jid
-  ).length;
+  return gridQuotaRollCountForJob(ppId, jobId);
 }
 
 function jobBoardJobForRollRow(row) {
@@ -2641,14 +2634,31 @@ function ensureJobApiBaseline(job) {
   }
 }
 
-function allGridRollRowsForJob(ppId, jobId) {
+function gridQuotaRollRowsForJob(ppId, jobId) {
   const jid = String(jobId || "");
   return rollLines.value.filter(
     (row) =>
       !row.is_bundle_row &&
+      !row.is_mix_roll_row &&
+      !row.is_wasted &&
       row.pp_id === ppId &&
       String(row.job_id || row.job || "") === jid
   );
+}
+
+function allGridRollRowsForJob(ppId, jobId) {
+  return gridQuotaRollRowsForJob(ppId, jobId);
+}
+
+function gridQuotaRollCountForJob(ppId, jobId) {
+  return gridQuotaRollRowsForJob(ppId, jobId).length;
+}
+
+function gridQuotaWidthCountForJob(ppId, jobId, widthInch) {
+  const target = sprFlt(widthInch);
+  return gridQuotaRollRowsForJob(ppId, jobId).filter(
+    (row) => Math.abs(sprFlt(row.width_inch) - target) < 0.05
+  ).length;
 }
 
 function gridBundleRollCountForJob(ppId, jobId, widthInch = null) {
@@ -2759,12 +2769,12 @@ function localPendingWidthCountForJob(ppId, jobId, widthInch) {
 }
 
 function withLocalPendingQuota(job) {
-  const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
-  const savedOnServer = Math.max(
-    cint(job.job_rolls_produced),
-    gridBundleRollCountForJob(job.pp_id, job.job_id)
-  );
-  const jobRolls = savedOnServer + pending;
+  const gridCount =
+    gridQuotaRollCountForJob(job.pp_id, job.job_id) +
+    gridBundleRollCountForJob(job.pp_id, job.job_id);
+  const savedOnServer = Math.max(cint(job.job_rolls_produced), 0);
+  const jobRolls = Math.max(savedOnServer, gridCount);
+  const pending = Math.max(0, jobRolls - savedOnServer);
   const rollsPerShaft = Math.max(1, cint(job.rolls_per_shaft));
   const jobShafts = Math.min(cint(job.max_shafts), Math.floor(jobRolls / rollsPerShaft));
   const remRolls = Math.max(0, cint(job.max_rolls) - jobRolls);
@@ -2773,12 +2783,11 @@ function withLocalPendingQuota(job) {
   const currentShaftRemainingRolls =
     remRolls > 0 && currentShaftRolls ? Math.max(0, rollsPerShaft - currentShaftRolls) : 0;
   const widthSegments = (job.width_segments || []).map((seg) => {
-    const savedAtWidth = Math.max(
-      cint(seg.current),
-      gridBundleRollCountForJob(job.pp_id, job.job_id, seg.width_inch)
-    );
-    const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, seg.width_inch);
-    const current = savedAtWidth + pendingAtWidth;
+    const savedAtWidth = cint(seg.current);
+    const gridAtWidth =
+      gridQuotaWidthCountForJob(job.pp_id, job.job_id, seg.width_inch) +
+      gridBundleRollCountForJob(job.pp_id, job.job_id, seg.width_inch);
+    const current = Math.max(savedAtWidth, gridAtWidth);
     const max = cint(seg.max);
     return {
       ...seg,
@@ -2787,7 +2796,7 @@ function withLocalPendingQuota(job) {
       can_add: current < max && remRolls > 0 && !job.wo_terminal,
     };
   });
-  // Roll limit gates Add Roll (drafts + saved count). A job is only "Completed"
+  // Roll limit gates Add Roll (grid rows + saved count). A job is only "Completed"
   // (quota_full) once its rolls are SUBMITTED to the full quota, or the WO is done.
   const rollLimitReached = remRolls <= 0 || jobShafts >= cint(job.max_shafts);
   const submittedRolls = cint(job.submitted_rolls);

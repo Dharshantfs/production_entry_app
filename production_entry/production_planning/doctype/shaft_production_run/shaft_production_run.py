@@ -462,6 +462,24 @@ def _spr_is_real_roll_item_row(item_row) -> bool:
 	return bool(bn) and not _spr_is_bundle_summary_batch(bn)
 
 
+def _spr_roll_has_production(item_row) -> bool:
+	"""True when the operator has entered production, not just a planned SPR slot.
+
+	Planned desk lines often copy job net weight onto the item. Count only
+	produced length or gross weight — the fields GSM Save Row always writes.
+	"""
+	if flt(getattr(item_row, "gross_weight", None) or 0) > 0:
+		return True
+	for key in ("custom_gross_weight", "custom_gross_weight_kgs"):
+		if flt(getattr(item_row, key, None) or 0) > 0:
+			return True
+	if flt(getattr(item_row, "produced_length_mtrs", None) or 0) > 0:
+		return True
+	if flt(getattr(item_row, "custom_produced_length_mtrs", None) or 0) > 0:
+		return True
+	return False
+
+
 def _gsm_payload_is_bundle_summary(payload: dict) -> bool:
 	if not isinstance(payload, dict):
 		return False
@@ -10681,7 +10699,7 @@ def _spr_job_max_roll_lines(job_row, spr_doc=None) -> int:
 	return max(1, no_shafts * segs * rolls_per_shaft)
 
 
-def _spr_count_roll_lines_for_job(spr_doc, job_id) -> int:
+def _spr_count_roll_lines_for_job(spr_doc, job_id, produced_only: bool = False) -> int:
 	job_key = _cstr(job_id).strip()
 	if not job_key:
 		return 0
@@ -10691,11 +10709,13 @@ def _spr_count_roll_lines_for_job(spr_doc, job_id) -> int:
 			continue
 		if not _spr_is_real_roll_item_row(it):
 			continue
+		if produced_only and not _spr_roll_has_production(it):
+			continue
 		cnt += 1
 	return cnt
 
 
-def _spr_count_roll_lines_for_job_width(spr_doc, job_id, width_inch) -> int:
+def _spr_count_roll_lines_for_job_width(spr_doc, job_id, width_inch, produced_only: bool = False) -> int:
 	"""Count real roll lines for one job + width segment (within 0.05 inch)."""
 	job_key = _cstr(job_id).strip()
 	target_w = flt(width_inch)
@@ -10706,6 +10726,8 @@ def _spr_count_roll_lines_for_job_width(spr_doc, job_id, width_inch) -> int:
 		if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
 			continue
 		if not _spr_is_real_roll_item_row(it):
+			continue
+		if produced_only and not _spr_roll_has_production(it):
 			continue
 		w = flt(getattr(it, "width_inch", None) or 0)
 		if abs(w - target_w) < 0.05:
@@ -10781,19 +10803,8 @@ def _gsm_spr_names_for_pp_job_counts(pp_id: str, unit: str | None = None) -> lis
 	return [_cstr(r.get("name")) for r in rows if _cstr(r.get("name"))]
 
 
-def _gsm_count_job_rolls_all_sprs(pp_id: str, job_id: str, unit: str | None = None) -> int:
-	job_key = _cstr(job_id).strip()
-	if not job_key:
-		return 0
-	total = 0
-	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
-		spr = frappe.get_doc("Shaft Production Run", sn)
-		total += _spr_count_roll_lines_for_job(spr, job_key)
-	return total
-
-
-def _gsm_count_job_width_rolls_all_sprs(
-	pp_id: str, job_id: str, width_inch, unit: str | None = None
+def _gsm_count_job_rolls_all_sprs(
+	pp_id: str, job_id: str, unit: str | None = None, produced_only: bool = True
 ) -> int:
 	job_key = _cstr(job_id).strip()
 	if not job_key:
@@ -10801,7 +10812,103 @@ def _gsm_count_job_width_rolls_all_sprs(
 	total = 0
 	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
 		spr = frappe.get_doc("Shaft Production Run", sn)
-		total += _spr_count_roll_lines_for_job_width(spr, job_key, width_inch)
+		total += _spr_count_roll_lines_for_job(spr, job_key, produced_only=produced_only)
+	return total
+
+
+def _gsm_count_job_width_rolls_all_sprs(
+	pp_id: str, job_id: str, width_inch, unit: str | None = None, produced_only: bool = True
+) -> int:
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return 0
+	total = 0
+	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
+		spr = frappe.get_doc("Shaft Production Run", sn)
+		total += _spr_count_roll_lines_for_job_width(spr, job_key, width_inch, produced_only=produced_only)
+	return total
+
+
+def _gsm_batch_series_prefix(batch_no: str) -> str:
+	bn = _cstr(batch_no).strip()
+	if "/" in bn:
+		return bn.rsplit("/", 1)[0].strip()
+	return bn
+
+
+def _spr_item_counts_toward_gsm_job_quota(item_row, series_prefix: str = "") -> bool:
+	"""Count produced rolls, plus this shift's GSM batches even before weight is entered."""
+	if not _spr_is_real_roll_item_row(item_row):
+		return False
+	if _spr_roll_has_production(item_row):
+		return True
+	prefix = _cstr(series_prefix).strip()
+	if not prefix:
+		return False
+	bn = _cstr(getattr(item_row, "batch_no", "") or "").strip()
+	return bn == prefix or bn.startswith(prefix + "/")
+
+
+def _spr_count_gsm_quota_rolls_for_job(spr_doc, job_id, series_prefix: str = "") -> int:
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return 0
+	cnt = 0
+	for it in spr_doc.get("items") or []:
+		if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
+			continue
+		if _spr_item_counts_toward_gsm_job_quota(it, series_prefix):
+			cnt += 1
+	return cnt
+
+
+def _spr_count_gsm_quota_rolls_for_job_width(spr_doc, job_id, width_inch, series_prefix: str = "") -> int:
+	job_key = _cstr(job_id).strip()
+	target_w = flt(width_inch)
+	if not job_key or target_w <= 0:
+		return 0
+	cnt = 0
+	for it in spr_doc.get("items") or []:
+		if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
+			continue
+		if not _spr_item_counts_toward_gsm_job_quota(it, series_prefix):
+			continue
+		w = flt(getattr(it, "width_inch", None) or 0)
+		if abs(w - target_w) < 0.05:
+			cnt += 1
+	return cnt
+
+
+def _gsm_count_job_rolls_for_gsm_quota(spr, pp_id: str, job_id: str, batch_no: str) -> int:
+	"""Produced rolls on this unit + this shift's GSM batches on the current SPR."""
+	prefix = _gsm_batch_series_prefix(batch_no)
+	job_key = _cstr(job_id).strip()
+	current_name = _cstr(getattr(spr, "name", "") or "")
+	unit = _cstr(spr.get("custom_unit") or "").strip()
+	total = _spr_count_gsm_quota_rolls_for_job(spr, job_key, prefix)
+	if not pp_id or not unit:
+		return total
+	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
+		if sn == current_name:
+			continue
+		other = frappe.get_doc("Shaft Production Run", sn)
+		total += _spr_count_roll_lines_for_job(other, job_key, produced_only=True)
+	return total
+
+
+def _gsm_count_job_width_rolls_for_gsm_quota(spr, pp_id: str, job_id: str, width_inch, batch_no: str) -> int:
+	prefix = _gsm_batch_series_prefix(batch_no)
+	job_key = _cstr(job_id).strip()
+	current_name = _cstr(getattr(spr, "name", "") or "")
+	unit = _cstr(spr.get("custom_unit") or "").strip()
+	total = _spr_count_gsm_quota_rolls_for_job_width(spr, job_key, width_inch, prefix)
+	if not pp_id or not unit:
+		return total
+	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
+		if sn == current_name:
+			continue
+		other = frappe.get_doc("Shaft Production Run", sn)
+		total += _spr_count_roll_lines_for_job_width(other, job_key, width_inch, produced_only=True)
 	return total
 
 
@@ -10824,7 +10931,7 @@ def _gsm_enforce_job_roll_quota_on_add(
 		max_rolls = _spr_job_max_roll_lines(job_row, spr)
 		if max_rolls <= 0:
 			return
-		current = _spr_count_roll_lines_for_job(spr, job_id)
+		current = _spr_count_gsm_quota_rolls_for_job(spr, job_id, _gsm_batch_series_prefix(batch_no))
 		if current >= max_rolls:
 			_spr_throw_roll_quota_exceeded(job_id, max_rolls, current)
 		return
@@ -10835,8 +10942,7 @@ def _gsm_enforce_job_roll_quota_on_add(
 	max_rolls = cint(limits.get("max_rolls") or 0)
 	if max_rolls <= 0:
 		return
-	unit = _cstr(spr.get("custom_unit") or "").strip()
-	current_rolls = _gsm_count_job_rolls_all_sprs(pp_id, job_id, unit=unit or None)
+	current_rolls = _gsm_count_job_rolls_for_gsm_quota(spr, pp_id, job_id, batch_no)
 	if current_rolls >= max_rolls:
 		_spr_throw_roll_quota_exceeded(job_id, max_rolls, current_rolls)
 	target_w = flt(width_inch)
@@ -10846,7 +10952,7 @@ def _gsm_enforce_job_roll_quota_on_add(
 	for fw, cap in width_caps.items():
 		if abs(target_w - flt(fw)) >= 0.05:
 			continue
-		cur = _gsm_count_job_width_rolls_all_sprs(pp_id, job_id, fw, unit=unit or None)
+		cur = _gsm_count_job_width_rolls_for_gsm_quota(spr, pp_id, job_id, fw, batch_no)
 		if cint(cap) > 0 and cur >= cint(cap):
 			frappe.throw(
 				_(
@@ -11422,6 +11528,31 @@ def _gsm_find_item_row_by_batch(spr, batch_no: str):
 	return None
 
 
+def _gsm_find_reusable_item_row(spr, job_id, width_inch, batch_no: str = ""):
+	"""Reuse an unproduced planned slot for this job instead of appending past quota."""
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return None
+	prefix = _gsm_batch_series_prefix(batch_no)
+	target_w = flt(width_inch)
+	width_matches = []
+	any_matches = []
+	for row in spr.get("items") or []:
+		if not _spr_job_keys_match(_cstr(getattr(row, "job", None)), job_key):
+			continue
+		if _spr_is_bundle_summary_batch(_cstr(getattr(row, "batch_no", "") or "")):
+			continue
+		if _spr_item_counts_toward_gsm_job_quota(row, prefix):
+			continue
+		any_matches.append(row)
+		w = flt(getattr(row, "width_inch", None) or 0)
+		if target_w <= 0 or w <= 0 or abs(w - target_w) < 0.05:
+			width_matches.append(row)
+	if width_matches:
+		return width_matches[0]
+	return any_matches[0] if any_matches else None
+
+
 def _gsm_spi_field_aliases() -> dict:
 	"""Canonical GSM keys → SPR Item field names (first match on site wins)."""
 	return {
@@ -11740,6 +11871,8 @@ def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> 
 
 	job_id = _gsm_resolve_job_id_for_roll(spr, pp_id, payload)
 	existing = _gsm_find_item_row_by_batch(spr, batch_no)
+	if not existing:
+		existing = _gsm_find_reusable_item_row(spr, job_id, payload.get("width_inch"), batch_no)
 	action = "updated" if existing else "added"
 	if not existing:
 		_gsm_enforce_job_roll_quota_on_add(
@@ -17138,7 +17271,10 @@ def gsm_apply_bundle_packaging(
 		unit = _cstr(spr.get("custom_unit") or "").strip()
 		limits = _gsm_job_roll_limits_from_job_row(sj)
 		max_job_rolls = cint(limits.get("max_rolls") or 0)
-		current_rolls = _gsm_count_job_rolls_all_sprs(pp_resolved, job_id, unit=unit or None)
+		if unit:
+			current_rolls = _gsm_count_job_rolls_all_sprs(pp_resolved, job_id, unit=unit, produced_only=True)
+		else:
+			current_rolls = _spr_count_roll_lines_for_job(spr, job_id, produced_only=True)
 		if max_job_rolls > 0 and current_rolls + no_of_packaging > max_job_rolls:
 			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current_rolls)
 
