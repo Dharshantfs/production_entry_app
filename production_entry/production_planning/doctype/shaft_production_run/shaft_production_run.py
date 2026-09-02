@@ -11533,7 +11533,6 @@ def _gsm_find_reusable_item_row(spr, job_id, width_inch, batch_no: str = ""):
 	job_key = _cstr(job_id).strip()
 	if not job_key:
 		return None
-	prefix = _gsm_batch_series_prefix(batch_no)
 	target_w = flt(width_inch)
 	width_matches = []
 	any_matches = []
@@ -11542,7 +11541,7 @@ def _gsm_find_reusable_item_row(spr, job_id, width_inch, batch_no: str = ""):
 			continue
 		if _spr_is_bundle_summary_batch(_cstr(getattr(row, "batch_no", "") or "")):
 			continue
-		if _spr_item_counts_toward_gsm_job_quota(row, prefix):
+		if _spr_roll_has_production(row):
 			continue
 		any_matches.append(row)
 		w = flt(getattr(row, "width_inch", None) or 0)
@@ -12069,8 +12068,8 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 		"row_modified": _cstr(getattr(it, "modified", None) or getattr(it, "creation", None) or ""),
 		"child_idx": cint(getattr(it, "idx", 0) or 0),
 		"is_bundle_row": 0,
-		"row_locked": 1,
-		"row_ready_for_print": 1,
+		"row_locked": 1 if _spr_roll_has_production(it) else 0,
+		"row_ready_for_print": 1 if _spr_roll_has_production(it) else 0,
 	}
 
 
@@ -12749,6 +12748,20 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
+		payload_unit = _cstr((roll_payload or {}).get("custom_unit") or "").strip()
+		payload_date = roll_payload.get("run_date") if isinstance(roll_payload, dict) else None
+		if payload_unit or payload_date or shift:
+			from production_entry.production_planning.unified_production_entry_api import (
+				_apply_gsm_session_header_to_spr,
+				_normalize_gsm_shift_label,
+			)
+
+			_apply_gsm_session_header_to_spr(
+				spr,
+				run_date=payload_date,
+				shift=_normalize_gsm_shift_label(shift),
+				unit=payload_unit or None,
+			)
 		pp_id = _cstr(spr.get("production_plan")).strip()
 		is_mix = spr_doc_is_mix_roll(spr)
 		if is_mix:

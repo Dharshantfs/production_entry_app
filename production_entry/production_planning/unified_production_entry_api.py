@@ -117,13 +117,30 @@ def _shaft_gsm(shaft_row) -> int:
 		return 0
 
 
-def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None) -> str | None:
+def _spr_draft_uses_batch_prefix(spr_name: str, prefix: str) -> bool:
+	prefix = _cstr(prefix).strip()
+	spr_name = _cstr(spr_name).strip()
+	if not prefix or not spr_name:
+		return False
+	try:
+		return bool(
+			frappe.db.exists(
+				"Shaft Production Run Item",
+				{"parent": spr_name, "batch_no": ["like", f"{prefix}/%"]},
+			)
+		)
+	except Exception:
+		return False
+
+
+def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None, series_prefix=None) -> str | None:
 	"""Return draft (docstatus=0) SPR for PP, preferring this GSM session's unit/date/shift."""
 	if not pp_id:
 		return None
 	unit = _cstr(unit).strip()
 	shift = _cstr(shift).strip()
 	run_d = getdate(run_date) if run_date else None
+	prefix = _cstr(series_prefix).strip()
 
 	def _lookup(filters: dict) -> str | None:
 		row = frappe.db.get_value(
@@ -144,7 +161,19 @@ def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None) -> 
 		found = _lookup({"production_plan": pp_id, "docstatus": 0, "custom_unit": unit})
 		if found:
 			return found
-		# GSM must not reuse another unit's draft (it can already hold a full job of planned lines).
+	if prefix:
+		rows = frappe.get_all(
+			"Shaft Production Run",
+			filters={"production_plan": pp_id, "docstatus": 0},
+			pluck="name",
+			order_by="modified desc",
+			limit=20,
+		) or []
+		for sn in rows:
+			if _spr_draft_uses_batch_prefix(sn, prefix):
+				return sn
+	if unit:
+		# No same-unit draft and no shift-batch match — do not steal another unit's SPR.
 		return None
 	return _lookup({"production_plan": pp_id, "docstatus": 0})
 
@@ -1128,6 +1157,74 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	return out
 
 
+def _gsm_attach_locked_job_draft_sprs(session_doc, run_date, shift, unit, session_sprs: list) -> list:
+	"""Recover draft SPRs for locked jobs when header unit/date/shift was missing."""
+	out = list(session_sprs or [])
+	known_spr = {_cstr(s.get("spr_name")) for s in out}
+	known_pp = {_cstr(s.get("pp_id")) for s in out if _cstr(s.get("pp_id"))}
+	prefix = _cstr(getattr(session_doc, "batch_series_prefix", "") or "")
+	for locked in _gsm_locked_jobs_from_session(session_doc):
+		pp_id = _cstr(locked.get("pp_id")).strip()
+		if not pp_id or pp_id in known_pp:
+			continue
+		spr_name = _find_draft_spr_for_pp(
+			pp_id, unit=unit, run_date=run_date, shift=shift, series_prefix=prefix
+		)
+		if not spr_name or spr_name in known_spr:
+			continue
+		if not frappe.db.exists("Shaft Production Run", spr_name):
+			continue
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			continue
+		if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit):
+			spr.save(ignore_permissions=True)
+		out.append(
+			{
+				"pp_id": pp_id,
+				"spr_name": spr_name,
+				"order_code": _cstr(spr.get("custom_order_code") or _gsm_order_code_for_pp(pp_id)),
+				"is_trial": 1 if _gsm_is_standalone_spr_key(pp_id) else 0,
+				"label_type": _gsm_label_type_for_pp_spr(pp_id, spr_name),
+			}
+		)
+		known_spr.add(spr_name)
+		known_pp.add(pp_id)
+	if prefix:
+		item_parents = frappe.db.sql(
+			"""
+			select distinct parent
+			from `tabShaft Production Run Item`
+			where ifnull(batch_no, '') like %s
+			""",
+			(f"{prefix}/%",),
+		) or []
+		for (spr_name,) in item_parents:
+			spr_name = _cstr(spr_name).strip()
+			if not spr_name or spr_name in known_spr:
+				continue
+			if not frappe.db.exists("Shaft Production Run", spr_name):
+				continue
+			spr = frappe.get_doc("Shaft Production Run", spr_name)
+			if cint(spr.docstatus) != 0 or spr_doc_is_mix_roll(spr):
+				continue
+			pp_id = _cstr(spr.get("production_plan")).strip() or spr_name
+			if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit):
+				spr.save(ignore_permissions=True)
+			out.append(
+				{
+					"pp_id": pp_id,
+					"spr_name": spr_name,
+					"order_code": _cstr(spr.get("custom_order_code") or _gsm_order_code_for_pp(pp_id)),
+					"is_trial": 1 if _gsm_is_standalone_spr_key(pp_id) else 0,
+					"label_type": _gsm_label_type_for_pp_spr(pp_id, spr_name),
+				}
+			)
+			known_spr.add(spr_name)
+			known_pp.add(pp_id)
+	return out
+
+
 def _gsm_mix_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	"""Draft/submitted mix-roll SPRs for the open GSM shift (same date + shift + unit)."""
 	unit = _normalize_mix_unit(unit)
@@ -1319,6 +1416,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 
 	session_doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, session_name)
 	session_sprs = _gsm_draft_sprs_for_session(run_date, shift, unit)
+	session_sprs = _gsm_attach_locked_job_draft_sprs(session_doc, run_date, shift, unit, session_sprs)
 	mix_sprs = _gsm_mix_sprs_for_session(run_date, shift, unit)
 	roll_lines = []
 	job_keys = set()
@@ -1873,8 +1971,18 @@ def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_dat
 		frappe.throw(_("Planning Table row name(s) required"))
 
 	if not cint(force_new):
-		existing = _find_draft_spr_for_pp(pp_id, unit=unit, run_date=run_date, shift=shift)
+		prefix = ""
+		if unit and run_date and shift:
+			session = _gsm_open_shift_session_doc(run_date, shift, unit)
+			prefix = _cstr(getattr(session, "batch_series_prefix", "") if session else "")
+		existing = _find_draft_spr_for_pp(
+			pp_id, unit=unit, run_date=run_date, shift=shift, series_prefix=prefix
+		)
 		if existing:
+			if unit or run_date or shift:
+				spr = frappe.get_doc("Shaft Production Run", existing)
+				if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit):
+					spr.save(ignore_permissions=True)
 			return {"status": "ok", "spr_name": existing, "reused": 1}
 
 	result = create_item_spr(pp_id, planning_sheet_item_names)

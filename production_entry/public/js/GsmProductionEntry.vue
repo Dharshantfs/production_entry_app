@@ -5662,6 +5662,8 @@ function buildRollPayload(row) {
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
     custom_cbm: sprFlt(row.custom_cbm_cubic_meters),
     custom_bay: row.custom_bay || "",
+    custom_unit: headerUnit.value || row.custom_unit || "",
+    run_date: runDate.value || "",
     job_id: row.job_id || row.job || "",
     custom_no_of_shaft: resolveRowShaftNo(row),
     is_bundle_row: row.is_bundle_row ? 1 : 0,
