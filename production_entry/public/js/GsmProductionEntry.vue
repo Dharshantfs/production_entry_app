@@ -454,8 +454,8 @@
 
         <div class="gpe-create-spr-row" v-if="shiftOpened && selectionLocked && selectedEntries.length">
           <div class="gpe-create-spr-row-left">
-            <button v-if="needsCreateSprs && !mixSprReady" type="button" class="gpe-btn primary gpe-btn-create-spr" :disabled="!canCreateSprs" @click="createSprs">
-              Create SPR
+            <button v-if="needsCreateSprs" type="button" class="gpe-btn primary gpe-btn-create-spr" :disabled="!canCreateSprs" @click="createSprs()">
+              {{ mixSprReady ? "Create SPR for new order" : "Create SPR" }}
             </button>
             <span v-else class="gpe-spr-ready-badge" title="Draft SPRs exist for selected orders or active mix roll">SPRs ready ✓</span>
           </div>
@@ -5421,6 +5421,26 @@ function buildSessionEntries() {
   }));
 }
 
+function entriesForPp(ppId) {
+  const fromSel = buildSessionEntries().filter((e) => (e.ppId || e.pp_id) === ppId);
+  if (fromSel.length) {
+    return fromSel;
+  }
+  const roll = rollLines.value.find((r) => r.pp_id === ppId && !r.is_mix_roll_row);
+  if (!ppId) {
+    return [];
+  }
+  return [
+    {
+      pp_id: ppId,
+      job_id: roll?.job_id || roll?.job || "",
+      jobId: roll?.job_id || roll?.job || "",
+      lineId: roll?.planning_table_row || roll?.job_id || "gsm-job",
+      orderCode: roll?.party_code || "",
+    },
+  ];
+}
+
 function sprNameForPp(ppId) {
   return draftSprNameForPp(ppId);
 }
@@ -5694,15 +5714,38 @@ async function clearGridEntries() {
   );
 }
 
-async function createSprs() {
-  if (!canCreateSprs.value) {
-    return;
+async function createSprs(options = {}) {
+  const ppIds = Array.isArray(options?.ppIds) ? options.ppIds.filter(Boolean) : [];
+  if (!options?.silent && !ppIds.length && !canCreateSprs.value) {
+    return false;
   }
-  const entries = buildSessionEntries();
+  const allEntries = buildSessionEntries();
+  let entries = allEntries;
+  if (ppIds.length) {
+    const wanted = new Set(ppIds);
+    entries = allEntries.filter((e) => wanted.has(e.ppId || e.pp_id));
+    for (const ppId of ppIds) {
+      if (!entries.some((e) => (e.ppId || e.pp_id) === ppId)) {
+        entries = entries.concat(entriesForPp(ppId));
+      }
+    }
+  } else {
+    const missing = [
+      ...new Set(allEntries.map((e) => e.ppId || e.pp_id).filter((id) => ppNeedsNewSpr(id))),
+    ];
+    if (missing.length) {
+      entries = allEntries.filter((e) => missing.includes(e.ppId || e.pp_id));
+    }
+  }
   if (!entries.length) {
-    frappe.msgprint(__("Select at least one line."));
-    return;
+    if (!options?.silent) {
+      frappe.msgprint(__("Select at least one line."));
+    }
+    return false;
   }
+  const forceNew =
+    !!forceNewSprSession.value ||
+    entries.some((e) => !!forceNewSprByPp.value[e.ppId || e.pp_id]);
   saveStatus.value = "Creating SPRs…";
   try {
     const res = await frappe.call({
@@ -5715,12 +5758,7 @@ async function createSprs() {
         supervisor: supervisor.value,
         coordinator: coordinator.value,
         entries: JSON.stringify(entries),
-        force_new_session:
-          forceNewSprSession.value ||
-          entries.some((e) => ppNeedsNewSpr(e.ppId || e.pp_id)) ||
-          selectedEntries.value.some((e) => ppNeedsNewSpr(e.ppId))
-            ? 1
-            : 0,
+        force_new_session: forceNew ? 1 : 0,
       },
     });
     const sprs = (res.message || {}).sprs || [];
@@ -5753,7 +5791,7 @@ async function createSprs() {
     recordJobApiBaselines(jobBoardJobs.value);
     scheduleAutosave();
     scheduleJobSelectionSave();
-    if (errors.length) {
+    if (errors.length && !options?.silent) {
       frappe.msgprint({
         title: __("Some SPRs failed"),
         message: errors.join("<br>"),
@@ -5761,15 +5799,31 @@ async function createSprs() {
       });
     }
     const okCount = sprs.filter((s) => s.status === "ok").length;
-    if (okCount) {
+    if (okCount && !options?.silent) {
       frappe.show_alert({ message: __("{0} SPR(s) ready", [okCount]), indicator: "green" });
     }
     saveStatus.value = "SPRs created";
+    return okCount > 0;
   } catch (e) {
     console.error(e);
     saveStatus.value = "SPR create failed";
-    frappe.msgprint(__("Could not create SPRs. Check console."));
+    if (!options?.silent) {
+      frappe.msgprint(__("Could not create SPRs. Check console."));
+    }
+    return false;
   }
+}
+
+async function ensureSprForPp(ppId) {
+  if (!ppId) {
+    return "";
+  }
+  let sprName = sprNameForPp(ppId);
+  if (sprName) {
+    return sprName;
+  }
+  await createSprs({ ppIds: [ppId], silent: true });
+  return sprNameForPp(ppId);
 }
 
 function openToleranceDialog(orders) {
@@ -6147,9 +6201,13 @@ async function saveRow(row) {
     frappe.msgprint(__("Roll is missing production plan — re-add the row."));
     return;
   }
-  const sprName = sprNameForPp(row.pp_id);
+  let sprName = sprNameForPp(row.pp_id);
   if (!sprName) {
-    frappe.msgprint(__("Click Create SPRs first, then Save Row."));
+    saveStatus.value = "Creating SPR for this order…";
+    sprName = await ensureSprForPp(row.pp_id);
+  }
+  if (!sprName) {
+    frappe.msgprint(__("This order has no SPR yet. Click Create SPR for new order, then Save Row."));
     return;
   }
   const mapped = sessionSprs.value[row.pp_id];
@@ -8093,7 +8151,7 @@ async function addRollRow() {
     frappe.msgprint("Confirm and lock your GSM selection first.");
     return;
   }
-  if (!selectedSessionSprList.value.length) {
+  if (!selectedSessionSprList.value.length && !mixSprReady.value) {
     frappe.msgprint(__("Click Create SPRs before adding roll rows."));
     return;
   }
@@ -8118,6 +8176,14 @@ async function addRollRow() {
     ) || pickedJob;
   const job = withLocalPendingQuota(rawJob);
   const jobId = job.job_id;
+  if (ppNeedsNewSpr(job.pp_id)) {
+    saveStatus.value = "Creating SPR for this order…";
+    const sprName = await ensureSprForPp(job.pp_id);
+    if (!sprName) {
+      frappe.msgprint(__("Could not create SPR for this order. Click Create SPR for new order, then add the row again."));
+      return;
+    }
+  }
   if (!canJobAddOneMoreRoll(job)) {
     frappe.confirm(
       __("Job roll limit reached ({0}/{1}) — use Manual Job. Open Manual Job now?", [
