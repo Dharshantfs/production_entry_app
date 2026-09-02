@@ -349,7 +349,6 @@ function show_dialog(ctx, existing, frm) {
 			<button class="btn btn-sm btn-default" id="btn_add_set" ${readOnly ? "disabled" : ""}>➕ ${__("Add Raw Material Set")}</button>
 			<div style="display:flex;gap:8px;flex-wrap:wrap">
 				<button class="btn btn-sm btn-warning" id="btn_print">🖨 ${__("Print Sheet")}</button>
-				<button class="btn btn-sm btn-default" id="btn_breakdown">⚠ ${__("Breakdown")}</button>
 				${is_printing ? `<button class="btn btn-sm btn-info" id="btn_add_ink" ${readOnly ? "disabled" : ""}>➕ ${__("Add Ink")}</button>` : `<button class="btn btn-sm btn-info" id="btn_add_additive" ${readOnly ? "disabled" : ""}>➕ ${__("Add Special Item")}</button>`}
 				<button class="btn btn-sm btn-success" id="btn_save_rm" ${readOnly ? "disabled" : ""}>💾 ${__("Save Raw Materials")}</button>
 				<button class="btn btn-sm btn-primary" id="btn_save_all" ${readOnly ? "disabled" : ""}>✅ ${__("Save Mixing Sheet")}</button>
@@ -393,21 +392,6 @@ function show_dialog(ctx, existing, frm) {
 		if (typeof d._mixPersist === "function") d._mixPersist();
 	});
 	d.footer.find("#btn_print").on("click", () => print_mixing_sheet(state, ctx));
-	d.footer.find("#btn_breakdown").on("click", () => {
-		const open =
-			production_entry.gsm_breakdown?.openGsmBreakdownDialog ||
-			window.production_entry?.gsm_breakdown?.openGsmBreakdownDialog;
-		if (typeof open !== "function") {
-			frappe.msgprint(__("Breakdown module not loaded. Run bench build --app production_entry."));
-			return;
-		}
-		open({
-			run_date: ctx.run_date,
-			shift: ctx.shift,
-			custom_unit: ctx.custom_unit,
-			gsm_shift_session: ctx.gsm_shift_session,
-		});
-	});
 
 	const add_extra_item = (item_code) => {
 		const active_idx = state.sets.length - 1;

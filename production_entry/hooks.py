@@ -80,6 +80,7 @@ doctype_js = {
 }
 doctype_list_js = {
 	"Transfer Approval": "public/js/transfer_approval_list.js",
+	"Shift Breakdown": "public/js/shift_breakdown_list.js",
 }
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}

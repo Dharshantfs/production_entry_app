@@ -10,6 +10,9 @@
   "shift",
   "custom_unit",
   "column_break_1",
+  "machine_status",
+  "last_reason",
+  "open_since",
   "gsm_shift_session",
   "section_break_rows",
   "breakdowns"
@@ -53,6 +56,30 @@
    "fieldtype": "Column Break"
   },
   {
+   "default": "On",
+   "fieldname": "machine_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Machine Status",
+   "options": "On\nOff",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_reason",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Last Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "open_since",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Off Since",
+   "read_only": 1
+  },
+  {
    "fieldname": "gsm_shift_session",
    "fieldtype": "Link",
    "label": "GSM Shift Session",
@@ -72,7 +99,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-28 00:00:00.000000",
+ "modified": "2026-09-02 08:48:00.000000",
  "module": "Production Planning",
  "name": "Shift Breakdown",
  "naming_rule": "By \"Naming Series\" field",
@@ -111,10 +138,22 @@
    "report": 1,
    "role": "Manufacturing User",
    "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Operator",
+   "write": 1
   }
  ],
+ "search_fields": "custom_unit,run_date,shift,machine_status",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
+ "title_field": "custom_unit",
  "track_changes": 1
 }

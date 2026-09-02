@@ -46,6 +46,7 @@ function _allBreakdownHtml(rows) {
 function _dialogHtml(payload, mode) {
 	const rows = payload.rows || [];
 	const openRow = payload.open_row;
+	const carried = payload.carried_from;
 	let action = "";
 	if (mode === "stop-form") {
 		action = `<div class="gbd-action">
@@ -53,7 +54,14 @@ function _dialogHtml(payload, mode) {
 			<p class="text-muted">${__("Select the reason and enter remarks, then save.")}</p>
 		</div>`;
 	} else if (openRow) {
+		const carryNote = carried
+			? `<p class="gbd-carry">${__("Machine Off is still open from {0} · {1}. It stays off on later shifts until you record Machine On.", [
+					_esc(carried.run_date),
+					_esc(carried.shift),
+				])}</p>`
+			: "";
 		action = `<div class="gbd-action">
+			${carryNote}
 			<p>${__("Machine is stopped since")} <strong>${_esc(openRow.stop_clock || openRow.stop_time)}</strong>
 			— ${_esc(openRow.reason || "")}</p>
 			<button type="button" class="btn btn-primary" id="gbd-machine-on">${__("Machine On")}</button>
@@ -71,6 +79,7 @@ function _dialogHtml(payload, mode) {
 		.gbd-table { margin:0; font-size:12px; }
 		.gbd-table .gbd-open { background:#fff7ed; }
 		.gbd-empty { padding:16px; text-align:center; color:#64748b; }
+		.gbd-carry { color:#9a3412; font-weight:600; }
 	</style>
 	<div class="gbd-wrap">
 		${action}
