@@ -2078,9 +2078,8 @@ function rollBatchSuffix(batchNo) {
 }
 
 function lifoSortKey(row) {
-  // Mix SPR batch numbers are a separate series from fabric rolls on this
-  // grid. Prefer creation_seq (when the operator added the row) so a new mix
-  // line always lands on top instead of sorting into the middle by batch.
+  // Mix and fabric share one shift batch series. Newest row (highest batch
+  // suffix or creation_seq) stays at the top of the grid.
   const batchSeq = rollBatchSuffix(row?.batch_no);
   const seq = cint(row?.creation_seq);
   return Math.max(batchSeq, seq);
@@ -2088,11 +2087,6 @@ function lifoSortKey(row) {
 
 function sortRollLinesLifo(rows) {
   return [...rows].sort((a, b) => {
-    const mixA = a?.is_mix_roll_row ? 1 : 0;
-    const mixB = b?.is_mix_roll_row ? 1 : 0;
-    if (mixA !== mixB) {
-      return mixB - mixA;
-    }
     const keyA = lifoSortKey(a);
     const keyB = lifoSortKey(b);
     if (keyA !== keyB) {
