@@ -133,12 +133,37 @@ def _spr_draft_uses_batch_prefix(spr_name: str, prefix: str) -> bool:
 		return False
 
 
+def _gsm_unit_key(unit: str) -> str:
+	"""Unit 4 / UNIT 4 / unit-4 → UNIT 4 so SPR custom_unit matches the GSM header."""
+	raw = _cstr(unit).strip()
+	if not raw:
+		return ""
+	try:
+		sel = _cstr(normalize_planning_unit_for_select(raw)).strip()
+		if sel and sel.upper() != "UNASSIGNED":
+			raw = sel
+	except Exception:
+		pass
+	compact = " ".join(raw.upper().replace("-", " ").replace("_", " ").split())
+	parts = compact.split()
+	if len(parts) >= 2 and parts[0] == "UNIT" and parts[1].isdigit():
+		return f"UNIT {parts[1]}"
+	if len(parts) == 1 and parts[0].isdigit():
+		return f"UNIT {parts[0]}"
+	return compact
+
+
+def _gsm_units_match(a, b) -> bool:
+	ka, kb = _gsm_unit_key(a), _gsm_unit_key(b)
+	return bool(ka and kb and ka == kb)
+
+
 def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None, series_prefix=None) -> str | None:
 	"""Return draft (docstatus=0) SPR for PP, preferring this GSM session's unit/date/shift."""
 	if not pp_id:
 		return None
 	unit = _cstr(unit).strip()
-	shift = _cstr(shift).strip()
+	shift = _normalize_gsm_shift_label(shift) if shift else _cstr(shift).strip()
 	run_d = getdate(run_date) if run_date else None
 	prefix = _cstr(series_prefix).strip()
 
@@ -151,14 +176,40 @@ def _find_draft_spr_for_pp(pp_id: str, unit=None, run_date=None, shift=None, ser
 		)
 		return _cstr(row).strip() or None
 
+	def _match_unit_among(filters: dict) -> str | None:
+		rows = frappe.get_all(
+			"Shaft Production Run",
+			filters=filters,
+			fields=["name", "custom_unit"],
+			order_by="modified desc",
+			limit=20,
+		) or []
+		for row in rows:
+			if _gsm_units_match(row.get("custom_unit"), unit):
+				return _cstr(row.get("name")).strip() or None
+		return None
+
 	if unit and run_d and shift:
 		found = _lookup(
 			{"production_plan": pp_id, "docstatus": 0, "custom_unit": unit, "run_date": run_d, "shift": shift}
 		)
 		if found:
 			return found
+		found = _match_unit_among(
+			{"production_plan": pp_id, "docstatus": 0, "run_date": run_d, "shift": shift}
+		)
+		if found:
+			return found
+	# Same date+shift SPR tagged with a different unit (e.g. UNIT 3 vs Unit 4).
+	if run_d and shift:
+		found = _lookup({"production_plan": pp_id, "docstatus": 0, "run_date": run_d, "shift": shift})
+		if found:
+			return found
 	if unit:
 		found = _lookup({"production_plan": pp_id, "docstatus": 0, "custom_unit": unit})
+		if found:
+			return found
+		found = _match_unit_among({"production_plan": pp_id, "docstatus": 0})
 		if found:
 			return found
 	if prefix:
@@ -1786,12 +1837,17 @@ def resolve_work_order_for_roll_line(
 
 
 @frappe.whitelist(methods=["GET", "POST"])
-def get_spr_for_pp(pp_id, prefer_draft=1):
+def get_spr_for_pp(pp_id, prefer_draft=1, unit=None, run_date=None, shift=None):
 	"""Read-only: return existing SPR for PP (never creates)."""
 	pp_id = _cstr(pp_id).strip()
 	if not pp_id:
 		return {"spr_name": ""}
-	name = _find_spr_for_pp(pp_id, prefer_draft=cint(prefer_draft) != 0)
+	prefer = cint(prefer_draft) != 0
+	name = None
+	if prefer:
+		name = _find_draft_spr_for_pp(pp_id, unit=unit, run_date=run_date, shift=shift)
+	if not name:
+		name = _find_spr_for_pp(pp_id, prefer_draft=prefer)
 	return {"spr_name": name or ""}
 
 
@@ -3398,17 +3454,37 @@ def _gsm_job_limits_from_shaft_row(shaft_row: dict) -> dict:
 	}
 
 
-def _gsm_sprs_for_pp_job_counts(pp_id: str, unit: str | None = None) -> list:
-	filters = {"production_plan": pp_id, "docstatus": ["<", 2]}
-	if unit:
-		filters["custom_unit"] = _cstr(unit).strip()
-	return frappe.get_all(
+def _gsm_sprs_for_pp_job_counts(
+	pp_id: str, unit: str | None = None, run_date=None, shift: str | None = None
+) -> list:
+	rows = frappe.get_all(
 		"Shaft Production Run",
-		filters=filters,
-		fields=["name", "shift", "run_date", "docstatus"],
+		filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+		fields=["name", "shift", "run_date", "docstatus", "custom_unit"],
 		order_by="modified desc",
 		limit=100,
-	)
+	) or []
+	unit = _cstr(unit).strip()
+	if not unit:
+		return rows
+	matched = [r for r in rows if _gsm_units_match(r.get("custom_unit"), unit)]
+	if matched:
+		return matched
+	# GSM header unit and SPR custom_unit often disagree (Unit 4 vs UNIT 3).
+	# Still use the SPR that belongs to this shift so job cards and Manual Jobs appear.
+	run_d = getdate(run_date) if run_date else None
+	cur_shift = _normalize_gsm_shift_label(shift) if shift else ""
+	if run_d and cur_shift:
+		session_rows = [
+			r
+			for r in rows
+			if r.get("run_date")
+			and getdate(r.get("run_date")) == run_d
+			and _normalize_gsm_shift_label(r.get("shift")) == cur_shift
+		]
+		if session_rows:
+			return session_rows
+	return [r for r in rows if cint(r.get("docstatus")) == 0] or rows
 
 
 def _gsm_job_production_stats(
@@ -3527,7 +3603,10 @@ def _gsm_build_job_board_entry(
 	if _gsm_is_standalone_spr_key(pp_id):
 		spr_list = [{"name": pp_id}]
 	else:
-		spr_list = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
+		spr_list = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit, run_date=run_date, shift=shift)
+		extra_spr = _cstr(shaft_row.get("spr_name") or "").strip()
+		if extra_spr and extra_spr not in {_cstr(r.get("name")) for r in spr_list}:
+			spr_list = list(spr_list) + [{"name": extra_spr}]
 	stats = _gsm_job_production_stats(
 		spr_list,
 		job_id,
@@ -3645,17 +3724,58 @@ def _gsm_pp_wo_terminal(pp_id: str) -> bool:
 	return True
 
 
-def _gsm_manual_job_shaft_rows(pp_id: str, unit: str | None = None) -> list[dict]:
+def _gsm_manual_job_shaft_rows(
+	pp_id: str,
+	unit: str | None = None,
+	run_date=None,
+	shift: str | None = None,
+	extra_spr_names=None,
+) -> list[dict]:
 	"""Manual jobs (created via SPR Tools) live only on the SPR, not the Production Plan.
 
 	Surface them as shaft-row dicts so they show up in the GSM job board and add-roll
 	wizard, letting the operator record production against a manual job.
 	"""
-	spr_rows = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
-	spr_names = [_cstr(r.get("name")) for r in spr_rows if _cstr(r.get("name"))]
-	if not spr_names:
+	names: list[str] = []
+	seen: set[str] = set()
+
+	def _add(n):
+		n = _cstr(n).strip()
+		if n and n not in seen:
+			seen.add(n)
+			names.append(n)
+
+	for r in _gsm_sprs_for_pp_job_counts(pp_id, unit=unit, run_date=run_date, shift=shift):
+		_add(r.get("name") if isinstance(r, dict) else r)
+	# Manual jobs are order-scoped. Do not hide them when SPR custom_unit disagrees
+	# with the GSM header (Unit 4 session vs UNIT 3 on the desk form).
+	for n in (
+		frappe.get_all(
+			"Shaft Production Run",
+			filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+			pluck="name",
+			order_by="modified desc",
+			limit=100,
+		)
+		or []
+	):
+		_add(n)
+	for n in extra_spr_names or []:
+		n = _cstr(n).strip()
+		if not n:
+			continue
+		pp_of = _cstr(frappe.db.get_value("Shaft Production Run", n, "production_plan") or "")
+		if pp_of == pp_id or n == pp_id:
+			_add(n)
+	if not names:
 		return []
-	return _gsm_job_shaft_rows_from_spr_names(spr_names)
+	return _gsm_job_shaft_rows_from_spr_names(names)
+
+
+def _gsm_job_is_manual_row(row: dict) -> bool:
+	if cint(row.get("is_manual")):
+		return True
+	return _cstr(row.get("job_id")).strip().upper().startswith("MAN-")
 
 
 def _gsm_job_shaft_rows_from_spr_names(spr_names: list[str]) -> list[dict]:
@@ -3676,17 +3796,20 @@ def _gsm_job_shaft_rows_from_spr_names(spr_names: list[str]) -> list[dict]:
 		"manual_items",
 		"party_code",
 		"meter_roll_mtrs",
+		"is_manual",
 	]
-	fields = ["name", "parent", "is_manual"] + [f for f in wanted if meta.has_field(f)]
+	fields = ["name", "parent"] + [f for f in wanted if meta.has_field(f)]
 	rows = frappe.get_all(
 		"Shaft Production Run Job",
-		filters={"parent": ["in", spr_names], "parenttype": "Shaft Production Run", "is_manual": 1},
+		filters={"parent": ["in", spr_names], "parenttype": "Shaft Production Run"},
 		fields=fields,
 		order_by="idx asc",
 	)
 	out: list[dict] = []
 	seen: set[str] = set()
 	for r in rows:
+		if not _gsm_job_is_manual_row(r):
+			continue
 		job_id = _cstr(r.get("job_id")).strip()
 		if not job_id or job_id in seen:
 			continue
@@ -3707,6 +3830,7 @@ def _gsm_job_shaft_rows_from_spr_names(spr_names: list[str]) -> list[dict]:
 				"meter_roll": flt(r.get("meter_roll_mtrs") or 0),
 				"net_weight": 0,
 				"is_manual": True,
+				"spr_name": _cstr(r.get("parent")),
 				"work_order": work_order,
 				"item_code": item_code,
 				"item_name": _cstr(item_name),
@@ -3716,12 +3840,16 @@ def _gsm_job_shaft_rows_from_spr_names(spr_names: list[str]) -> list[dict]:
 
 
 @frappe.whitelist(methods=["GET", "POST"])
-def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
+def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None, spr_names=None):
 	"""GSM sidebar — per PP job shaft+roll progress, remaining, per-width caps."""
 	pp_ids = _parse_json_arg(pp_ids, [])
 	if isinstance(pp_ids, str):
 		pp_ids = [x.strip() for x in pp_ids.split(",") if x.strip()]
 	pp_ids = [_cstr(x).strip() for x in (pp_ids or []) if _cstr(x).strip()]
+	extra_spr_names = _parse_json_arg(spr_names, [])
+	if isinstance(extra_spr_names, str):
+		extra_spr_names = [x.strip() for x in extra_spr_names.split(",") if x.strip()]
+	extra_spr_names = [_cstr(x).strip() for x in (extra_spr_names or []) if _cstr(x).strip()]
 	if run_date and shift and unit:
 		for row in _gsm_draft_sprs_for_session(run_date, shift, unit):
 			tid = _cstr(row.get("pp_id")).strip()
@@ -3789,7 +3917,13 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 			)
 			pp_jobs.append(entry)
 			out_jobs.append(entry)
-		for man_row in _gsm_manual_job_shaft_rows(pp_id, unit=unit):
+		for man_row in _gsm_manual_job_shaft_rows(
+			pp_id,
+			unit=unit,
+			run_date=run_date,
+			shift=shift,
+			extra_spr_names=extra_spr_names,
+		):
 			entry = _gsm_build_job_board_entry(
 				pp_id,
 				man_row,

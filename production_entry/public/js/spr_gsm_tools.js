@@ -16,10 +16,17 @@ async function loadSprDocForGsm(sprName) {
 	return res.message || null;
 }
 
-export async function findSprForGsm(ppId, preferDraft = true) {
+export async function findSprForGsm(ppId, preferDraft = true, session = {}) {
+	session = session && typeof session === "object" ? session : {};
 	const res = await frappe.call({
 		method: "production_entry.production_planning.unified_production_entry_api.get_spr_for_pp",
-		args: { pp_id: ppId, prefer_draft: preferDraft ? 1 : 0 },
+		args: {
+			pp_id: ppId,
+			prefer_draft: preferDraft ? 1 : 0,
+			unit: session.unit || undefined,
+			run_date: session.runDate || session.run_date || undefined,
+			shift: session.shift || undefined,
+		},
 	});
 	return (res.message || {}).spr_name || null;
 }
@@ -39,8 +46,8 @@ function noSprMessage() {
 	);
 }
 
-export async function gsmOpenManualJob(ppId, _planningItemNames, _unit, _runDate, _shift, onSuccess) {
-	const sprName = await findSprForGsm(ppId, true);
+export async function gsmOpenManualJob(ppId, _planningItemNames, unit, runDate, shift, onSuccess) {
+	const sprName = await findSprForGsm(ppId, true, { unit, runDate, shift });
 	if (!sprName) {
 		noSprMessage();
 		return;

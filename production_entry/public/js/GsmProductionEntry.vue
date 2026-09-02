@@ -126,6 +126,7 @@
             <div class="gpe-job-body" @click.prevent="onJobLabelClick(job)">
               <div class="gpe-job-head">
                 <span class="gpe-job-title">Job {{ job.job_id }}</span>
+                <span v-if="job.is_manual" class="gpe-spec-chip gpe-spec-manual">Manual</span>
                 <span class="gpe-job-head-dot">·</span>
                 <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
               </div>
@@ -249,6 +250,7 @@
                 <div class="gpe-job-body">
                   <div class="gpe-job-head">
                     <span class="gpe-job-title">Job {{ job.job_id }}</span>
+                    <span v-if="job.is_manual" class="gpe-spec-chip gpe-spec-manual">Manual</span>
                     <span class="gpe-job-head-dot">·</span>
                     <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
                   </div>
@@ -2886,6 +2888,7 @@ function snapshotFromJob(job) {
     widthLabel: job.combination_label || "",
     max_shafts: job.max_shafts,
     max_rolls: job.max_rolls,
+    is_manual: !!job.is_manual,
     dayTargetKg: sprFlt(job.job_target_kg) || orderDayStatsForPp(job.pp_id).dayTargetKg,
     sourceSnapshot: {
       pp_id: job.pp_id,
@@ -6514,6 +6517,12 @@ async function loadJobBoard() {
     return;
   }
   try {
+    const extraSprs = [];
+    for (const [ppId, row] of Object.entries(sessionSprs.value || {})) {
+      if (ppIds.has(ppId) && row?.spr_name) {
+        extraSprs.push(row.spr_name);
+      }
+    }
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.get_gsm_pp_job_board",
       args: {
@@ -6521,6 +6530,7 @@ async function loadJobBoard() {
         run_date: runDate.value,
         shift: shift.value,
         unit: filterUnit.value || headerUnit.value || undefined,
+        spr_names: extraSprs.length ? JSON.stringify(extraSprs) : undefined,
       },
     });
     jobBoardJobs.value = res.message?.jobs || [];
@@ -9439,6 +9449,11 @@ onUnmounted(() => {
   color: #065f46;
   background: #ecfdf5;
   border: 1px solid #a7f3d0;
+}
+.gpe-spec-manual {
+  color: #9a3412;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
 }
 .gpe-job-combination {
   font-size: 13px;
