@@ -43,8 +43,18 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_gsm_batch_available_kg,
 	_gsm_patty_stock_from_batch_doc,
 )
-from production_entry.production_planning.scheduler_api import create_item_spr, create_mix_spr, get_current_shift
-from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
+from production_entry.production_planning.scheduler_api import (
+	create_item_spr,
+	create_mix_item,
+	create_mix_spr,
+	get_current_shift,
+	save_mix_roll_data,
+)
+from production_entry.production_planning.planning_doctypes import (
+	get_mix_roll_unit_max_shaft_inches,
+	normalize_planning_unit_for_select,
+	validate_mix_shaft_width,
+)
 
 
 def _pick_value(row, keys, default=None):
@@ -6204,6 +6214,323 @@ def _gsm_browse_scope_months(
 		d = getdate(run_date)
 		months.add(f"{d.year:04d}-{d.month:02d}")
 	return months
+
+
+def _gsm_mix_store_date_key(
+	planned_date=None,
+	view_scope=None,
+	filter_week=None,
+	filter_month=None,
+	run_date=None,
+) -> str:
+	"""Color Chart mix_roll_store_data key matching the GSM browse filters."""
+	import re as _re
+
+	scope = _cstr(view_scope or "daily").strip().lower()
+	if scope == "monthly":
+		fm = _cstr(filter_month).strip()
+		m = _re.match(r"^(\d{4})-(\d{1,2})", fm) if fm else None
+		if m:
+			return f"month-{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+		d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
+		return f"month-{d.year:04d}-{d.month:02d}"
+	if scope == "weekly":
+		fw = _cstr(filter_week).strip()
+		if fw:
+			if fw.lower().startswith("week-"):
+				return fw
+			return f"week-{fw}"
+	d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
+	return f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+
+
+def _load_mix_store_entries(date_key: str) -> list:
+	date_key = _cstr(date_key).strip()
+	if not date_key or not _mix_roll_store_table_exists():
+		return []
+	rows = frappe.db.sql("SELECT data FROM `mix_roll_store_data` WHERE date_key = %s", date_key)
+	if not rows or not rows[0][0]:
+		return []
+	try:
+		entries = json.loads(rows[0][0])
+	except Exception:
+		return []
+	return entries if isinstance(entries, list) else []
+
+
+def _mix_roll_match_key(unit, color1, color2) -> str:
+	return (
+		f"{_normalize_mix_unit(unit)}|"
+		f"{_cstr(color1).strip().upper()}|"
+		f"{_cstr(color2).strip().upper()}"
+	)
+
+
+def _find_gsm_operator_mix_match(target_unit: str, mix_match_key: str, scope_months: set):
+	"""Locate a Color Chart mix row for this unit + from/to colour in the browse month.
+
+	Returns (date_key, mix_id, action):
+	- update: row exists and Color Chart would still show CREATE ITEMS (no item_code)
+	- new_on_key: row exists and already has items (UPDATE ITEMS) — caller appends a new row
+	- (None, None, None): not on the plan
+	"""
+	created_hit = None
+	for date_key, entry in _iter_mix_roll_store_rows():
+		if not isinstance(entry, dict) or entry.get("isRecycle"):
+			continue
+		if _normalize_mix_unit(entry.get("unit")) != target_unit:
+			continue
+		if _mix_roll_match_key(entry.get("unit"), entry.get("color1"), entry.get("color2")) != mix_match_key:
+			continue
+		key_months = _mix_date_key_months(date_key)
+		if not key_months or not (key_months & scope_months):
+			continue
+		has_item = bool(_cstr(entry.get("item_code")).strip())
+		submitted = bool(entry.get("_submitted"))
+		mix_id = _cstr(entry.get("mix_id")).strip()
+		if not has_item and not submitted:
+			return date_key, mix_id, "update"
+		if created_hit is None:
+			created_hit = (date_key, mix_id, "new_on_key")
+	if created_hit:
+		return created_hit
+	return None, None, None
+
+
+def _new_gsm_mix_store_row(payload: dict) -> dict:
+	return {
+		"unit": payload["unit"],
+		"color1": payload["color1"],
+		"color2": payload["color2"],
+		"mixName": payload["mix_name"],
+		"quality": payload["quality"],
+		"clType": payload["cl_type"],
+		"gsm": payload["gsm"],
+		"shaft": payload["shaft"],
+		"no_of_shaft": payload["no_of_shaft"],
+		"kg": payload["kg"],
+		"item_code": "",
+		"item_name": "",
+		"isRecycle": False,
+		"_prevMixName": "",
+		"_isManual": True,
+		"_fromGsmEntry": True,
+		"mix_id": f"mix-{frappe.generate_hash(length=8)}",
+	}
+
+
+def _apply_gsm_mix_fields(entry: dict, payload: dict):
+	entry["unit"] = payload["unit"]
+	entry["color1"] = payload["color1"]
+	entry["color2"] = payload["color2"]
+	entry["mixName"] = payload["mix_name"]
+	entry["quality"] = payload["quality"]
+	entry["clType"] = payload["cl_type"]
+	entry["gsm"] = payload["gsm"]
+	entry["shaft"] = payload["shaft"]
+	entry["no_of_shaft"] = payload["no_of_shaft"]
+	entry["kg"] = payload["kg"]
+	entry["_isManual"] = True
+	entry["_fromGsmEntry"] = True
+
+
+def _create_mix_items_for_store_row(entry: dict):
+	"""CREATE ITEMS equivalent so the GSM Mix Rolls card can appear."""
+	quality = _cstr(entry.get("quality")).strip()
+	cl_type = _cstr(entry.get("clType") or entry.get("cl_type")).strip()
+	gsm = entry.get("gsm")
+	shaft = _cstr(entry.get("shaft")).strip()
+	unit = _cstr(entry.get("unit")).strip()
+	if not quality or not cl_type or not gsm or not shaft:
+		frappe.throw(_("Quality, Color, GSM and Shaft Details are required to create mix items."))
+	validate_mix_shaft_width(unit, shaft)
+	details = create_mix_item(quality, cl_type, gsm, shaft, unit=unit)
+	if not details:
+		frappe.throw(_("Could not create mix items."))
+	if not isinstance(details, list):
+		details = [details]
+	entry["item_code"] = ", ".join(_cstr(d.get("item_code")) for d in details if d)
+	entry["item_name"] = " | ".join(_cstr(d.get("item_name")) for d in details if d)
+	return details
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_gsm_mix_roll_form_options(
+	unit=None,
+	planned_date=None,
+	view_scope=None,
+	filter_week=None,
+	filter_month=None,
+	run_date=None,
+):
+	"""Unit shaft hint + colours already used on Color Chart mix rolls for this unit."""
+	target_unit = _normalize_mix_unit(unit)
+	max_in = get_mix_roll_unit_max_shaft_inches(target_unit) if target_unit else 0
+	colors = set()
+	if target_unit:
+		for _dk, entry in _iter_mix_roll_store_rows():
+			if not isinstance(entry, dict):
+				continue
+			if _normalize_mix_unit(entry.get("unit")) != target_unit:
+				continue
+			for key in ("color1", "color2"):
+				c = _cstr(entry.get(key)).strip().upper()
+				if c and c != "NO COLOR":
+					colors.add(c)
+	hint_n = int(max_in) if max_in and max_in == int(max_in) else max_in
+	return {
+		"unit": target_unit,
+		"max_shaft_inches": max_in,
+		"shaft_hint": f'Max {hint_n}" total' if max_in else "",
+		"colors": sorted(colors),
+		"qualities": ["Virgin Mix", "Eco Mix", "Deluxe Mix"],
+		"cl_types": ["Color Mix", "Beige Mix", "White Mix", "Black Mix"],
+		"date_key": _gsm_mix_store_date_key(
+			planned_date=planned_date,
+			view_scope=view_scope,
+			filter_week=filter_week,
+			filter_month=filter_month,
+			run_date=run_date,
+		),
+	}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def upsert_gsm_mix_roll_from_entry(
+	unit,
+	color1,
+	color2,
+	mix_name,
+	quality,
+	cl_type,
+	gsm,
+	shaft,
+	no_of_shaft=1,
+	kg=0,
+	planned_date=None,
+	view_scope=None,
+	filter_week=None,
+	filter_month=None,
+	run_date=None,
+):
+	"""Reverse Color Chart → GSM: operator adds a mix roll on GSM, persist to Color Chart store.
+
+	Lookup is unit + from colour + to colour in the GSM browse month:
+	- not on plan → new Color Chart row
+	- on plan with CREATE ITEMS (no item_code) → fill that row
+	- on plan with UPDATE ITEMS (item_code already set) → new Color Chart row
+	Then CREATE ITEMS so the Mix Rolls card appears for production entry.
+	"""
+	target_unit = _normalize_mix_unit(unit)
+	color1 = _cstr(color1).strip().upper()
+	color2 = _cstr(color2).strip().upper()
+	mix_name = _cstr(mix_name).strip()
+	quality = _cstr(quality).strip()
+	cl_type = _cstr(cl_type).strip()
+	shaft = _cstr(shaft).strip()
+	gsm_val = flt(gsm)
+	no_of_shaft = max(cint(no_of_shaft) or 1, 1)
+	kg_val = flt(kg)
+	if not target_unit:
+		frappe.throw(_("Unit is required"))
+	if not color1 or not color2:
+		frappe.throw(_("From colour and To colour are required"))
+	if not mix_name:
+		frappe.throw(_("Mix Name is required"))
+	if not quality:
+		frappe.throw(_("Quality is required"))
+	if not cl_type:
+		frappe.throw(_("Color (mix type) is required"))
+	if gsm_val <= 0:
+		frappe.throw(_("GSM is required"))
+	if not shaft:
+		frappe.throw(_("Shaft Details are required"))
+	validate_mix_shaft_width(target_unit, shaft)
+
+	scope_months = _gsm_browse_scope_months(
+		planned_date=planned_date,
+		view_scope=view_scope,
+		filter_week=filter_week,
+		filter_month=filter_month,
+		run_date=run_date,
+	)
+	if not scope_months:
+		ref = getdate(run_date) if run_date else getdate()
+		scope_months = {f"{ref.year:04d}-{ref.month:02d}"}
+
+	payload = {
+		"unit": target_unit,
+		"color1": color1,
+		"color2": color2,
+		"mix_name": mix_name,
+		"quality": quality,
+		"cl_type": cl_type,
+		"gsm": gsm_val if gsm_val == int(gsm_val) else gsm_val,
+		"shaft": shaft,
+		"no_of_shaft": no_of_shaft,
+		"kg": kg_val,
+	}
+	if payload["gsm"] == int(payload["gsm"]):
+		payload["gsm"] = int(payload["gsm"])
+
+	mix_match_key = _mix_roll_match_key(target_unit, color1, color2)
+	found_key, found_id, action = _find_gsm_operator_mix_match(
+		target_unit, mix_match_key, scope_months
+	)
+
+	if action == "update" and found_key:
+		date_key = found_key
+		entries = _load_mix_store_entries(date_key)
+		entry = None
+		for row in entries:
+			if not isinstance(row, dict) or row.get("isRecycle"):
+				continue
+			if found_id and _cstr(row.get("mix_id")).strip() == found_id:
+				if _cstr(row.get("item_code")).strip() or row.get("_submitted"):
+					continue
+				entry = row
+				break
+			if (
+				not found_id
+				and _mix_roll_match_key(row.get("unit"), row.get("color1"), row.get("color2"))
+				== mix_match_key
+				and not _cstr(row.get("item_code")).strip()
+				and not row.get("_submitted")
+			):
+				entry = row
+				break
+		if entry is None:
+			entry = _new_gsm_mix_store_row(payload)
+			entries.append(entry)
+			action = "created"
+		else:
+			_apply_gsm_mix_fields(entry, payload)
+			action = "updated"
+	else:
+		date_key = found_key or _gsm_mix_store_date_key(
+			planned_date=planned_date,
+			view_scope=view_scope,
+			filter_week=filter_week,
+			filter_month=filter_month,
+			run_date=run_date,
+		)
+		entries = _load_mix_store_entries(date_key)
+		entry = _new_gsm_mix_store_row(payload)
+		entries.append(entry)
+		action = "created"
+
+	_create_mix_items_for_store_row(entry)
+	save_mix_roll_data(date_key, entries)
+
+	candidate = _serialize_mix_roll_candidate(date_key, entry)
+	overlap = sorted(_mix_date_key_months(date_key) & scope_months)
+	candidate["planning_month"] = overlap[0] if overlap else (sorted(scope_months)[0] if scope_months else "")
+	return {
+		"status": "ok",
+		"action": action,
+		"date_key": date_key,
+		"mix": candidate,
+	}
 
 
 @frappe.whitelist(methods=["GET", "POST"])

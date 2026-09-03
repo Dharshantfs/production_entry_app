@@ -329,3 +329,124 @@ export function recalcMixRollRow(row) {
   row.custom_cbm_cubic_meters = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
   return row;
 }
+
+/** Color Chart mix-roll colour groups — used for GSM Add Mix Roll dropdowns / badges. */
+export const MIX_COLOR_GROUPS = [
+  { keywords: ["BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", "SUPER WHITE", "BLEACH WHITE", "OPTICAL WHITE", "WHITE"], priority: 0, hex: "#FFFFFF" },
+  { keywords: ["BABY PINK"], priority: 1, hex: "#FFB6C1" },
+  { keywords: ["MEDICAL BLUE"], priority: 2, hex: "#0096FF" },
+  { keywords: ["MEDICAL GREEN"], priority: 3, hex: "#00A36C" },
+  { keywords: ["BRIGHT IVORY", "IVORY", "OFF WHITE", "CREAM"], priority: 4, hex: "#FFFFF0" },
+  { keywords: ["LEMON YELLOW"], priority: 5, hex: "#FFF44F" },
+  { keywords: ["YELLOW"], priority: 5, hex: "#FFEA00" },
+  { keywords: ["GOLDEN YELLOW", "GOLD"], priority: 6, hex: "#FFD700" },
+  { keywords: ["LIGHT ORANGE", "PEACH", "BRIGHT ORANGE", "ORANGE"], priority: 7, hex: "#FF8C00" },
+  { keywords: ["DARK PINK"], priority: 8, hex: "#C71585" },
+  { keywords: ["PINK", "PINK 1.0", "PINK 2.0", "PINK 3.0", "PINK 5.0", "HOT PINK"], priority: 8, hex: "#FFC0CB" },
+  { keywords: ["BRIGHT RED", "SCARLET", "CRIMSON", "RED"], priority: 9, hex: "#D32F2F" },
+  { keywords: ["MAROON", "BURGUNDY", "DARK RED"], priority: 9, hex: "#800000" },
+  { keywords: ["LIGHT PEACOCK BLUE", "PEACOCK BLUE"], priority: 10, hex: "#008B8B" },
+  { keywords: ["SKY BLUE", "LIGHT BLUE"], priority: 11, hex: "#87CEEB" },
+  { keywords: ["ROYAL BLUE", "BLUE"], priority: 11, hex: "#2962FF" },
+  { keywords: ["NAVY BLUE", "DARK BLUE"], priority: 12, hex: "#1A237E" },
+  { keywords: ["VIOLET", "VOILET", "PURPLE"], priority: 13, hex: "#8B00FF" },
+  { keywords: ["GREEN 1.0 MINT"], priority: 14, hex: "#00897B" },
+  { keywords: ["PARROT GREEN", "RELIANCE GREEN", "GREEN"], priority: 15, hex: "#228B22" },
+  { keywords: ["SEA GREEN"], priority: 16, hex: "#2E8B57" },
+  { keywords: ["ARMY GREEN", "ARMY"], priority: 17, hex: "#4B5320" },
+  { keywords: ["SILVER", "LIGHT GREY", "GREY", "GRAY", "DARK GREY"], priority: 18, hex: "#808080" },
+  { keywords: ["BROWN", "CHOCOLATE"], priority: 19, hex: "#8B4513" },
+  { keywords: ["BLACK"], priority: 20, hex: "#000000" },
+  { keywords: ["DARK BEIGE"], priority: 21, hex: "#C2B280" },
+  { keywords: ["LIGHT BEIGE", "BEIGE"], priority: 22, hex: "#F5F5DC" },
+];
+
+export const MIX_QUALITY_OPTIONS = ["Virgin Mix", "Eco Mix", "Deluxe Mix"];
+export const MIX_CL_TYPE_OPTIONS = ["Color Mix", "Beige Mix", "White Mix", "Black Mix"];
+
+export const MIX_COLOR_OPTIONS = Array.from(
+  new Set(MIX_COLOR_GROUPS.flatMap((g) => g.keywords || []))
+);
+
+export function mixColorGroup(color) {
+  const upper = String(color || "").toUpperCase().trim();
+  if (!upper) {
+    return null;
+  }
+  for (const group of MIX_COLOR_GROUPS) {
+    for (const keyword of group.keywords || []) {
+      if (upper.includes(keyword)) {
+        return group;
+      }
+    }
+  }
+  return null;
+}
+
+export function mixColorBadgeStyle(colorName) {
+  const group = mixColorGroup(colorName);
+  const hex = group?.hex || "#e5e7eb";
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return {
+    backgroundColor: hex,
+    color: luminance > 0.55 ? "#1a1a1a" : "#ffffff",
+  };
+}
+
+export function suggestMixClType(color1, color2) {
+  const p1 = mixColorGroup(color1)?.priority ?? 50;
+  const p2 = mixColorGroup(color2)?.priority ?? 50;
+  const u1 = String(color1 || "").toUpperCase();
+  const u2 = String(color2 || "").toUpperCase();
+  if (p1 <= 6 && p2 <= 6) {
+    return "White Mix";
+  }
+  if (u1.includes("BLACK") && u2.includes("BLACK")) {
+    return "Black Mix";
+  }
+  if (u1.includes("BEIGE") || u2.includes("BEIGE")) {
+    return "Beige Mix";
+  }
+  if (p1 === 90 && p2 === 90) {
+    return "Black Mix";
+  }
+  if ((p1 >= 95 && p1 <= 96) || (p2 >= 95 && p2 <= 96)) {
+    return "Beige Mix";
+  }
+  return "Color Mix";
+}
+
+export function mixShaftHint(unit, maxInches) {
+  const maxIn = Number(maxInches) || 0;
+  if (maxIn) {
+    return `Max ${maxIn}" total`;
+  }
+  const fallback = { "Unit 1": 63, "Unit 2": 126, "Unit 3": 126, "Unit 4": 90 };
+  const n = fallback[String(unit || "").trim()] || 0;
+  return n ? `Max ${n}" total` : "";
+}
+
+export async function fetchGsmMixRollFormOptions(unit, browse = {}) {
+  const args = { unit };
+  if (browse.plannedDate) args.planned_date = browse.plannedDate;
+  if (browse.viewScope) args.view_scope = browse.viewScope;
+  if (browse.filterWeek) args.filter_week = browse.filterWeek;
+  if (browse.filterMonth) args.filter_month = browse.filterMonth;
+  if (browse.runDate) args.run_date = browse.runDate;
+  const res = await frappe.call({
+    method: "production_entry.production_planning.unified_production_entry_api.get_gsm_mix_roll_form_options",
+    args,
+  });
+  return res.message || {};
+}
+
+export async function upsertGsmMixRollFromEntry(payload) {
+  const res = await frappe.call({
+    method: "production_entry.production_planning.unified_production_entry_api.upsert_gsm_mix_roll_from_entry",
+    args: payload,
+  });
+  return res.message || {};
+}

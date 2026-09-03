@@ -177,9 +177,17 @@
         <div v-if="shiftOpened && (headerUnit || filterUnit)" class="gpe-sidebar-section gpe-mix-roll-sidebar">
           <div class="gpe-sidebar-section-head">
             <strong>Mix Rolls</strong>
-            <button type="button" class="gpe-link-btn" :disabled="mixRollLoading" @click="loadMixRollCandidates">
-              {{ mixRollLoading ? "…" : "Refresh" }}
-            </button>
+            <div class="gpe-mix-roll-head-actions">
+              <button
+                type="button"
+                class="gpe-btn primary gpe-btn-sm"
+                :disabled="mixRollBusy || addMixRollBusy"
+                @click="openAddMixRollDialog"
+              >Add Mix Roll</button>
+              <button type="button" class="gpe-link-btn" :disabled="mixRollLoading" @click="loadMixRollCandidates">
+                {{ mixRollLoading ? "…" : "Refresh" }}
+              </button>
+            </div>
           </div>
           <p class="gpe-hint">Color Chart items planned this month · {{ headerUnit || filterUnit }} · width set by planning.</p>
           <div v-if="mixRollLoading" class="gpe-muted">Loading mix rolls…</div>
@@ -1787,6 +1795,87 @@
         </div>
       </div>
     </div>
+
+    <div v-if="showAddMixRollDialog" class="gpe-dialog-overlay" @click.self="closeAddMixRollDialog">
+      <div class="gpe-dialog gpe-dialog-wide gpe-card gpe-add-mix-roll-dialog">
+        <h3>Add Mix Roll</h3>
+        <p class="gpe-hint">
+          Saves to Color Chart for this unit, then shows a Mix Rolls card so you can start production.
+        </p>
+        <div class="gpe-add-mix-roll-grid">
+          <label>
+            Unit
+            <input :value="addMixRollForm.unit" type="text" readonly />
+          </label>
+          <label>
+            Mix Name
+            <input v-model="addMixRollForm.mixName" type="text" placeholder="GPKL - …" />
+          </label>
+          <label>
+            From colour
+            <select
+              v-model="addMixRollForm.color1"
+              :style="mixColorBadgeStyle(addMixRollForm.color1)"
+              @change="onAddMixRollColorChange"
+            >
+              <option value="">Select colour</option>
+              <option v-for="c in addMixRollColorOptions" :key="'from-' + c" :value="c">{{ c }}</option>
+            </select>
+          </label>
+          <label>
+            To colour
+            <select
+              v-model="addMixRollForm.color2"
+              :style="mixColorBadgeStyle(addMixRollForm.color2)"
+              @change="onAddMixRollColorChange"
+            >
+              <option value="">Select colour</option>
+              <option v-for="c in addMixRollColorOptions" :key="'to-' + c" :value="c">{{ c }}</option>
+            </select>
+          </label>
+          <label>
+            Quality
+            <select v-model="addMixRollForm.quality">
+              <option v-for="q in MIX_QUALITY_OPTIONS" :key="q" :value="q">{{ q }}</option>
+            </select>
+          </label>
+          <label>
+            Color
+            <select v-model="addMixRollForm.clType">
+              <option v-for="t in MIX_CL_TYPE_OPTIONS" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </label>
+          <label>
+            GSM
+            <input v-model="addMixRollForm.gsm" type="number" min="1" step="1" placeholder="50" />
+          </label>
+          <label>
+            No of Shaft
+            <input v-model.number="addMixRollForm.noOfShaft" type="number" min="1" step="1" />
+          </label>
+          <label class="gpe-add-mix-roll-span2">
+            Shaft Details
+            <input v-model="addMixRollForm.shaft" type="text" placeholder="32 + 30..." />
+            <span v-if="addMixRollShaftHint" class="gpe-muted gpe-add-mix-roll-hint">{{ addMixRollShaftHint }}</span>
+          </label>
+          <label>
+            Weight (Kg)
+            <input v-model="addMixRollForm.kg" type="number" min="0" step="0.1" />
+          </label>
+        </div>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" :disabled="addMixRollBusy" @click="closeAddMixRollDialog">Cancel</button>
+          <button
+            type="button"
+            class="gpe-btn primary"
+            :disabled="addMixRollBusy || !canSubmitAddMixRoll"
+            @click="submitAddMixRoll"
+          >
+            {{ addMixRollBusy ? "Creating…" : "Create" }}
+          </button>
+        </div>
+      </div>
+    </div>
     </template>
   </div>
 </template>
@@ -1821,6 +1910,14 @@ import {
   buildMixRollSavePayload,
   recalcMixRollRow,
   normalizeSpiDiameterCbm,
+  fetchGsmMixRollFormOptions,
+  upsertGsmMixRollFromEntry,
+  MIX_QUALITY_OPTIONS,
+  MIX_CL_TYPE_OPTIONS,
+  MIX_COLOR_OPTIONS,
+  mixColorBadgeStyle,
+  suggestMixClType,
+  mixShaftHint,
 } from "./gsm_mix_roll.js";
 import {
   gsmOpenBundlePackaging,
@@ -2531,6 +2628,22 @@ const prevShiftLoading = ref(false);
 const mixRollCandidates = ref([]);
 const mixRollLoading = ref(false);
 const mixRollBusy = ref(false);
+const showAddMixRollDialog = ref(false);
+const addMixRollBusy = ref(false);
+const addMixRollMaxShaft = ref(0);
+const addMixRollExtraColors = ref([]);
+const addMixRollForm = ref({
+  unit: "",
+  color1: "",
+  color2: "",
+  mixName: "",
+  quality: "Virgin Mix",
+  clType: "Color Mix",
+  gsm: "",
+  shaft: "",
+  noOfShaft: 1,
+  kg: 0,
+});
 const activeMixRoll = ref(null);
 const mixRollLines = ref([]);
 const dismissedMixSprs = ref([]);
@@ -4384,6 +4497,139 @@ async function loadMixRollCandidates(options = {}) {
     mixRollCandidates.value = [];
   } finally {
     mixRollLoading.value = false;
+  }
+}
+
+const addMixRollColorOptions = computed(() => {
+  const set = new Set(MIX_COLOR_OPTIONS);
+  for (const c of addMixRollExtraColors.value || []) {
+    const v = String(c || "").trim().toUpperCase();
+    if (v) set.add(v);
+  }
+  return Array.from(set).sort();
+});
+
+const addMixRollShaftHint = computed(() =>
+  mixShaftHint(addMixRollForm.value.unit, addMixRollMaxShaft.value)
+);
+
+const canSubmitAddMixRoll = computed(() => {
+  const f = addMixRollForm.value;
+  return !!(
+    f.unit &&
+    f.color1 &&
+    f.color2 &&
+    String(f.mixName || "").trim() &&
+    f.quality &&
+    f.clType &&
+    Number(f.gsm) > 0 &&
+    String(f.shaft || "").trim()
+  );
+});
+
+function mixBrowseArgs() {
+  return {
+    plannedDate: ordersBrowseDate(),
+    viewScope: viewScope.value,
+    filterWeek: filterWeek.value,
+    filterMonth: filterMonth.value,
+    runDate: runDate.value,
+  };
+}
+
+function emptyAddMixRollForm(unit) {
+  return {
+    unit: unit || "",
+    color1: "",
+    color2: "",
+    mixName: "",
+    quality: "Virgin Mix",
+    clType: "Color Mix",
+    gsm: "",
+    shaft: "",
+    noOfShaft: 1,
+    kg: 0,
+  };
+}
+
+function onAddMixRollColorChange() {
+  const f = addMixRollForm.value;
+  if (f.color1 && f.color2) {
+    f.clType = suggestMixClType(f.color1, f.color2);
+  }
+}
+
+async function openAddMixRollDialog() {
+  const unit = headerUnit.value || filterUnit.value;
+  if (!unit) {
+    frappe.msgprint(__("Start the shift so the unit is set, then add a mix roll."));
+    return;
+  }
+  addMixRollForm.value = emptyAddMixRollForm(unit);
+  addMixRollMaxShaft.value = 0;
+  addMixRollExtraColors.value = [];
+  showAddMixRollDialog.value = true;
+  try {
+    const opts = await fetchGsmMixRollFormOptions(unit, mixBrowseArgs());
+    addMixRollMaxShaft.value = Number(opts.max_shaft_inches) || 0;
+    addMixRollExtraColors.value = opts.colors || [];
+    if (opts.unit) {
+      addMixRollForm.value.unit = opts.unit;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function closeAddMixRollDialog() {
+  if (addMixRollBusy.value) {
+    return;
+  }
+  showAddMixRollDialog.value = false;
+}
+
+async function submitAddMixRoll() {
+  if (!canSubmitAddMixRoll.value || addMixRollBusy.value) {
+    return;
+  }
+  const f = addMixRollForm.value;
+  addMixRollBusy.value = true;
+  try {
+    const browse = mixBrowseArgs();
+    const res = await upsertGsmMixRollFromEntry({
+      unit: f.unit,
+      color1: f.color1,
+      color2: f.color2,
+      mix_name: String(f.mixName || "").trim(),
+      quality: f.quality,
+      cl_type: f.clType,
+      gsm: f.gsm,
+      shaft: String(f.shaft || "").trim(),
+      no_of_shaft: f.noOfShaft || 1,
+      kg: f.kg || 0,
+      planned_date: browse.plannedDate,
+      view_scope: browse.viewScope,
+      filter_week: browse.filterWeek,
+      filter_month: browse.filterMonth,
+      run_date: browse.runDate,
+    });
+    showAddMixRollDialog.value = false;
+    await loadMixRollCandidates({ skipRestore: true });
+    const created = res.mix || {};
+    const createdId = created.mix_id || created.mix_row_key;
+    if (createdId && !mixRollCandidates.value.some((m) => (m.mix_id || m.mix_row_key) === createdId)) {
+      mixRollCandidates.value = [created, ...mixRollCandidates.value];
+    }
+    const action = res.action === "updated" ? "updated on Color Chart" : "saved to Color Chart";
+    frappe.show_alert({
+      message: __("Mix roll {0}. Select the card to enter production.", [action]),
+      indicator: "green",
+    });
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint(__("Could not add mix roll. Check Quality / Color masters, GSM and shaft width."));
+  } finally {
+    addMixRollBusy.value = false;
   }
 }
 
@@ -9298,6 +9544,11 @@ onUnmounted(() => {
   justify-content: space-between;
   margin-bottom: 4px;
 }
+.gpe-mix-roll-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .gpe-mix-roll-card {
   border: 1px solid #cbd5e1;
   border-radius: 10px;
@@ -11016,6 +11267,49 @@ onUnmounted(() => {
   width: min(720px, 94vw);
   max-height: 85vh;
   overflow: auto;
+}
+.gpe-add-mix-roll-dialog {
+  width: min(640px, 94vw);
+}
+.gpe-add-mix-roll-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 14px;
+  margin: 14px 0 16px;
+}
+.gpe-add-mix-roll-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 700;
+}
+.gpe-add-mix-roll-grid input,
+.gpe-add-mix-roll-grid select {
+  padding: 7px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.gpe-add-mix-roll-grid input[readonly] {
+  background: #f8fafc;
+  color: #334155;
+}
+.gpe-add-mix-roll-span2 {
+  grid-column: 1 / -1;
+}
+.gpe-add-mix-roll-hint {
+  font-weight: 600;
+  font-size: 11px;
+}
+@media (max-width: 560px) {
+  .gpe-add-mix-roll-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .gpe-spr-strip {
   display: flex;

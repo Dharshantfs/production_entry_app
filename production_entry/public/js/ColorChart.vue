@@ -1595,10 +1595,26 @@ async function rebuildMixRolls() {
             row.spr_name = s.spr_name || "";
             row._submitted = !!s._submitted;
             row.mix_id = s.mix_id || "mix-" + Math.random().toString(36).substring(2, 9);
+            row._isManual = !!s._isManual;
+            row._fromGsmEntry = !!s._fromGsmEntry;
         } else {
             row.mix_id = "mix-" + Math.random().toString(36).substring(2, 9);
         }
         return row;
+    });
+
+    const usedIds = new Set(merged.map((m) => m.mix_id).filter(Boolean));
+    saved.forEach((s) => {
+        if (!s) return;
+        const id = s.mix_id;
+        if (id && usedIds.has(id)) return;
+        if (!id && merged.some((m) => _mixKey(m) === _mixKey(s))) return;
+        merged.push({
+            ...s,
+            _isManual: !!(s._isManual || s._fromGsmEntry),
+            _fromGsmEntry: !!s._fromGsmEntry,
+        });
+        if (id) usedIds.add(id);
     });
 
     mixRolls.value = merged;
@@ -1624,7 +1640,9 @@ function saveMixRolls() {
         _prevMixName: m._prevMixName,
         spr_name: m.spr_name,
         _submitted: m._submitted,
-        mix_id: m.mix_id
+        mix_id: m.mix_id,
+        _isManual: m._isManual,
+        _fromGsmEntry: m._fromGsmEntry,
     }));
 
     frappe.call({
