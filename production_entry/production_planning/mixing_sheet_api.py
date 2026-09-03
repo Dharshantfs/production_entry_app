@@ -358,7 +358,12 @@ def _sync_shift_wise_mixing_list(sheet_doc, data: dict) -> None:
 			{
 				"set_no": set_no,
 				"polypropylene_item": _cstr(names.get("PP") or materials.get("PP")),
-				"filler_item": _cstr(names.get("Filler") or materials.get("Filler")),
+				"filler_item": _cstr(
+					names.get("LD")
+					or names.get("Filler")
+					or materials.get("LD")
+					or materials.get("Filler")
+				),
 				"modifier_item": _cstr(names.get("PPA") or materials.get("PPA")),
 				"antistatic_item": _cstr(names.get("Antistatic") or materials.get("Antistatic")),
 				"masterbatch_item": _cstr(names.get("Masterbatch") or materials.get("Masterbatch")),
@@ -374,7 +379,7 @@ def _sync_shift_wise_mixing_list(sheet_doc, data: dict) -> None:
 					"row_no": ri + 1,
 					"mixing_type": _cstr(row.get("mixing_type") or data.get("mixing_type")),
 					"polypropylene": flt(row.get("pp_qty") or 0),
-					"filler": flt(row.get("filler_qty") or 0),
+					"filler": flt(row.get("ld_qty") or row.get("filler_qty") or 0),
 					"modifier": flt(row.get("ppa_qty") or 0),
 					"antistatic": flt(row.get("anti_qty") or 0),
 					"masterbatch": flt(row.get("mb_qty") or 0),

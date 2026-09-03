@@ -459,7 +459,21 @@ function spr_repair_items_grid_after_save_row(frm) {
 	}
 	frm._spr_allow_save_row_align = true;
 	try {
-		spr_repair_child_grid_alignment(frm, 'items');
+		const fd = spr_get_field_dict(frm, 'items');
+		const grid = fd && fd.grid;
+		if (grid) {
+			grid._spr_columns_user_locked = false;
+			spr_clear_spr_grid_saved_columns(grid, SPR_SPI_DOCTYPE);
+		}
+		const cols = (spr_get_items_list_view_config(frm) && spr_get_items_list_view_config(frm).show) || [];
+		const cg = spr_get_grid_columns_module();
+		if (cg && typeof cg.apply === 'function' && cols.length) {
+			spr_reset_items_grid_field_visibility(frm);
+			cg.apply(frm, 'items', SPR_SPI_DOCTYPE, cols, { fullRefresh: true });
+		} else {
+			spr_repair_child_grid_alignment(frm, 'items');
+		}
+		spr_apply_grid_column_min_widths(frm, 'items', SPR_ITEMS_COL_MIN_PX);
 		spr_apply_items_row_lock_ui(frm);
 		apply_spr_item_row_styles(frm);
 	} finally {
@@ -615,11 +629,20 @@ function spr_grid_dom_columns_misaligned(frm, fieldname) {
 	if (!$bodyRow.length) {
 		return false;
 	}
-	function collectFieldnames($row, childSel) {
+	function collectFieldnames($row) {
 		const out = [];
-		$row.children(childSel).each(function () {
+		if (!$row || !$row.length) {
+			return out;
+		}
+		const $root = $row.find('.data-row').first().length ? $row.find('.data-row').first() : $row;
+		$root.children().each(function () {
 			const $el = $(this);
-			if ($el.hasClass('row-check') || $el.hasClass('row-index')) {
+			if (
+				$el.hasClass('row-check') ||
+				$el.hasClass('row-index') ||
+				$el.hasClass('grid-settings') ||
+				$el.hasClass('configure-columns')
+			) {
 				return;
 			}
 			const fn =
@@ -631,8 +654,8 @@ function spr_grid_dom_columns_misaligned(frm, fieldname) {
 		});
 		return out;
 	}
-	const headFns = collectFieldnames($wrap.find('.grid-heading-row').first(), '.grid-static-col, .col');
-	const bodyFns = collectFieldnames($bodyRow, '.col, .grid-static-col');
+	const headFns = collectFieldnames($wrap.find('.grid-heading-row').first());
+	const bodyFns = collectFieldnames($bodyRow);
 	if (!headFns.length || !bodyFns.length) {
 		return false;
 	}
@@ -4297,7 +4320,13 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 			spr_escape_html(String(ln.total_fg_kg || '')) +
 			' Kg</h4>';
 		bodyHtml +=
-			'<p class="text-muted small">' + __('WIP warehouse') + ': ' + spr_escape_html(ln.wip_warehouse || '') + '</p>';
+			'<p class="text-muted small">' +
+			__('WIP warehouse') +
+			': ' +
+			spr_escape_html(ln.wip_warehouse || '') +
+			' — ' +
+			__('Work In Progress batches only. Tick the roll you are loading now.') +
+			'</p>';
 		if (ln.bom_stack && ln.bom_stack.length) {
 			bodyHtml +=
 				'<table class="table table-bordered table-condensed" style="margin-bottom:0.5rem;max-width:36rem"><thead><tr>' +
@@ -4353,17 +4382,23 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 			'</th><th>' +
 			__('Use (Kg)') +
 			'</th></tr></thead><tbody>';
-		const batches = rm.batches || [];
+		const batches = (rm.batches || []).filter(function (b) {
+			const bwh = String(b.warehouse || '');
+			const wip = String(ln.wip_warehouse || '');
+			if (wip && bwh === wip) {
+				return true;
+			}
+			return /work\s*in\s*progress/i.test(bwh) || /^wip\b/i.test(bwh);
+		});
 		batches.forEach(function (b) {
 			const bn = String(b.batch_no || '');
 			const bwh = String(b.warehouse || '');
 			const key = (ln.work_order || '') + '|' + (rm.item_code || '') + '|' + bn;
 			const defq = picksByKey[key] != null ? picksByKey[key] : '';
-			const mx = flt(b.qty);
-			const inWip = bwh === (ln.wip_warehouse || '');
-			const whBadge = inWip
-				? '<span style="color:green;font-size:0.8em">' + spr_escape_html(bwh) + '</span>'
-				: '<span style="color:#888;font-size:0.8em">' + spr_escape_html(bwh) + '</span>';
+			const mx = Math.round(flt(b.qty) * 1000) / 1000;
+			const hasPick = defq !== '' && flt(defq) > 0;
+			const whBadge =
+				'<span style="color:green;font-size:0.8em">' + spr_escape_html(bwh) + '</span>';
 			bodyHtml +=
 				'<tr data-wo="' +
 				spr_escape_html(ln.work_order || '') +
@@ -4372,7 +4407,9 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 				'" data-batch="' +
 				spr_escape_html(bn) +
 				'">' +
-				'<td><input type="checkbox" class="spr-bch-use" /></td>' +
+				'<td><input type="checkbox" class="spr-bch-use"' +
+				(hasPick ? ' checked' : '') +
+				' /></td>' +
 				'<td>' +
 				spr_escape_html(bn) +
 				'</td><td>' +
@@ -4382,7 +4419,7 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 				'</td><td><input type="number" class="input-with-feedback form-control spr-bch-qty" step="0.001" min="0" data-max="' +
 				String(mx) +
 				'" value="' +
-				(defq !== '' && defq > 0 ? String(defq) : '') +
+				(hasPick ? String(Math.round(flt(defq) * 1000) / 1000) : '') +
 				'" style="max-width:9rem" /></td></tr>';
 		});
 		if (!batches.length) {
@@ -4407,23 +4444,28 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 			d.$wrapper.find('tr[data-batch]').each(function () {
 				const $tr = $(this);
 				const use = $tr.find('.spr-bch-use').prop('checked');
-				const q = flt($tr.find('.spr-bch-qty').val());
-				const mx = flt($tr.find('.spr-bch-qty').attr('data-max'));
-				if (!use && q <= 0) {
+				if (!use) {
 					return;
 				}
+				const q = Math.round(flt($tr.find('.spr-bch-qty').val()) * 1000) / 1000;
+				const mx = Math.round(flt($tr.find('.spr-bch-qty').attr('data-max')) * 1000) / 1000;
 				if (q <= 0) {
 					return;
 				}
-				if (mx > 0 && q - mx > 1e-6) {
-					qtyErr = __('Use quantity cannot exceed available stock for one of the selected batches.');
-					return false;
+				let useQty = q;
+				if (mx > 0 && useQty > mx) {
+					if (useQty - mx <= 0.02) {
+						useQty = mx;
+					} else {
+						qtyErr = __('Use quantity cannot exceed available stock for one of the selected batches.');
+						return false;
+					}
 				}
 				out.push({
 					work_order: $tr.attr('data-wo'),
 					item_code: $tr.attr('data-item'),
 					batch_no: $tr.attr('data-batch'),
-					qty: q,
+					qty: useQty,
 				});
 			});
 			if (qtyErr) {
@@ -8105,7 +8147,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="${sprLockCssVer}">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '60';
+	const sprItemsCssVer = '61';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -8344,30 +8386,24 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .grid-heading-row .grid-static-col:last-child {
 			min-width: 32px;
 		}
-		/* Header/body structural cols — body row-index includes edit icon, header must match */
-		.spr-items-wrap .grid-heading-row > .row-check,
-		.spr-shaft-jobs-wrap .grid-heading-row > .row-check {
-			flex: 0 0 36px;
-			min-width: 36px;
-			max-width: 36px;
+		/* Header/body structural cols — match nested .data-row cells, not only direct children */
+		.spr-items-wrap .grid-heading-row .row-check,
+		.spr-shaft-jobs-wrap .grid-heading-row .row-check,
+		.spr-items-wrap .grid-body .grid-row:not(.grid-form-row) .row-check,
+		.spr-shaft-jobs-wrap .grid-body .grid-row:not(.grid-form-row) .row-check {
+			flex: 0 0 36px !important;
+			min-width: 36px !important;
+			max-width: 36px !important;
+			width: 36px !important;
 		}
-		.spr-items-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-check,
-		.spr-shaft-jobs-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-check {
-			flex: 0 0 36px;
-			min-width: 36px;
-			max-width: 36px;
-		}
-		.spr-items-wrap .grid-heading-row > .row-index,
-		.spr-shaft-jobs-wrap .grid-heading-row > .row-index {
-			flex: 0 0 60px;
-			min-width: 60px;
-			max-width: 60px;
-		}
-		.spr-items-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-index,
-		.spr-shaft-jobs-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-index {
-			flex: 0 0 60px;
-			min-width: 60px;
-			max-width: 60px;
+		.spr-items-wrap .grid-heading-row .row-index,
+		.spr-shaft-jobs-wrap .grid-heading-row .row-index,
+		.spr-items-wrap .grid-body .grid-row:not(.grid-form-row) .row-index,
+		.spr-shaft-jobs-wrap .grid-body .grid-row:not(.grid-form-row) .row-index {
+			flex: 0 0 60px !important;
+			min-width: 60px !important;
+			max-width: 60px !important;
+			width: 60px !important;
 		}
 		.spr-items-wrap .grid-heading-row,
 		.spr-shaft-jobs-wrap .grid-heading-row,

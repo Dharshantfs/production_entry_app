@@ -53,6 +53,8 @@ function extra_group_key(ex) {
 	const name = String(ex?.item_name || "").toUpperCase();
 	const blob = `${code} ${name}`;
 	if (code.startsWith("PP ") || code.startsWith("PP-")) return "PP";
+	if (code.startsWith("LD ") || code.startsWith("LD-") || blob.includes(" LD") || /\bLD\b/.test(blob))
+		return "LD";
 	if (code.startsWith("FL ") || code.startsWith("FL-") || blob.includes("FILLER")) return "Filler";
 	if (code.startsWith("MB ") || code.startsWith("MB-") || blob.includes("MASTERBATCH")) return "Masterbatch";
 	if (blob.includes("ANTISTATIC")) return "Antistatic";
@@ -138,6 +140,7 @@ function make_empty_row(custom_unit) {
 	return {
 		pp_qty: 0,
 		filler_qty: 0,
+		ld_qty: 0,
 		mb_qty: 0,
 		anti_qty: 0,
 		ppa_qty: 0,
@@ -154,6 +157,20 @@ function build_rows(set_obj, custom_unit) {
 
 function isMixingExcludedUnit(unit) {
 	return EXCLUDED_MACHINES.includes((unit || "").trim());
+}
+
+function isLaminationMixingUnit(unit) {
+	const u = String(unit || "")
+		.toUpperCase()
+		.replace(/-/g, " ");
+	return u.includes("LAMINATION");
+}
+
+function mixingUsesLdSlot(custom_unit, materials) {
+	if (isLaminationMixingUnit(custom_unit)) {
+		return true;
+	}
+	return has_material(materials, "LD");
 }
 
 async function openSprMixingSheet(ctx = {}) {
@@ -229,10 +246,16 @@ function normalizeMixingState(raw, custom_unit) {
 		if (!Array.isArray(set.extras)) set.extras = [];
 		if (!Array.isArray(set.rows)) set.rows = [];
 		if (!set.materials || typeof set.materials !== "object") set.materials = {};
+		if (isLaminationMixingUnit(custom_unit) && !set.materials.LD && set.materials.Filler) {
+			set.materials.LD = set.materials.Filler;
+		}
 		set.rows = set.rows.map((row) => {
 			const r = row && typeof row === "object" ? { ...row } : make_empty_row(custom_unit);
 			if (!r.mixing_type) {
 				r.mixing_type = fallbackType;
+			}
+			if (isLaminationMixingUnit(custom_unit) && !r.ld_qty && r.filler_qty) {
+				r.ld_qty = r.filler_qty;
 			}
 			return r;
 		});
@@ -292,6 +315,7 @@ function show_dialog(ctx, existing, frm) {
 			);
 		}
 	} else {
+		const useLd = isLaminationMixingUnit(custom_unit);
 		fields.push(
 			{ fieldtype: "Column Break" },
 			{
@@ -302,13 +326,21 @@ function show_dialog(ctx, existing, frm) {
 				get_query: () => ({ filters: { item_code: ["like", "PP -%"] } }),
 			},
 			{ fieldtype: "Column Break" },
-			{
-				fieldname: "filler_item",
-				label: __("Filler"),
-				fieldtype: "Link",
-				options: "Item",
-				get_query: () => ({ filters: { item_code: ["like", "FL -%"] } }),
-			},
+			useLd
+				? {
+						fieldname: "ld_item",
+						label: __("LD"),
+						fieldtype: "Link",
+						options: "Item",
+						get_query: () => ({ filters: { item_code: ["like", "%LD%"] } }),
+					}
+				: {
+						fieldname: "filler_item",
+						label: __("Filler"),
+						fieldtype: "Link",
+						options: "Item",
+						get_query: () => ({ filters: { item_code: ["like", "FL -%"] } }),
+					},
 			{ fieldtype: "Column Break" },
 			{
 				fieldname: "masterbatch_item",
@@ -370,7 +402,11 @@ function show_dialog(ctx, existing, frm) {
 		}
 	} else {
 		d.set_value("pp_item", m0.PP || "");
-		d.set_value("filler_item", m0.Filler || "");
+		if (isLaminationMixingUnit(custom_unit)) {
+			d.set_value("ld_item", m0.LD || m0.Filler || "");
+		} else {
+			d.set_value("filler_item", m0.Filler || "");
+		}
 		d.set_value("masterbatch_item", m0.Masterbatch || "");
 		d.set_value("antistatic_item", m0.Antistatic || "");
 		d.set_value("ppa_item", m0.PPA || "");
@@ -534,13 +570,23 @@ function save_raw_materials(d, ctx, state, frm) {
 			frappe.msgprint(__("Please select Polypropylene before saving. Other materials are optional."));
 			return;
 		}
-		selected = {
-			PP: v.pp_item,
-			Filler: v.filler_item || "",
-			Masterbatch: v.masterbatch_item || "",
-			Antistatic: v.antistatic_item || "",
-			PPA: v.ppa_item || "",
-		};
+		if (isLaminationMixingUnit(custom_unit)) {
+			selected = {
+				PP: v.pp_item,
+				LD: v.ld_item || "",
+				Masterbatch: v.masterbatch_item || "",
+				Antistatic: v.antistatic_item || "",
+				PPA: v.ppa_item || "",
+			};
+		} else {
+			selected = {
+				PP: v.pp_item,
+				Filler: v.filler_item || "",
+				Masterbatch: v.masterbatch_item || "",
+				Antistatic: v.antistatic_item || "",
+				PPA: v.ppa_item || "",
+			};
+		}
 	}
 
 	const apply_to_set = (index) => {
@@ -559,7 +605,7 @@ function save_raw_materials(d, ctx, state, frm) {
 				].filter(Boolean)
 			: [
 					fetch_item_name(selected.PP),
-					fetch_item_name(selected.Filler),
+					fetch_item_name(selected.LD || selected.Filler),
 					fetch_item_name(selected.Masterbatch),
 					fetch_item_name(selected.Antistatic),
 					fetch_item_name(selected.PPA),
@@ -583,6 +629,7 @@ function save_raw_materials(d, ctx, state, frm) {
 			} else {
 				state.sets[index].item_names = {
 					PP: results[0]?.message?.item_name || selected.PP,
+					LD: selected.LD ? results[1]?.message?.item_name || selected.LD : "",
 					Filler: selected.Filler ? results[1]?.message?.item_name || selected.Filler : "",
 					Masterbatch: selected.Masterbatch
 						? results[2]?.message?.item_name || selected.Masterbatch
@@ -711,11 +758,18 @@ function render_set_html(set, si, ctx, state, readOnly) {
 				<td style="text-align:center">${status_badge}</td>
 			</tr>`;
 		} else {
+			const useLd = mixingUsesLdSlot(custom_unit, m);
 			const gsm_cells = [
 				has_material(m, "PP") ? qtyCell("pp_qty", row.pp_qty) : "",
 				extras_cells_html(set, row, si, ri, dis, "PP"),
-				has_material(m, "Filler") ? qtyCell("filler_qty", row.filler_qty) : "",
-				extras_cells_html(set, row, si, ri, dis, "Filler"),
+				useLd
+					? has_material(m, "LD")
+						? qtyCell("ld_qty", row.ld_qty || row.filler_qty)
+						: ""
+					: has_material(m, "Filler")
+						? qtyCell("filler_qty", row.filler_qty)
+						: "",
+				extras_cells_html(set, row, si, ri, dis, useLd ? "LD" : "Filler"),
 				has_material(m, "Masterbatch") ? qtyCell("mb_qty", row.mb_qty) : "",
 				extras_cells_html(set, row, si, ri, dis, "Masterbatch"),
 				has_material(m, "Antistatic") ? qtyCell("anti_qty", row.anti_qty) : "",
@@ -747,15 +801,20 @@ function render_set_html(set, si, ctx, state, readOnly) {
 				${solvent_headers}<th>${__("Status")}</th>
 			</tr></thead><tbody>${rows_html}</tbody></table>`;
 	} else {
+		const useLd = mixingUsesLdSlot(custom_unit, m);
 		const gsm_headers = [
 			has_material(m, "PP")
 				? `<th>${frappe.utils.escape_html(names.PP || m.PP || "PP")} (kg)</th>`
 				: "",
 			extras_headers_html(set, "PP"),
-			has_material(m, "Filler")
-				? `<th>${frappe.utils.escape_html(names.Filler || m.Filler || __("Filler"))} (kg)</th>`
-				: "",
-			extras_headers_html(set, "Filler"),
+			useLd
+				? has_material(m, "LD")
+					? `<th>${frappe.utils.escape_html(names.LD || m.LD || __("LD"))} (kg)</th>`
+					: ""
+				: has_material(m, "Filler")
+					? `<th>${frappe.utils.escape_html(names.Filler || m.Filler || __("Filler"))} (kg)</th>`
+					: "",
+			extras_headers_html(set, useLd ? "LD" : "Filler"),
 			has_material(m, "Masterbatch")
 				? `<th>${frappe.utils.escape_html(names.Masterbatch || m.Masterbatch || __("Masterbatch"))} (kg)</th>`
 				: "",
@@ -912,11 +971,18 @@ function print_mixing_sheet(state, ctx) {
 						<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
 				}
 				const m = set.materials || {};
+				const useLd = mixingUsesLdSlot(custom_unit, m);
 				const gsm_cells = [
 					has_material(m, "PP") ? `<td>${r.pp_qty || 0}</td>` : "",
 					extras_print_cells(set, r, "PP"),
-					has_material(m, "Filler") ? `<td>${r.filler_qty || 0}</td>` : "",
-					extras_print_cells(set, r, "Filler"),
+					useLd
+						? has_material(m, "LD")
+							? `<td>${r.ld_qty || r.filler_qty || 0}</td>`
+							: ""
+						: has_material(m, "Filler")
+							? `<td>${r.filler_qty || 0}</td>`
+							: "",
+					extras_print_cells(set, r, useLd ? "LD" : "Filler"),
 					has_material(m, "Masterbatch") ? `<td>${r.mb_qty || 0}</td>` : "",
 					extras_print_cells(set, r, "Masterbatch"),
 					has_material(m, "Antistatic") ? `<td>${r.anti_qty || 0}</td>` : "",
@@ -946,6 +1012,7 @@ function print_mixing_sheet(state, ctx) {
 			const names = set.item_names || {};
 			const summary = [
 				m.PP ? `PP: <b>${m.PP}</b>` : "",
+				m.LD ? `LD: <b>${m.LD}</b>` : "",
 				m.Filler ? `Filler: <b>${m.Filler}</b>` : "",
 				m.Masterbatch ? `MB: <b>${m.Masterbatch}</b>` : "",
 				m.Antistatic ? `Anti: <b>${m.Antistatic}</b>` : "",
@@ -956,8 +1023,14 @@ function print_mixing_sheet(state, ctx) {
 			const gsm_headers = [
 				has_material(m, "PP") ? `<th>${names.PP || m.PP || "PP"}</th>` : "",
 				extras_print_headers(set, "PP"),
-				has_material(m, "Filler") ? `<th>${names.Filler || m.Filler || "Filler"}</th>` : "",
-				extras_print_headers(set, "Filler"),
+				mixingUsesLdSlot(custom_unit, m)
+					? has_material(m, "LD")
+						? `<th>${names.LD || m.LD || "LD"}</th>`
+						: ""
+					: has_material(m, "Filler")
+						? `<th>${names.Filler || m.Filler || "Filler"}</th>`
+						: "",
+				extras_print_headers(set, mixingUsesLdSlot(custom_unit, m) ? "LD" : "Filler"),
 				has_material(m, "Masterbatch") ? `<th>${names.Masterbatch || m.Masterbatch || "MB"}</th>` : "",
 				extras_print_headers(set, "Masterbatch"),
 				has_material(m, "Antistatic") ? `<th>${names.Antistatic || m.Antistatic || "Anti"}</th>` : "",

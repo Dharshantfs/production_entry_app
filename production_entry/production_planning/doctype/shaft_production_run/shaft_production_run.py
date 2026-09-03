@@ -4859,14 +4859,30 @@ class ShaftProductionRun(Document):
 				pass
 		return out
 
+	def _spr_is_wip_warehouse(self, warehouse: str, wip_warehouse: str = "") -> bool:
+		wh = _cstr(warehouse).strip()
+		if not wh:
+			return False
+		target = _cstr(wip_warehouse).strip()
+		if target and wh == target:
+			return True
+		wu = wh.upper()
+		return "WORK IN PROGRESS" in wu or wu.startswith("WIP ") or wu.startswith("WIP-")
+
 	def _available_batches_for_wo_transfer(self, wo_doc, item_code: str) -> list[dict]:
-		"""Only batches already transferred for this WO (MTFM), with current stock qty."""
+		"""Only WIP batches already transferred for this WO (MTFM), with current stock qty."""
 		wo_name = _cstr(getattr(wo_doc, "name", None)).strip()
 		allowed = self._mtfm_batch_nos_for_wo_item(wo_name, item_code)
 		if not allowed:
 			return []
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None) or "")
 		all_batches = self._available_batches_for_rm_all_wh(item_code)
-		return [b for b in all_batches if _cstr(b.get("batch_no")).strip() in allowed]
+		return [
+			b
+			for b in all_batches
+			if _cstr(b.get("batch_no")).strip() in allowed
+			and self._spr_is_wip_warehouse(_cstr(b.get("warehouse")), wip_wh)
+		]
 
 	def _spr_fabric_picks_field_exists(self) -> bool:
 		try:
