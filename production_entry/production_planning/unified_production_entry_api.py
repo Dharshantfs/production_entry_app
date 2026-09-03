@@ -6186,6 +6186,161 @@ def _mix_date_key_months(date_key: str) -> set:
 	return months
 
 
+def _list_mix_store_date_keys() -> list:
+	if not _mix_roll_store_table_exists():
+		return []
+	rows = frappe.db.sql("SELECT date_key FROM `mix_roll_store_data`")
+	return [_cstr(r[0]).strip() for r in rows if r and _cstr(r[0]).strip()]
+
+
+def _mix_date_key_iso_weeks(date_key: str) -> set:
+	"""ISO (year, week) tuples covered by a Color Chart mix date_key."""
+	import calendar
+	import re as _re
+	from datetime import date as _date, timedelta as _timedelta
+
+	key = _cstr(date_key).strip()
+	weeks: set = set()
+	if not key:
+		return weeks
+	m = _re.match(r"^week-(\d{4})-W(\d{1,2})", key, _re.IGNORECASE)
+	if m:
+		weeks.add((int(m.group(1)), int(m.group(2))))
+		return weeks
+	m = _re.match(r"^day-(\d{4})-(\d{1,2})-(\d{1,2})", key)
+	if m:
+		try:
+			d = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+			iso = d.isocalendar()
+			weeks.add((iso[0], iso[1]))
+		except Exception:
+			pass
+		return weeks
+	m = _re.match(r"^month-(\d{4})-(\d{1,2})", key)
+	if m:
+		year, month = int(m.group(1)), int(m.group(2))
+		try:
+			start = _date(year, month, 1)
+			end = _date(year, month, calendar.monthrange(year, month)[1])
+		except Exception:
+			return weeks
+		d = start
+		while d <= end:
+			iso = d.isocalendar()
+			weeks.add((iso[0], iso[1]))
+			d += _timedelta(days=1)
+		return weeks
+	m = _re.match(r"^(\d{4})-W(\d{1,2})", key, _re.IGNORECASE)
+	if m:
+		weeks.add((int(m.group(1)), int(m.group(2))))
+	return weeks
+
+
+def _mix_date_key_base_and_plan(date_key: str) -> tuple:
+	import re as _re
+
+	key = _cstr(date_key).strip()
+	for pat in (
+		r"^(day-\d{4}-\d{1,2}-\d{1,2})(?:-(.+))?$",
+		r"^(week-\d{4}-W\d{1,2})(?:-(.+))?$",
+		r"^(month-\d{4}-\d{1,2})(?:-(.+))?$",
+	):
+		m = _re.match(pat, key, _re.IGNORECASE)
+		if m:
+			return m.group(1), _cstr(m.group(2)).strip()
+	return key, ""
+
+
+def _mix_date_key_kind(date_key: str) -> str:
+	base, _plan = _mix_date_key_base_and_plan(date_key)
+	if base.lower().startswith("month-"):
+		return "month"
+	if base.lower().startswith("week-"):
+		return "week"
+	return "day"
+
+
+def _mix_date_key_day_stamp(date_key: str) -> str:
+	"""YYYY-MM-DD for a day-* key, else empty."""
+	import re as _re
+
+	m = _re.match(r"^day-(\d{4})-(\d{1,2})-(\d{1,2})", _cstr(date_key).strip())
+	if not m:
+		return ""
+	return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+
+def _related_mix_store_keys(date_key: str) -> list:
+	"""Existing mix stores Color Chart should show together with date_key.
+
+	GSM Daily saves `day-YYYY-MM-DD`. Color Chart weekly PLAN 2 loads
+	`week-YYYY-Www-PLAN 2`. Unsuffixed GSM day rows are included; other plans are not.
+	"""
+	date_key = _cstr(date_key).strip()
+	weeks = _mix_date_key_iso_weeks(date_key)
+	kind = _mix_date_key_kind(date_key)
+	day_stamp = _mix_date_key_day_stamp(date_key)
+	_view_base, view_plan = _mix_date_key_base_and_plan(date_key)
+	out = []
+	seen = set()
+	if date_key:
+		out.append(date_key)
+		seen.add(date_key)
+	if not weeks:
+		return out
+	for k in _list_mix_store_date_keys():
+		if k in seen:
+			continue
+		kw = _mix_date_key_iso_weeks(k)
+		if not (kw & weeks):
+			continue
+		kkind = _mix_date_key_kind(k)
+		_k_base, k_plan = _mix_date_key_base_and_plan(k)
+		if kind in ("day", "week") and kkind == "month":
+			continue
+		if kind == "day" and kkind == "day" and _mix_date_key_day_stamp(k) != day_stamp:
+			continue
+		if k_plan and view_plan and k_plan != view_plan:
+			continue
+		if k_plan and not view_plan:
+			continue
+		out.append(k)
+		seen.add(k)
+	return out
+
+
+def _copy_mix_row_to_related_stores(entry: dict, primary_date_key: str, planned_date=None):
+	"""Append a GSM-created mix onto existing Color Chart week/month/plan stores."""
+	if not isinstance(entry, dict):
+		return
+	mix_id = _cstr(entry.get("mix_id")).strip()
+	if not mix_id:
+		return
+	anchor = _cstr(primary_date_key).strip()
+	if planned_date:
+		try:
+			d = getdate(planned_date)
+			anchor = f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+		except Exception:
+			pass
+	weeks = _mix_date_key_iso_weeks(anchor)
+	day_stamp = _mix_date_key_day_stamp(anchor)
+	existing = set(_list_mix_store_date_keys())
+	for date_key in existing:
+		if date_key == primary_date_key:
+			continue
+		if not (_mix_date_key_iso_weeks(date_key) & weeks):
+			continue
+		kind = _mix_date_key_kind(date_key)
+		if kind == "day" and _mix_date_key_day_stamp(date_key) != day_stamp:
+			continue
+		entries = _load_mix_store_entries(date_key)
+		if any(_cstr(e.get("mix_id")).strip() == mix_id for e in entries if isinstance(e, dict)):
+			continue
+		entries.append(dict(entry))
+		save_mix_roll_data(date_key, entries)
+
+
 def _gsm_browse_scope_months(
 	planned_date=None,
 	view_scope=None,
@@ -6521,6 +6676,7 @@ def upsert_gsm_mix_roll_from_entry(
 
 	_create_mix_items_for_store_row(entry)
 	save_mix_roll_data(date_key, entries)
+	_copy_mix_row_to_related_stores(entry, date_key, planned_date=planned_date or run_date)
 
 	candidate = _serialize_mix_roll_candidate(date_key, entry)
 	overlap = sorted(_mix_date_key_months(date_key) & scope_months)
@@ -6581,7 +6737,8 @@ def get_gsm_mix_rolls_for_unit(
 			continue
 		if cint(include_submitted) == 0 and entry.get("_submitted"):
 			continue
-		dedupe = f"{date_key}::{_cstr(entry.get('mix_id')) or _mix_roll_row_key(entry)}"
+		mix_id = _cstr(entry.get("mix_id")).strip()
+		dedupe = mix_id or f"{date_key}::{_mix_roll_row_key(entry)}"
 		if dedupe in seen:
 			continue
 		seen.add(dedupe)

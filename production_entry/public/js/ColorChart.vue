@@ -1561,7 +1561,7 @@ async function rebuildMixRolls() {
     try {
         const r = await frappe.call({
             method: "production_entry.production_planning.scheduler_api.get_mix_roll_data",
-            args: { date_key: dateKey },
+            args: { date_key: dateKey, include_related: 1 },
             async: true
         });
         saved = r.message || [];

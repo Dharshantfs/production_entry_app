@@ -28209,13 +28209,51 @@ def save_mix_roll_data(date_key, entries):
 
 
 @frappe.whitelist()
-def get_mix_roll_data(date_key):
-    """Load saved mix roll entries and sync weight/status from linked Stock Entries."""
+def get_mix_roll_data(date_key, include_related=0):
+    """Load saved mix roll entries and sync weight/status from linked Stock Entries.
+
+    include_related: also merge GSM Daily `day-*` rows into Color Chart weekly/monthly keys
+    (same ISO week), so operator-created mix rolls appear in MIX ROLL AREA.
+    """
     try:
         frappe.db.sql("SELECT 1 FROM `mix_roll_store_data` LIMIT 1")
     except Exception:
         return []
 
+    date_key = str(date_key or "").strip()
+    keys = [date_key] if date_key else []
+    if cint(include_related) and date_key:
+        try:
+            from production_entry.production_planning.unified_production_entry_api import (
+                _related_mix_store_keys,
+            )
+            related = _related_mix_store_keys(date_key)
+            for k in related:
+                if k not in keys:
+                    keys.append(k)
+        except Exception:
+            pass
+
+    merged = []
+    seen_ids = set()
+    for key in keys:
+        entries = _load_and_sync_mix_roll_store(key)
+        for m in entries or []:
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get("mix_id") or "").strip()
+            dedupe = mid or f"{key}::{m.get('unit')}|{m.get('color1')}|{m.get('color2')}"
+            if dedupe in seen_ids:
+                continue
+            seen_ids.add(dedupe)
+            merged.append(m)
+    return merged
+
+
+def _load_and_sync_mix_roll_store(date_key):
+    date_key = str(date_key or "").strip()
+    if not date_key:
+        return []
     rows = frappe.db.sql(
         "SELECT data FROM `mix_roll_store_data` WHERE date_key = %s", date_key
     )
