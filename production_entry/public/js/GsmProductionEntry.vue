@@ -387,9 +387,9 @@
                       @click.stop="toggleQualityMenu"
                     >Quality Check ▾</button>
                     <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-quality-menu">
-                      <button type="button" @click="runQualityCheck('round_gsm')">Round Cutting GSM Test</button>
-                      <button type="button" @click="runQualityCheck('patty_gsm')">Patty Cutting GSM Test</button>
-                      <button type="button" @click="runQualityCheck('tensile')">Tensile Testing</button>
+                      <button type="button" @click.stop="runQualityCheck('round_gsm')">Round Cutting GSM Test</button>
+                      <button type="button" @click.stop="runQualityCheck('patty_gsm')">Patty Cutting GSM Test</button>
+                      <button type="button" @click.stop="runQualityCheck('tensile')">Tensile Testing</button>
                     </div>
                   </div>
                   <button
@@ -1924,10 +1924,7 @@ import {
   gsmOpenManualJob,
   gsmOpenRmBatches,
   gsmOpenTrailOrder,
-  gsmOpenGsmTesting,
-  gsmOpenRoundCuttingGsmTesting,
-  gsmOpenPattyCuttingGsmTesting,
-  gsmOpenTensileTesting,
+  gsmOpenQualityCheck,
   gsmBackfillShaftNumbers,
   gsmPrintRollLabel,
   gsmPrintQcLabel,
@@ -5682,20 +5679,50 @@ async function runTool(kind) {
   }
 }
 
+async function resolveQualityCheckTarget() {
+  const selectedOpts = toolsPpOptions.value || [];
+  const sessionOpts = (sessionSprList.value || [])
+    .filter((s) => s && s.spr_name)
+    .map((s) => ({
+      ppId: s.pp_id,
+      orderCode: s.order_code || s.pp_id,
+      spr_name: s.spr_name,
+    }));
+  const options = selectedOpts.length ? selectedOpts : sessionOpts;
+  if (!options.length) {
+    frappe.msgprint(
+      __("No Shaft Production Run in this session. Confirm jobs and create SPRs first.")
+    );
+    return null;
+  }
+  if (options.length === 1) {
+    return options[0];
+  }
+  return (await pickToolOrder(options)) || null;
+}
+
 async function runQualityCheck(kind) {
   closeQualityMenu();
-  const ctx = await resolveToolContext();
-  if (!ctx) {
-    return;
-  }
-  const { ppId } = ctx;
-  const jobId = await promptQualityCheckJobId(ppId);
-  if (kind === "round_gsm" || kind === "gsm") {
-    await gsmOpenRoundCuttingGsmTesting(ppId, jobId);
-  } else if (kind === "patty_gsm") {
-    await gsmOpenPattyCuttingGsmTesting(ppId, jobId);
-  } else if (kind === "tensile") {
-    await gsmOpenTensileTesting(ppId, jobId);
+  try {
+    const target = await resolveQualityCheckTarget();
+    if (!target?.spr_name) {
+      return;
+    }
+    const jobId = await promptQualityCheckJobId(target.ppId);
+    await gsmOpenQualityCheck({
+      sprName: target.spr_name,
+      ppId: target.ppId,
+      kind,
+      jobId,
+      session: {
+        unit: headerUnit.value || filterUnit.value,
+        runDate: runDate.value,
+        shift: shift.value,
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint(__("Could not open Quality Checking."));
   }
 }
 
@@ -11406,8 +11433,8 @@ onUnmounted(() => {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  z-index: 50;
-  min-width: 200px;
+  z-index: 400;
+  min-width: 220px;
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;

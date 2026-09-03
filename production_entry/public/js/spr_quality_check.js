@@ -56,11 +56,7 @@ async function promptSprJobId(ids, title) {
 }
 
 async function resolveJobIdForSpr(sprName, jobId) {
-	const res = await frappe.call({
-		method: "frappe.client.get",
-		args: { doctype: "Shaft Production Run", name: sprName },
-	});
-	const doc = res.message || {};
+	const doc = await loadSprDoc(sprName);
 	const preferred = String(jobId || "").trim();
 	if (preferred && rollsForSprJob(doc, preferred).length) {
 		return preferred;
@@ -79,8 +75,8 @@ async function resolveJobIdForSpr(sprName, jobId) {
 
 async function loadSprDoc(sprName) {
 	const res = await frappe.call({
-		method: "frappe.client.get",
-		args: { doctype: "Shaft Production Run", name: sprName },
+		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
+		args: { spr_name: sprName },
 	});
 	return res.message || {};
 }
@@ -148,13 +144,13 @@ async function promptRollForSprJob(spr, jobId) {
 	if (!rolls.length) {
 		return null;
 	}
-	if (rolls.length === 1) {
-		return rolls[0];
-	}
 	const options = rolls.map((row) => {
 		const batch = String(row.batch_no || "").trim();
 		const suffix = rollSuffix(row);
-		const label = batch || `Roll ${suffix || row.idx || ""}`;
+		const gsm = cint(row.gsm);
+		const label = [batch || `Roll ${suffix || row.idx || ""}`, gsm ? `${gsm} GSM` : ""]
+			.filter(Boolean)
+			.join(" · ");
 		return { value: batch || String(row.name || row.idx || suffix), label };
 	});
 	return new Promise((resolve) => {
@@ -163,9 +159,10 @@ async function promptRollForSprJob(spr, jobId) {
 				{
 					fieldtype: "Select",
 					fieldname: "batch_no",
-					label: __("Batch"),
+					label: __("Batch No"),
 					options,
 					reqd: 1,
+					default: options.length === 1 ? options[0].value : "",
 				},
 			],
 			(values) => {
@@ -174,7 +171,7 @@ async function promptRollForSprJob(spr, jobId) {
 					rolls.find((r) => String(r.name || "") === values.batch_no);
 				resolve(picked || rolls[0]);
 			},
-			__("Select Batch"),
+			__("Quality Check — select batch"),
 			__("Continue")
 		);
 	});
@@ -188,27 +185,31 @@ async function findExistingQcDraft(sprName, testingType, selectedRoll) {
 		testing_type: testingType,
 		docstatus: 0,
 	};
-	if (batchNo) {
-		const byBatch = await frappe.db.get_list(QC_DOCTYPE, {
-			filters: { ...baseFilters, batch_no: batchNo },
-			fields: ["name"],
-			limit: 1,
-			order_by: "modified desc",
-		});
-		if (byBatch?.[0]?.name) {
-			return byBatch[0].name;
+	try {
+		if (batchNo) {
+			const byBatch = await frappe.db.get_list(QC_DOCTYPE, {
+				filters: { ...baseFilters, batch_no: batchNo },
+				fields: ["name"],
+				limit: 1,
+				order_by: "modified desc",
+			});
+			if (byBatch?.[0]?.name) {
+				return byBatch[0].name;
+			}
 		}
-	}
-	if (rollNo) {
-		const byRoll = await frappe.db.get_list(QC_DOCTYPE, {
-			filters: { ...baseFilters, roll_no: rollNo },
-			fields: ["name"],
-			limit: 1,
-			order_by: "modified desc",
-		});
-		if (byRoll?.[0]?.name) {
-			return byRoll[0].name;
+		if (rollNo) {
+			const byRoll = await frappe.db.get_list(QC_DOCTYPE, {
+				filters: { ...baseFilters, roll_no: rollNo },
+				fields: ["name"],
+				limit: 1,
+				order_by: "modified desc",
+			});
+			if (byRoll?.[0]?.name) {
+				return byRoll[0].name;
+			}
 		}
+	} catch (e) {
+		console.warn("findExistingQcDraft", e);
 	}
 	return "";
 }
@@ -260,13 +261,18 @@ function applyPattyTemplateDefaults(defaults, spr) {
 }
 
 async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
-	if (!(await frappe.db.exists("DocType", QC_DOCTYPE))) {
-		frappe.msgprint(
-			__(
-				"Quality Checking app is not installed on this site. Install the quality-check custom app."
-			)
-		);
-		return;
+	try {
+		const exists = await frappe.db.exists("DocType", QC_DOCTYPE);
+		if (exists === false || exists === 0) {
+			frappe.msgprint(
+				__(
+					"Quality Checking app is not installed on this site. Install the quality-check custom app."
+				)
+			);
+			return;
+		}
+	} catch (e) {
+		console.warn("Quality Checking DocType check failed", e);
 	}
 
 	const testingType = TESTING_TYPES[testType] || testType;
@@ -284,6 +290,7 @@ async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 		return;
 	}
 
+	const rollGsm = cint(selectedRoll?.gsm) || cint(jobRow?.gsm) || 0;
 	const defaults = {
 		shaft_production_run: sprName,
 		testing_type: testingType,
@@ -295,7 +302,27 @@ async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 		batch_no: selectedRoll?.batch_no || "",
 		roll_no: cint(selectedRoll?.roll_no) || rollSuffix(selectedRoll) || 0,
 	};
+	if (rollGsm > 0) {
+		if (qcMetaHasField("gsm")) {
+			defaults.gsm = rollGsm;
+		}
+		if (qcMetaHasField("set_gsm")) {
+			defaults.set_gsm = rollGsm;
+		}
+		if (qcMetaHasField("target_gsm")) {
+			defaults.target_gsm = rollGsm;
+		}
+	}
+	if (qcMetaHasField("job_id") && jobId) {
+		defaults.job_id = jobId;
+	}
 	applyPattyTemplateDefaults(defaults, spr);
+
+	frappe.route_options = { ...defaults };
+	if (typeof frappe.new_doc === "function") {
+		frappe.new_doc(QC_DOCTYPE, defaults);
+		return;
+	}
 
 	await new Promise((resolve, reject) => {
 		frappe.model.with_doctype(QC_DOCTYPE, () => {

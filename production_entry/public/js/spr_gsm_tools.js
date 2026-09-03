@@ -4,6 +4,7 @@ import { openSprBundlePackagingDialog } from "./spr_bundle_packaging_dialog.js";
 import { openSprManualJobDialog } from "./spr_manual_job_dialog.js";
 import { openSprTrialOrderDialog } from "./spr_trial_order_dialog.js";
 import "./spr_label.js";
+import "./spr_quality_check.js";
 
 async function loadSprDocForGsm(sprName) {
 	if (production_entry.spr_label && typeof production_entry.spr_label.load_spr_doc === "function") {
@@ -260,58 +261,64 @@ export async function gsmPrintWastageLabel(sprName, childRowName, tableField, ro
 	await production_entry.spr_label.print_wastage(sprName, childRowName, tableField, rowData);
 }
 
+/** Start a Quality Checking form from GSM — uses the session SPR name when known. */
+export async function gsmOpenQualityCheck({ sprName, ppId, kind, jobId, session } = {}) {
+	let name = String(sprName || "").trim();
+	if (!name && ppId) {
+		name = await findSprForGsm(ppId, true, session || {});
+	}
+	if (!name) {
+		noSprMessage();
+		return;
+	}
+	const qc = production_entry.spr_quality_check;
+	if (!qc) {
+		frappe.msgprint(__("Quality Check helper not loaded."));
+		return;
+	}
+	const k = String(kind || "round_gsm");
+	try {
+		if (k === "patty_gsm" && typeof qc.openSprPattyCuttingGsmTesting === "function") {
+			await qc.openSprPattyCuttingGsmTesting(name, jobId);
+			return;
+		}
+		if (k === "tensile" && typeof qc.openSprTensileTesting === "function") {
+			await qc.openSprTensileTesting(name, jobId);
+			return;
+		}
+		if (typeof qc.openSprRoundCuttingGsmTesting === "function") {
+			await qc.openSprRoundCuttingGsmTesting(name, jobId);
+			return;
+		}
+		if (typeof qc.openSprGsmTesting === "function") {
+			await qc.openSprGsmTesting(name, jobId);
+			return;
+		}
+		frappe.msgprint(__("Quality Check helper not loaded."));
+	} catch (e) {
+		console.error("gsmOpenQualityCheck", e);
+		frappe.msgprint(__("Could not open Quality Checking."));
+	}
+}
+
 /** Start Round Cutting GSM Test — same redirect as desk SPR Quality Check. */
-export async function gsmOpenGsmTesting(ppId, jobId) {
-	return gsmOpenRoundCuttingGsmTesting(ppId, jobId);
+export async function gsmOpenGsmTesting(ppId, jobId, session) {
+	return gsmOpenQualityCheck({ ppId, kind: "round_gsm", jobId, session });
 }
 
 /** Start Round Cutting GSM Test — same as SPR. */
-export async function gsmOpenRoundCuttingGsmTesting(ppId, jobId) {
-	const sprName = await findSprForGsm(ppId, true);
-	if (!sprName) {
-		noSprMessage();
-		return;
-	}
-	const qc = production_entry.spr_quality_check;
-	if (qc && typeof qc.openSprRoundCuttingGsmTesting === "function") {
-		await qc.openSprRoundCuttingGsmTesting(sprName, jobId);
-		return;
-	}
-	if (qc && typeof qc.openSprGsmTesting === "function") {
-		await qc.openSprGsmTesting(sprName, jobId);
-		return;
-	}
-	frappe.msgprint(__("Quality Check helper not loaded."));
+export async function gsmOpenRoundCuttingGsmTesting(ppId, jobId, session) {
+	return gsmOpenQualityCheck({ ppId, kind: "round_gsm", jobId, session });
 }
 
 /** Start Patty Cutting GSM Test — same as SPR. */
-export async function gsmOpenPattyCuttingGsmTesting(ppId, jobId) {
-	const sprName = await findSprForGsm(ppId, true);
-	if (!sprName) {
-		noSprMessage();
-		return;
-	}
-	const qc = production_entry.spr_quality_check;
-	if (qc && typeof qc.openSprPattyCuttingGsmTesting === "function") {
-		await qc.openSprPattyCuttingGsmTesting(sprName, jobId);
-		return;
-	}
-	frappe.msgprint(__("Quality Check helper not loaded."));
+export async function gsmOpenPattyCuttingGsmTesting(ppId, jobId, session) {
+	return gsmOpenQualityCheck({ ppId, kind: "patty_gsm", jobId, session });
 }
 
 /** Start Tensile Testing — same redirect as desk SPR Quality Check. */
-export async function gsmOpenTensileTesting(ppId, jobId) {
-	const sprName = await findSprForGsm(ppId, true);
-	if (!sprName) {
-		noSprMessage();
-		return;
-	}
-	const qc = production_entry.spr_quality_check;
-	if (qc && typeof qc.openSprTensileTesting === "function") {
-		await qc.openSprTensileTesting(sprName, jobId);
-		return;
-	}
-	frappe.msgprint(__("Quality Check helper not loaded."));
+export async function gsmOpenTensileTesting(ppId, jobId, session) {
+	return gsmOpenQualityCheck({ ppId, kind: "tensile", jobId, session });
 }
 
 /** Fix No. of Shaft = 0 on draft SPR roll lines. */
