@@ -6,13 +6,15 @@
       <button type="button" class="gpe-btn primary" @click="retryPageLoad">Retry</button>
     </div>
     <template v-else>
-    <div v-if="deskSessionExpired" class="gpe-session-expired">
-      <strong>Login expired on this PC</strong>
-      <p>
-        The page is still open, but you are not logged in. Do not click Submit or Close Shift.
-        Log out this operator on other PCs (laptop included), then log in here again.
-      </p>
-      <button type="button" class="gpe-btn primary" @click="reloadGsmForLogin">Log in again</button>
+    <div v-if="deskSessionExpired" class="gpe-session-lock" role="alertdialog" aria-modal="true">
+      <div class="gpe-session-lock-card">
+        <h3>Login expired</h3>
+        <p>
+          This screen stayed open after the login ended. Rolls already saved on this PC are kept.
+          Click <strong>Log in again</strong> — do not Submit or Close Shift from this screen.
+        </p>
+        <button type="button" class="gpe-btn primary" @click="reloadGsmForLogin">Log in again</button>
+      </div>
     </div>
     <div class="gpe-info-strip">
       Create SPRs for selected orders, enter rolls, Save Row saves to server. Submit Entry pushes to SPR and submits.
@@ -1917,15 +1919,14 @@ let gsmSessionPingTimer = null;
 let gsmRealtimeBound = false;
 let gsmRefreshInFlight = false;
 let gsmRefreshQueued = false;
-let gsmSessionExpiredDialogShown = false;
 
 let gsmRefreshDebounceTimer = null;
 let gsmVisibilityBound = false;
 
 /** Fallback poll only — live updates come from gsm_production_entry_updated. */
 const GSM_LIVE_POLL_MS = 90 * 1000;
-/** Cheap logged-user check so Close Shift does not hit Guest whitelist errors. */
-const GSM_SESSION_PING_MS = 3 * 60 * 1000;
+/** Logged-in check while a shift is open — cheap ping so Guest never hits Close Shift. */
+const GSM_SESSION_PING_MS = 15 * 1000;
 
 const deskSessionExpired = ref(false);
 
@@ -1937,18 +1938,28 @@ function gsmErrorText(err) {
   if (!err) {
     return "";
   }
+  const xhr = err.responseJSON || err._server_messages || "";
   const parts = [
     err.message,
     err.exc,
     err.exception,
     err.status,
     err.statusText,
+    err.exc_type,
     typeof err._server_messages === "string" ? err._server_messages : "",
+    typeof xhr === "string" ? xhr : "",
   ];
   try {
-    parts.push(JSON.stringify(err._server_messages || err.exc || ""));
+    parts.push(JSON.stringify(err._server_messages || err.exc || err.responseJSON || ""));
   } catch (e) {
     /* ignore */
+  }
+  if (err.responseJSON && typeof err.responseJSON === "object") {
+    try {
+      parts.push(JSON.stringify(err.responseJSON));
+    } catch (e) {
+      /* ignore */
+    }
   }
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
@@ -1963,10 +1974,12 @@ function isGsmSessionDeadError(err) {
     text.includes("not whitelisted") ||
     text.includes("login to access") ||
     text.includes("not permitted to access this resource") ||
+    text.includes("please log in to continue") ||
     text.includes("method not allowed") ||
     text.includes("csrftoken") ||
     text.includes("csrf token") ||
-    text.includes("session expired")
+    text.includes("session expired") ||
+    text.includes("authenticationerror")
   );
 }
 
@@ -1976,17 +1989,6 @@ function markGsmSessionExpired() {
     clearInterval(gsmPollTimer);
     gsmPollTimer = null;
   }
-  if (gsmSessionExpiredDialogShown) {
-    return;
-  }
-  gsmSessionExpiredDialogShown = true;
-  frappe.msgprint({
-    title: __("Login expired"),
-    indicator: "red",
-    message: __(
-      "This Production Entry tab is still open, but you are not logged in. Do not Submit or Close Shift. Log out this operator on other PCs, then log in on this PC."
-    ),
-  });
 }
 
 function reloadGsmForLogin() {
@@ -1996,7 +1998,6 @@ function reloadGsmForLogin() {
 
 async function ensureGsmDeskSession() {
   if (deskSessionExpired.value) {
-    markGsmSessionExpired();
     return false;
   }
   if (frappe.session?.user && frappe.session.user === "Guest") {
@@ -2005,12 +2006,13 @@ async function ensureGsmDeskSession() {
   }
   try {
     const r = await frappe.call({
-      method: "frappe.auth.get_logged_user",
-      error: () => {},
+      method: "production_entry.production_planning.unified_production_entry_api.ping_gsm_desk_session",
+      type: "POST",
       silent: true,
+      error: () => {},
     });
-    const user = r?.message;
-    if (!user || user === "Guest") {
+    const msg = r?.message || {};
+    if (!cint(msg.ok) || !msg.user || msg.user === "Guest") {
       markGsmSessionExpired();
       return false;
     }
@@ -2024,16 +2026,100 @@ async function ensureGsmDeskSession() {
   }
 }
 
+function gsmSafeCall(opts) {
+  const prevError = opts.error;
+  return frappe
+    .call({
+      ...opts,
+      type: opts.type || "POST",
+      silent: true,
+      error: (r) => {
+        if (isGsmSessionDeadError(r)) {
+          markGsmSessionExpired();
+          return;
+        }
+        if (typeof prevError === "function") {
+          prevError(r);
+          return;
+        }
+        if (typeof frappe.request?.report_error === "function") {
+          frappe.request.report_error(r, opts);
+        }
+      },
+    })
+    .then((r) => {
+      if (deskSessionExpired.value) {
+        throw new Error("session expired");
+      }
+      return r;
+    });
+}
+
+let _gsmOrigFrappeCall = null;
+function installGsmSessionCallGuard() {
+  if (_gsmOrigFrappeCall || typeof frappe === "undefined" || typeof frappe.call !== "function") {
+    return;
+  }
+  _gsmOrigFrappeCall = frappe.call.bind(frappe);
+  frappe.call = function (opts, ...rest) {
+    if (!opts || typeof opts !== "object") {
+      return _gsmOrigFrappeCall(opts, ...rest);
+    }
+    const prevError = opts.error;
+    const alreadySilent = !!opts.silent;
+    return _gsmOrigFrappeCall(
+      {
+        ...opts,
+        error: (r) => {
+          if (isGsmSessionDeadError(r)) {
+            markGsmSessionExpired();
+            return;
+          }
+          if (typeof prevError === "function") {
+            prevError(r);
+            return;
+          }
+          if (!alreadySilent && typeof frappe.request?.report_error === "function") {
+            frappe.request.report_error(r, opts);
+          }
+        },
+      },
+      ...rest
+    );
+  };
+}
+
+function teardownGsmSessionCallGuard() {
+  if (_gsmOrigFrappeCall) {
+    frappe.call = _gsmOrigFrappeCall;
+    _gsmOrigFrappeCall = null;
+  }
+}
+
+function onGsmWindowFocus() {
+  if (!gsmPageIsVisible() || deskSessionExpired.value) {
+    return;
+  }
+  ensureGsmDeskSession();
+}
+
 function setupGsmSessionWatch() {
   if (gsmSessionPingTimer) {
     clearInterval(gsmSessionPingTimer);
   }
+  installGsmSessionCallGuard();
   gsmSessionPingTimer = setInterval(() => {
     if (!gsmPageIsVisible() || deskSessionExpired.value) {
       return;
     }
+    if (!shiftOpened.value) {
+      return;
+    }
     ensureGsmDeskSession();
   }, GSM_SESSION_PING_MS);
+  if (typeof window !== "undefined") {
+    window.addEventListener("focus", onGsmWindowFocus);
+  }
 }
 
 function teardownGsmSessionWatch() {
@@ -2041,6 +2127,10 @@ function teardownGsmSessionWatch() {
     clearInterval(gsmSessionPingTimer);
     gsmSessionPingTimer = null;
   }
+  if (typeof window !== "undefined") {
+    window.removeEventListener("focus", onGsmWindowFocus);
+  }
+  teardownGsmSessionCallGuard();
 }
 
 function sessionSprRow(ppId) {
@@ -6032,7 +6122,7 @@ function closeShiftDialog() {
 }
 
 async function callSubmitGsm(overrides = []) {
-  return frappe.call({
+  return gsmSafeCall({
     method: "production_entry.production_planning.unified_production_entry_api.submit_gsm_production_entry",
     type: "POST",
     args: {
@@ -6172,15 +6262,13 @@ async function submitEntry(overrides = []) {
     submitErrorMessage.value = __("No SPRs were submitted.");
     submitDialogPhase.value = "error";
   } catch (e) {
-    console.error(e);
-    if (isGsmSessionDeadError(e)) {
+    if (e?.message === "session expired" || isGsmSessionDeadError(e)) {
       markGsmSessionExpired();
+      showSubmitConfirmDialog.value = false;
       saveStatus.value = "Login expired";
-      submitErrorMessage.value = __("Login expired. Log in again on this PC, then submit.");
-      submitDialogPhase.value = "error";
       return;
     }
-    const recovered = await pollGsmSubmitRecovery(sprNamesToSubmit, { delayFirst: true });
+    console.error(e);
     if (recovered) {
       markSessionSprsSubmitted(sprNamesToSubmit.map((sn) => ({ spr_name: sn })));
       showSubmitSuccess(
@@ -7619,7 +7707,7 @@ async function closeShift() {
   }
   shiftClosingBusy.value = true;
   try {
-    const validation = await frappe.call({
+    const validation = await gsmSafeCall({
       method: "production_entry.production_planning.unified_production_entry_api.validate_gsm_shift_close",
       type: "POST",
       args: {
@@ -7627,11 +7715,6 @@ async function closeShift() {
         shift: shift.value,
         unit: headerUnit.value,
         session_sprs: shiftSessionSprList.value,
-      },
-      error: (r) => {
-        if (isGsmSessionDeadError(r)) {
-          markGsmSessionExpired();
-        }
       },
     });
     const errors = validation.message?.errors || [];
@@ -7646,7 +7729,7 @@ async function closeShift() {
         () => reject(new Error("cancelled"))
       );
     });
-    const res = await frappe.call({
+    const res = await gsmSafeCall({
       method: "production_entry.production_planning.unified_production_entry_api.close_gsm_shift_session",
       type: "POST",
       args: {
@@ -7656,11 +7739,6 @@ async function closeShift() {
         operator: operator.value,
         supervisor: supervisor.value,
         coordinator: coordinator.value,
-      },
-      error: (r) => {
-        if (isGsmSessionDeadError(r)) {
-          markGsmSessionExpired();
-        }
       },
     });
     const nextShift = res.message?.next_shift;
@@ -7673,11 +7751,12 @@ async function closeShift() {
     await refreshShiftSession();
     redirectToShiftWise(res.message?.redirect);
   } catch (e) {
-    if (e?.message !== "cancelled") {
-      console.error(e);
-      if (isGsmSessionDeadError(e)) {
-        markGsmSessionExpired();
-      }
+    if (e?.message === "cancelled" || e?.message === "session expired") {
+      return;
+    }
+    console.error(e);
+    if (isGsmSessionDeadError(e)) {
+      markGsmSessionExpired();
     }
   } finally {
     shiftClosingBusy.value = false;
@@ -10382,6 +10461,36 @@ onUnmounted(() => {
   border: 1px solid #fed7d7;
   background: #fff5f5;
   border-radius: 8px;
+}
+.gpe-session-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.gpe-session-lock-card {
+  max-width: 440px;
+  width: 100%;
+  background: #fff;
+  border-radius: 14px;
+  padding: 22px 24px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
+  color: #0f172a;
+}
+.gpe-session-lock-card h3 {
+  margin: 0 0 10px;
+  font-size: 20px;
+  color: #991b1b;
+}
+.gpe-session-lock-card p {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #334155;
 }
 .gpe-session-expired {
   margin: 8px 0 12px;

@@ -294,6 +294,14 @@ def get_gsm_current_shift():
 	return get_current_shift()
 
 
+@frappe.whitelist(allow_guest=True, methods=["GET", "POST"])
+def ping_gsm_desk_session():
+	"""Always callable — Guest gets ok=0 instead of a whitelist error."""
+	user = _cstr(frappe.session.user).strip()
+	ok = bool(user) and user != "Guest"
+	return {"ok": 1 if ok else 0, "user": user if ok else ""}
+
+
 _GSM_SHIFT_SESSION_DOCTYPE = "GSM Shift Session"
 _SHIFT_WISE_ENTRY_DOCTYPE = "Shift Wise Production Entry"
 _GSM_SHIFT_LABELS = ("Day Shift", "Night Shift")
