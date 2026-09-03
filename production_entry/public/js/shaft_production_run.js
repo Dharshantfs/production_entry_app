@@ -440,10 +440,42 @@ function spr_should_block_grid_realign(frm) {
 	if (itemsGrid && itemsGrid.grid_form && itemsGrid.grid_form.display) {
 		return true;
 	}
+	if (frm._spr_allow_save_row_align) {
+		return spr_items_grid_is_editing(frm);
+	}
 	if (spr_should_use_lightweight_grid_pass(frm)) {
 		return true;
 	}
 	return spr_items_grid_is_editing(frm);
+}
+
+/** After Save Row remounts the items grid, restore fieldname column order (no flex/index hacks). */
+function spr_repair_items_grid_after_save_row(frm) {
+	if (!frm || !frm.fields_dict) {
+		return;
+	}
+	if (spr_items_grid_is_editing(frm)) {
+		return;
+	}
+	frm._spr_allow_save_row_align = true;
+	try {
+		spr_repair_child_grid_alignment(frm, 'items');
+		spr_apply_items_row_lock_ui(frm);
+		apply_spr_item_row_styles(frm);
+	} finally {
+		frm._spr_allow_save_row_align = false;
+	}
+}
+
+function spr_schedule_items_align_after_save_row(frm) {
+	if (!frm) {
+		return;
+	}
+	[80, 280, 650].forEach(function (ms) {
+		setTimeout(function () {
+			spr_repair_items_grid_after_save_row(frm);
+		}, ms);
+	});
 }
 
 /** After Save / Save Row — repair-only path; no full column mirror (prevents blink/collapse). */
@@ -2050,13 +2082,18 @@ function spr_refresh_draft_child_grids_light(frm) {
 	}
 	spr_apply_grid_wrap_classes(frm);
 	spr_apply_spr_child_grid_min_widths(frm);
-	['items', 'shaft_jobs'].forEach(function (fn) {
-		if (spr_child_grid_needs_repair(frm, fn)) {
-			spr_repair_child_grid_alignment(frm, fn);
-		} else {
-			spr_light_grid_scroll_sync(frm, fn);
-		}
-	});
+	frm._spr_allow_save_row_align = true;
+	try {
+		['items', 'shaft_jobs'].forEach(function (fn) {
+			if (spr_child_grid_needs_repair(frm, fn)) {
+				spr_repair_child_grid_alignment(frm, fn);
+			} else {
+				spr_light_grid_scroll_sync(frm, fn);
+			}
+		});
+	} finally {
+		frm._spr_allow_save_row_align = false;
+	}
 	if (!spr_items_grid_is_editing(frm)) {
 		apply_spr_item_row_styles(frm);
 	}
@@ -2689,6 +2726,7 @@ function spr_after_items_row_lock_doc_save(frm, alertMsg, alertIndicator) {
 	}
 	frm.refresh_field('items');
 	spr_schedule_item_row_styles_after_doc_write(frm);
+	spr_schedule_items_align_after_save_row(frm);
 	[0, 50, 200, 500].forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.fields_dict) {
@@ -4506,7 +4544,6 @@ function spr_move_existing_top_buttons_to_tools(frm) {
 		__('View Party Stock'),
 		__('View Patty Stock'),
 		__('Bora Weight'),
-		__('Mixing Sheet'),
 	];
 	const $buttons = frm.page.wrapper
 		? frm.page.wrapper.find('.page-actions button, .custom-actions button, .standard-actions button')
@@ -4601,7 +4638,31 @@ function spr_register_spr_page_buttons(frm) {
 				rm.call(frm.page, lbl, 'Tools');
 			} catch (e) {}
 		});
+		[__('Mixing Sheet'), __('Select RM batches'), __('SPR — Select RM batches')].forEach(function (lbl) {
+			try {
+				rm.call(frm.page, lbl, tg);
+			} catch (e) {}
+			try {
+				rm.call(frm.page, lbl, 'Tools');
+			} catch (e) {}
+		});
 	}
+	function spr_unhide_toolbar_button(label) {
+		if (!frm.page || !frm.page.wrapper) {
+			return;
+		}
+		const lbl = String(label || '').trim();
+		frm.page.wrapper
+			.find('.page-actions button, .custom-actions button, .standard-actions button')
+			.filter(function () {
+				return spr_button_text($(this)) === lbl;
+			})
+			.each(function () {
+				$(this).show().removeData('spr-moved-to-tools').css('display', '');
+			});
+	}
+	spr_unhide_toolbar_button(__('Mixing Sheet'));
+	spr_unhide_toolbar_button(__('Select RM batches'));
 	function addInner(fn) {
 		try {
 			fn();
@@ -4728,13 +4789,9 @@ function spr_register_spr_page_buttons(frm) {
 			frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
 			cint(frm.doc.docstatus) === 0
 		) {
-			frm.page.add_inner_button(
-				__('SPR — Select RM batches'),
-				function () {
-					spr_open_fabric_batch_pick_dialog(frm);
-				},
-				tg
-			);
+			frm.add_custom_button(__('Select RM batches'), function () {
+				spr_open_fabric_batch_pick_dialog(frm);
+			});
 		}
 	});
 	addInner(function () {
@@ -6680,6 +6737,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		try { spr_schedule_item_row_styles_after_doc_write(frm); } catch(e) {}
 		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
 		try { apply_spr_item_row_styles(frm); } catch(e) {}
+		try { spr_schedule_items_align_after_save_row(frm); } catch(e) {}
 
 		frappe.call({
 			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
@@ -6807,6 +6865,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		try { spr_schedule_item_row_styles_after_doc_write(frm); } catch(e) {}
 		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
 		try { apply_spr_item_row_styles(frm); } catch(e) {}
+		try { spr_schedule_items_align_after_save_row(frm); } catch(e) {}
 
 		frappe.call({
 			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
