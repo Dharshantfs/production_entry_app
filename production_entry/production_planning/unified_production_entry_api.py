@@ -313,6 +313,12 @@ def _gsm_session_has_coordinator() -> bool:
 	return bool(frappe.db.has_column(_GSM_SHIFT_SESSION_DOCTYPE, "coordinator"))
 
 
+def _gsm_require_desk_user():
+	"""GSM shop-floor APIs — any logged-in Desk user, not Guest."""
+	if not frappe.session.user or frappe.session.user == "Guest":
+		frappe.throw(_("Please log in to continue."), frappe.AuthenticationError)
+
+
 def _gsm_session_with_coordinator(fields: list[str]) -> list[str]:
 	out = list(fields)
 	if _gsm_session_has_coordinator() and "coordinator" not in out:
@@ -944,7 +950,7 @@ def open_gsm_shift_session(
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=None):
 	"""Ensure shift can close — submitted SPRs, no draft rolls blocking."""
 	if not _gsm_shift_session_table_exists():
@@ -981,7 +987,7 @@ def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=
 	return {"ok": not errors, "errors": errors}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def close_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None, coordinator=None):
 	"""Close the open GSM shift session and return Shift Wise redirect payload."""
 	if not _gsm_shift_session_table_exists():
@@ -4103,10 +4109,34 @@ def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 @frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_spr_doc(spr_name):
 	"""GSM label / SPR Tools load. Desk read permission is not required for operators."""
+	_gsm_require_desk_user()
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
 	return frappe.get_doc("Shaft Production Run", spr_name).as_dict()
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_gsm_spr_headers(spr_names=None):
+	"""docstatus / unit / label for GSM — does not use frappe.client (no SPR Desk permission)."""
+	_gsm_require_desk_user()
+	names = _parse_json_arg(spr_names, [])
+	if isinstance(names, str):
+		names = [x.strip() for x in names.split(",") if x.strip()]
+	names = [_cstr(x).strip() for x in (names or []) if _cstr(x).strip()]
+	fields = ["name", "docstatus"]
+	if frappe.db.has_column("Shaft Production Run", "custom_unit"):
+		fields.append("custom_unit")
+	if frappe.db.has_column("Shaft Production Run", "custom_label"):
+		fields.append("custom_label")
+	out = []
+	for name in names:
+		if not frappe.db.exists("Shaft Production Run", name):
+			continue
+		row = frappe.db.get_value("Shaft Production Run", name, fields, as_dict=True) or {}
+		if row.get("name"):
+			out.append(row)
+	return {"sprs": out}
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -4205,7 +4235,7 @@ def _gsm_submittable_pp_to_spr(pp_to_spr: dict, rolls_by_pp: dict) -> dict:
 	return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def submit_gsm_production_entry(
 	run_date=None,
 	shift=None,
@@ -5429,7 +5459,7 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_to_next=0):
 	"""Toggle Running Patty Wastage Row.recycle_to_next from the GSM wastage popup."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
@@ -5575,7 +5605,7 @@ def get_gsm_spr_wastage_context(spr_name):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_available_patty_stock(spr_name):
 	"""Patty stock for GSM recycle — Patty Stock DocType first, then SPR wastage preview."""
 	spr_name = _cstr(spr_name).strip()

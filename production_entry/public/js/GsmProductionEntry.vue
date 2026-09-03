@@ -2052,6 +2052,25 @@ function sessionSprIsSubmitted(ppId) {
   return !!(row && (row.submitted || cint(row.docstatus) === 1));
 }
 
+async function gsmSprHeaders(sprNames) {
+  const names = [...new Set((sprNames || []).map((n) => _cstr(n)).filter(Boolean))];
+  if (!names.length) {
+    return {};
+  }
+  const res = await frappe.call({
+    method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_headers",
+    type: "POST",
+    args: { spr_names: JSON.stringify(names) },
+  });
+  const map = {};
+  for (const row of res.message?.sprs || []) {
+    if (row?.name) {
+      map[row.name] = row;
+    }
+  }
+  return map;
+}
+
 function draftSprNameForPp(ppId) {
   const row = sessionSprRow(ppId);
   if (!row?.spr_name || sessionSprIsSubmitted(ppId)) {
@@ -4293,8 +4312,8 @@ async function isMixSprDraft(sprName) {
     }
   }
   try {
-    const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
-    return cint(r?.message?.docstatus) === 0;
+    const headers = await gsmSprHeaders([name]);
+    return cint(headers[name]?.docstatus) === 0;
   } catch (e) {
     return true;
   }
@@ -4339,8 +4358,8 @@ async function restoreActiveMixRollFromSession() {
   }
   if (sprName) {
     try {
-      const r = await frappe.db.get_value("Shaft Production Run", sprName, ["custom_unit", "docstatus"]);
-      const sprUnit = _cstr(r?.message?.custom_unit);
+      const headers = await gsmSprHeaders([sprName]);
+      const sprUnit = _cstr(headers[sprName]?.custom_unit);
       if (sprUnit && currentUnit && !sameGsmUnit(sprUnit, currentUnit)) {
         return;
       }
@@ -5924,17 +5943,16 @@ async function pollGsmSubmitRecovery(sprNames, options = {}) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     let allSubmitted = true;
-    for (const name of names) {
-      try {
-        const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
-        if (cint(r?.message?.docstatus) !== 1) {
+    try {
+      const headers = await gsmSprHeaders(names);
+      for (const name of names) {
+        if (cint(headers[name]?.docstatus) !== 1) {
           allSubmitted = false;
           break;
         }
-      } catch (e) {
-        allSubmitted = false;
-        break;
       }
+    } catch (e) {
+      allSubmitted = false;
     }
     if (allSubmitted) {
       return true;
@@ -6106,8 +6124,8 @@ async function submitEntry(overrides = []) {
         const stillFailed = [];
         for (const f of mixFailed) {
           try {
-            const r = await frappe.db.get_value("Shaft Production Run", f.spr_name, "docstatus");
-            if (cint(r?.message?.docstatus) === 1) {
+            const headers = await gsmSprHeaders([f.spr_name]);
+            if (cint(headers[f.spr_name]?.docstatus) === 1) {
               mixSubmitted.push({ spr_name: f.spr_name, pp_id: "", is_mix_roll: 1, recovered: 1 });
             } else {
               stillFailed.push(f);
@@ -6324,12 +6342,17 @@ async function resolveSprItemRowName(row) {
     return "";
   }
   try {
-    const res = await frappe.db.get_list("Shaft Production Run Item", {
-      filters: { parent: sprName, batch_no: row.batch_no },
-      fields: ["name"],
-      limit: 1,
-    });
-    const name = res?.[0]?.name || "";
+    const doc = await (production_entry.spr_label?.load_spr_doc
+      ? production_entry.spr_label.load_spr_doc(sprName)
+      : frappe
+          .call({
+            method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_doc",
+            args: { spr_name: sprName },
+          })
+          .then((r) => r.message));
+    const batch = String(row.batch_no || "").trim();
+    const hit = (doc?.items || []).find((it) => String(it.batch_no || "").trim() === batch);
+    const name = hit?.name || "";
     if (name) {
       row.spr_item_name = name;
       row.row_locked = 1;
@@ -6987,15 +7010,8 @@ async function backfillSessionSprLabelTypes() {
   await Promise.all(
     missing.map(async ([ppId, s]) => {
       try {
-        const res = await frappe.call({
-          method: "frappe.client.get_value",
-          args: {
-            doctype: "Shaft Production Run",
-            filters: { name: s.spr_name },
-            fieldname: "custom_label",
-          },
-        });
-        const lt = res.message?.custom_label;
+        const headers = await gsmSprHeaders([s.spr_name]);
+        const lt = headers[s.spr_name]?.custom_label;
         if (lt) {
           next[ppId] = { ...s, pp_id: ppId, label_type: lt };
           changed = true;
@@ -7605,6 +7621,7 @@ async function closeShift() {
   try {
     const validation = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.validate_gsm_shift_close",
+      type: "POST",
       args: {
         run_date: runDate.value,
         shift: shift.value,
@@ -7631,6 +7648,7 @@ async function closeShift() {
     });
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.close_gsm_shift_session",
+      type: "POST",
       args: {
         run_date: runDate.value,
         shift: shift.value,

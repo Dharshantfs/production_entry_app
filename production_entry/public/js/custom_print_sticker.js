@@ -5,11 +5,8 @@ frappe.generate_sticker_flow = function (row_name, frm) {
     var f = frm || cur_frm;
     var row = (locals['Shaft Production Run Item'] || {})[row_name] || (f.doc.items || []).find(function (r) { return r.name === row_name; }) || (f.doc.roll_wise_entry || []).find(function (r) { return r.name === row_name; });
     if (!row) return;
-
-    frappe.db.get_value('Item', row.item_code, 'item_name', function (r) {
-        var item_name = (r && r.item_name) || "";
-        trigger_print_with_details(row_name, item_name, f);
-    });
+    // Use the SPR child row — do not call frappe.client.get_value (operators lack Item / child DocPerm).
+    trigger_print_with_details(row_name, String(row.item_name || "").trim(), f);
 };
 
 /** Scandinavian 6x4: skip "Select Fields to Print" and open label directly. */

@@ -149,11 +149,8 @@ production_entry.spr_label.print_roll = async function (sprName, rowName) {
 		frappe.msgprint(__("SPR and roll row are required to print the label."));
 		return;
 	}
-	try {
-		await _promisifyModel("with_doctype", "Shaft Production Run Item");
-	} catch (e) {
-		/* Operator may lack the child DocPerm — the row is synced into locals below. */
-	}
+	// Do not call with_doctype — child table has no Role Permissions Manager
+	// row and operators get "Shaft Production Run Item insufficient permission".
 	const doc = await production_entry.spr_label.load_spr_doc(spr);
 	if (!doc) {
 		frappe.msgprint(__("Could not load SPR for label print."));

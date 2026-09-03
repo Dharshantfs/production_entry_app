@@ -112,12 +112,12 @@ export async function gsmToggleBundleSeOnSubmit(ppId) {
 		noSprMessage();
 		return;
 	}
-	const dbRes = await frappe.db.get_value(
-		"Shaft Production Run",
-		sprName,
-		"custom_use_bundle_packaging_on_submit"
-	);
-	const cur = cint(dbRes?.message?.custom_use_bundle_packaging_on_submit);
+	const doc = await loadSprDocForGsm(sprName);
+	if (!doc) {
+		noSprMessage();
+		return;
+	}
+	const cur = cint(doc.custom_use_bundle_packaging_on_submit);
 	const next = cur ? 0 : 1;
 	await frappe.call({
 		method:
