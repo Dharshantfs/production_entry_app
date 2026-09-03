@@ -129,6 +129,25 @@ def _find_mixing_sheet(
 	return None
 
 
+def _find_completed_mixing_sheet(run_date=None, shift=None, custom_unit=None):
+	unit = _cstr(custom_unit)
+	shift_n = _normalize_shift(shift)
+	rd = getdate(run_date) if run_date else None
+	if not (rd and shift_n and unit):
+		return None
+	return frappe.db.get_value(
+		"Shift Mixing Sheet",
+		{
+			"run_date": rd,
+			"shift": shift_n,
+			"custom_unit": unit,
+			"status": "Completed",
+		},
+		"name",
+		order_by="modified desc",
+	)
+
+
 def _sheet_payload(doc) -> dict:
 	data = _stamp_mixing_row_status(_parse_mixing_json(doc.mixing_sheet_data))
 	return {
@@ -169,6 +188,13 @@ def get_mixing_sheet(
 		return _sheet_payload(frappe.get_doc("Shift Mixing Sheet", found))
 
 	unit = _cstr(custom_unit)
+	shift_n = _normalize_shift(shift)
+	rd = getdate(run_date) if run_date else None
+	completed_name = _find_completed_mixing_sheet(run_date=rd, shift=shift_n, custom_unit=unit)
+	if completed_name:
+		payload = _sheet_payload(frappe.get_doc("Shift Mixing Sheet", completed_name))
+		payload["completed_exists"] = True
+		return payload
 
 	return {
 		"mixing_sheet_name": "",
@@ -176,7 +202,7 @@ def get_mixing_sheet(
 		"mixing_type": "",
 		"existing_mixing_data": json.dumps(_empty_mixing_state()),
 		"run_date": str(run_date or ""),
-		"shift": _normalize_shift(shift),
+		"shift": shift_n,
 		"custom_unit": unit,
 		"shaft_production_run": "",
 		"gsm_shift_session": _cstr(gsm_shift_session),
@@ -218,6 +244,9 @@ def _upsert_mixing_sheet(
 	else:
 		if not (rd and shift_n and unit):
 			frappe.throw(_("Run Date, Shift, and Unit are required to create a mixing sheet."))
+		already_done = _find_completed_mixing_sheet(run_date=rd, shift=shift_n, custom_unit=unit)
+		if already_done:
+			frappe.throw(_("Mixing for this date, shift, and unit is already submitted. Select another date or shift."))
 		doc = frappe.new_doc("Shift Mixing Sheet")
 		doc.run_date = rd
 		doc.shift = shift_n

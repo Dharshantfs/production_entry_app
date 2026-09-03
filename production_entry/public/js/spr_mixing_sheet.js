@@ -189,6 +189,19 @@ async function openSprMixingSheet(ctx = {}) {
 		args: mixing_api_args(ctx),
 	});
 	const msg = res.message || {};
+	if (msg.completed_exists || String(msg.status || "") === "Completed") {
+		frappe.msgprint({
+			title: __("Mixing already submitted"),
+			indicator: "orange",
+			message: __(
+				"Mixing for this date and shift is already finished. Select another date or shift."
+			),
+		});
+		if (typeof ctx.on_completed_blocked === "function") {
+			ctx.on_completed_blocked();
+		}
+		return;
+	}
 	const sheetCtx = {
 		...ctx,
 		custom_unit: msg.custom_unit || unit,
@@ -208,7 +221,119 @@ async function openSprMixingSheet(ctx = {}) {
 	show_dialog(sheetCtx, existing, ctx.frm || null);
 }
 
-function open_mixing_sheet_desk(frm) {
+function sprMixingShiftStorageKey(sprName) {
+	return "pe_spr_mixing_shift:" + String(sprName || "");
+}
+
+function readSprMixingShiftChoice(frm) {
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return null;
+	}
+	if (frm._spr_mixing_run_date && frm._spr_mixing_shift) {
+		return { run_date: frm._spr_mixing_run_date, shift: frm._spr_mixing_shift };
+	}
+	try {
+		const raw = sessionStorage.getItem(sprMixingShiftStorageKey(frm.doc.name));
+		if (!raw) {
+			return null;
+		}
+		const parsed = JSON.parse(raw);
+		if (parsed && parsed.run_date && parsed.shift) {
+			frm._spr_mixing_run_date = parsed.run_date;
+			frm._spr_mixing_shift = parsed.shift;
+			return parsed;
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	return null;
+}
+
+function rememberSprMixingShiftChoice(frm, run_date, shift) {
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return;
+	}
+	frm._spr_mixing_run_date = run_date;
+	frm._spr_mixing_shift = shift;
+	try {
+		sessionStorage.setItem(
+			sprMixingShiftStorageKey(frm.doc.name),
+			JSON.stringify({ run_date, shift })
+		);
+	} catch (e) {
+		/* ignore */
+	}
+}
+
+function forgetSprMixingShiftChoice(frm) {
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return;
+	}
+	frm._spr_mixing_run_date = "";
+	frm._spr_mixing_shift = "";
+	try {
+		sessionStorage.removeItem(sprMixingShiftStorageKey(frm.doc.name));
+	} catch (e) {
+		/* ignore */
+	}
+}
+
+function mixingUnitForSpr(frm) {
+	const unit = String((frm && frm.doc && frm.doc.custom_unit) || "").trim();
+	if (unit) {
+		return unit;
+	}
+	return "TNSPL - LAMINATION UNIT";
+}
+
+function promptSprMixingDateShift(frm, on_pick) {
+	frappe.prompt(
+		[
+			{
+				fieldname: "run_date",
+				label: __("Date"),
+				fieldtype: "Date",
+				reqd: 1,
+				default: frappe.datetime.get_today(),
+			},
+			{
+				fieldname: "shift",
+				label: __("Shift"),
+				fieldtype: "Select",
+				options: "Day Shift\nNight Shift",
+				reqd: 1,
+				default: "Day Shift",
+			},
+		],
+		(v) => {
+			if (typeof on_pick === "function") {
+				on_pick(v.run_date, v.shift);
+			}
+		},
+		__("Mixing Sheet — Date & Shift"),
+		__("Open")
+	);
+}
+
+function openMixingSheetForSprChoice(frm, run_date, shift) {
+	const unit = mixingUnitForSpr(frm);
+	rememberSprMixingShiftChoice(frm, run_date, shift);
+	openSprMixingSheet({
+		frm,
+		shift_only: true,
+		spr_name: frm.doc.name,
+		custom_unit: unit,
+		run_date,
+		shift,
+		title_label: `${run_date} · ${shift} · ${unit}`,
+		on_completed_blocked: () => {
+			forgetSprMixingShiftChoice(frm);
+			promptSprMixingDateShift(frm, (d, s) => openMixingSheetForSprChoice(frm, d, s));
+		},
+	});
+}
+
+function open_mixing_sheet_desk(frm, forcePrompt) {
 	if (frm.doc.docstatus !== 0) {
 		frappe.msgprint({
 			title: __("Action Restricted"),
@@ -219,16 +344,13 @@ function open_mixing_sheet_desk(frm) {
 		});
 		return;
 	}
-	openSprMixingSheet({
-		frm,
-		shift_only: true,
-		spr_name: frm.doc.name,
-		custom_unit: frm.doc.custom_unit,
-		run_date: frm.doc.run_date || frm.doc.posting_date || "",
-		shift: frm.doc.shift || "",
-		gsm_shift_session: frm.doc.gsm_shift_session || "",
-		order_code: frm.doc.custom_order_code || "",
-		title_label: frm.doc.name,
+	const saved = forcePrompt ? null : readSprMixingShiftChoice(frm);
+	if (saved) {
+		openMixingSheetForSprChoice(frm, saved.run_date, saved.shift);
+		return;
+	}
+	promptSprMixingDateShift(frm, (run_date, shift) => {
+		openMixingSheetForSprChoice(frm, run_date, shift);
 	});
 }
 
