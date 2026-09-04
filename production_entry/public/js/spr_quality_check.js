@@ -291,6 +291,29 @@ async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 	}
 
 	const rollGsm = cint(selectedRoll?.gsm) || cint(jobRow?.gsm) || 0;
+	const batchNo = String(selectedRoll?.batch_no || "").trim();
+	const rollNo = cint(selectedRoll?.roll_no) || rollSuffix(selectedRoll) || 0;
+
+	try {
+		const created = await frappe.call({
+			method: "quality_gsm_app.api.quality.create_quality_checking_from_shaft",
+			args: {
+				shaft_production_run: sprName,
+				batch_no: batchNo,
+				testing_type: testingType,
+				roll_no: rollNo,
+				gsm: rollGsm || "",
+			},
+			freeze: true,
+		});
+		if (created?.message) {
+			frappe.set_route("Form", QC_DOCTYPE, created.message);
+			return;
+		}
+	} catch (e) {
+		console.warn("create_quality_checking_from_shaft failed, opening a blank form", e);
+	}
+
 	const defaults = {
 		shaft_production_run: sprName,
 		testing_type: testingType,
@@ -299,13 +322,11 @@ async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 		order_code: spr.custom_order_code || spr.order_code || "",
 		quality: selectedRoll?.quality || jobRow?.quality || "",
 		color: selectedRoll?.color || jobRow?.color || "",
-		batch_no: selectedRoll?.batch_no || "",
-		roll_no: cint(selectedRoll?.roll_no) || rollSuffix(selectedRoll) || 0,
+		batch_no: batchNo,
+		roll_no: rollNo,
+		gsm: rollGsm || "",
 	};
 	if (rollGsm > 0) {
-		if (qcMetaHasField("gsm")) {
-			defaults.gsm = rollGsm;
-		}
 		if (qcMetaHasField("set_gsm")) {
 			defaults.set_gsm = rollGsm;
 		}
