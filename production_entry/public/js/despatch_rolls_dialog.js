@@ -1,12 +1,28 @@
-// Shared printable roll list dialog (Delivery Note items, Clubbing Sheet, etc.)
+// Shared printable roll list dialog (Delivery Note items, Clubbing Sheet, Logistics, Transfer, etc.)
 
 function jsb_show_despatch_rolls_dialog(args) {
 	const rolls = args.rolls || [];
 	const itemCode = args.item_code || "";
 	const deliveryNote = args.delivery_note || "";
-	const salesOrder = args.sales_order || "";
-	const subtitle = salesOrder
-		? __("SO: {0}", [salesOrder])
+	let salesOrder = args.sales_order || args.order_code || "";
+
+	// Collect distinct order codes from roll rows when header is missing / is an approval id
+	const orderFromRows = [];
+	rolls.forEach((r) => {
+		const oc = String(r.party_code || r.order_code || r.custom_order_code || "").trim();
+		if (oc && orderFromRows.indexOf(oc) === -1) {
+			orderFromRows.push(oc);
+		}
+	});
+	if (!salesOrder || String(salesOrder).indexOf("DESP-") === 0 || String(salesOrder).indexOf("TA-") === 0) {
+		if (orderFromRows.length) {
+			salesOrder = orderFromRows.join(", ");
+		}
+	}
+	const orderCodeLabel = salesOrder || orderFromRows.join(", ") || "";
+
+	const subtitle = orderCodeLabel
+		? __("Order: {0}", [orderCodeLabel])
 		: itemCode
 			? __("Item: {0}", [itemCode])
 			: "";
@@ -15,7 +31,7 @@ function jsb_show_despatch_rolls_dialog(args) {
 	let html =
 		"<style>" +
 		".rolls-view { font-family: Arial, sans-serif !important; color: #000 !important; background: #fff !important; padding: 0; }" +
-		".printable-area { width: 100%; max-width: 800px; margin: 0 auto; }" +
+		".printable-area { width: 100%; max-width: 900px; margin: 0 auto; }" +
 		".company-header-table { width: 100%; border-collapse: collapse; border: 2px solid #2e7d32; margin-bottom: 10px; table-layout: fixed; }" +
 		".company-header-table td { padding: 10px; text-align: center; vertical-align: middle; }" +
 		".company-header-table img { height: 60px; width: auto; margin-bottom: 5px; }" +
@@ -54,9 +70,9 @@ function jsb_show_despatch_rolls_dialog(args) {
 		frappe.datetime.nowdate() +
 		"</div></div></td>" +
 		'<td><div class="info-box"><div class="info-label">' +
-		(salesOrder ? __("Order Code") : __("Item Code")) +
+		__("Order Code") +
 		'</div><div class="info-value">' +
-		(salesOrder || itemCode || "—") +
+		(orderCodeLabel || "—") +
 		"</div></div></td>" +
 		'<td><div class="info-box"><div class="info-label">' +
 		__("No. of Rolls") +
@@ -73,6 +89,8 @@ function jsb_show_despatch_rolls_dialog(args) {
 	html +=
 		'<table class="dt-table"><thead><tr>' +
 		"<th>#</th><th>" +
+		__("Order Code") +
+		"</th><th>" +
 		__("Batch No") +
 		"</th><th>" +
 		__("Quality") +
@@ -96,12 +114,13 @@ function jsb_show_despatch_rolls_dialog(args) {
 	for (let i = 0; i < rolls.length; i++) {
 		const r = rolls[i];
 		const mtr = flt(r.meter_roll || r.meter_per_roll || r.custom_meter || 0);
-		const net = flt(r.net_weight);
-		const gross = flt(r.gross_weight || r.net_weight + 2);
+		const net = flt(r.net_weight || r.qty || 0);
+		const gross = flt(r.gross_weight || net + 2);
 		const width =
 			r.width_inch ||
 			r.custom_width_inch ||
 			(r.width_mm ? (flt(r.width_mm) / 25.4).toFixed(1) : "");
+		const rowOrder = String(r.party_code || r.order_code || r.custom_order_code || orderCodeLabel || "").trim();
 		totalMtr += mtr;
 		totalNet += net;
 		totalGross += gross;
@@ -109,6 +128,9 @@ function jsb_show_despatch_rolls_dialog(args) {
 			"<tr>" +
 			"<td>" +
 			(i + 1) +
+			"</td>" +
+			"<td>" +
+			(rowOrder || "—") +
 			"</td>" +
 			'<td class="fb">' +
 			(r.batch_no || "") +
@@ -139,7 +161,7 @@ function jsb_show_despatch_rolls_dialog(args) {
 
 	html +=
 		"</tbody><tfoot><tr>" +
-		'<td colspan="6" class="tr fb">' +
+		'<td colspan="7" class="tr fb">' +
 		__("TOTAL CONSOLIDATED DESPATCH") +
 		"</td>" +
 		'<td class="tr">' +
@@ -153,8 +175,8 @@ function jsb_show_despatch_rolls_dialog(args) {
 		"</td>" +
 		"</tr></tfoot></table></div>";
 
-	const dialogTitle = salesOrder
-		? __("Rolls for Sales Order: {0}", [salesOrder])
+	const dialogTitle = orderCodeLabel
+		? __("Rolls for Order Code: {0}", [orderCodeLabel])
 		: __("Rolls for Item: {0}", [itemCode || "—"]);
 
 	const d = new frappe.ui.Dialog({

@@ -349,10 +349,15 @@ frappe.ui.form.on("Stock Entry", {
 								return;
 							}
 							if (typeof jsb_show_despatch_rolls_dialog === "function") {
+								const orderCodes = [];
+								rolls.forEach((row) => {
+									const oc = String(row.party_code || row.order_code || "").trim();
+									if (oc && orderCodes.indexOf(oc) === -1) orderCodes.push(oc);
+								});
 								jsb_show_despatch_rolls_dialog({
 									rolls: rolls,
-									sales_order: msg.approval_name || frm.doc.name,
-									title_suffix: __("Transfer Approval"),
+									order_code: orderCodes.join(", "),
+									sales_order: orderCodes.join(", "),
 								});
 								return;
 							}
