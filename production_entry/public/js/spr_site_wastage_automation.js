@@ -662,7 +662,18 @@ function recalculate_all_wastage(frm) {
 
 function update_recycled_table(frm) {
     if (cint(frm.doc.docstatus) > 0) return;
-    var rec_table_field = Object.keys(frm.fields_dict).find(f => f.toLowerCase().includes('recycle') && frm.fields_dict[f].grid);
+    // Automated recycle only — never touch GSM Manual Recycle Details.
+    var rec_table_field = null;
+    if (frm.fields_dict.custom_recycled_wastage_details && frm.fields_dict.custom_recycled_wastage_details.grid) {
+        rec_table_field = 'custom_recycled_wastage_details';
+    } else {
+        rec_table_field = Object.keys(frm.fields_dict).find(f => {
+            if (!frm.fields_dict[f] || !frm.fields_dict[f].grid) return false;
+            var fl = f.toLowerCase();
+            if (fl.includes('manual') || fl.includes('gsm_manual')) return false;
+            return fl.includes('recycled_wastage') || fl === 'recycled_wastage_details';
+        });
+    }
     if (!rec_table_field) return;
 
     var wastage_field = ['running_patty_wastage', 'wastage_details', 'custom_wastage_details', 'custom_running_patty_wastage'].find(f => frm.fields_dict[f]);

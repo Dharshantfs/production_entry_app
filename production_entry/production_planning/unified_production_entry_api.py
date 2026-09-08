@@ -609,7 +609,11 @@ def _gsm_employee_id_and_name(employee) -> tuple[str, str]:
 
 
 def _gsm_shift_wise_set_person_fields(opts: dict, emp_id: str, id_fields: tuple, name_fields: tuple) -> None:
-	"""Write employee id/name onto whichever Shift Wise Production Entry fields exist."""
+	"""Write Employee ID onto link/id fields and display name onto name fields.
+
+	Shift Wise Production Entry uses custom_operator1 / custom_supervisor1 / coordinator
+	for Employee links; custom_operator / custom_supervisor / coordinator_name for names.
+	"""
 	emp_id, emp_name = _gsm_employee_id_and_name(emp_id)
 	if not emp_id and not emp_name:
 		return
@@ -629,10 +633,8 @@ def _gsm_shift_wise_set_person_fields(opts: dict, emp_id: str, id_fields: tuple,
 		df = _field(fn)
 		if meta and not df:
 			continue
-		if df and df.fieldtype in ("Link", "Dynamic Link"):
-			opts[fn] = emp_id
-		else:
-			opts[fn] = emp_name or emp_id
+		# Always prefer Employee ID on id/link fields (even if fieldtype is Data on some sites).
+		opts[fn] = emp_id or emp_name
 	for fn in name_fields:
 		df = _field(fn)
 		if meta and not df:
@@ -681,14 +683,14 @@ def _gsm_shift_wise_route_options(doc, operator=None, supervisor=None, coordinat
 	_gsm_shift_wise_set_person_fields(
 		opts,
 		operator,
-		("operator", "custom_operator", "custom_shift_operator", "shift_operator"),
-		("operator_name", "custom_operator_name", "custom_shift_operator_name"),
+		("custom_operator1", "operator", "custom_shift_operator", "shift_operator"),
+		("custom_operator", "operator_name", "custom_operator_name", "custom_shift_operator_name"),
 	)
 	_gsm_shift_wise_set_person_fields(
 		opts,
 		supervisor,
-		("supervisor", "custom_supervisor", "custom_shift_supervisor", "shift_supervisor"),
-		("supervisor_name", "custom_supervisor_name", "custom_shift_supervisor_name"),
+		("custom_supervisor1", "supervisor", "custom_shift_supervisor", "shift_supervisor"),
+		("custom_supervisor", "supervisor_name", "custom_supervisor_name", "custom_shift_supervisor_name"),
 	)
 	if coordinator:
 		_gsm_shift_wise_set_person_fields(
@@ -4489,7 +4491,11 @@ _GSM_WASTAGE_CHILD_SPECS = (
 	("custom_running_patty_wastage", "Running Patty Wastage Row"),
 	("custom_roll_waste", "Roll Waste Row"),
 	("custom_recycled_wastage_details", "Recycled Wastage Detail Row"),
+	("custom_gsm_manual_recycle_details", "GSM Manual Recycle Row"),
 )
+
+_GSM_MANUAL_RECYCLE_FIELD = "custom_gsm_manual_recycle_details"
+_GSM_MANUAL_RECYCLE_DOCTYPE = "GSM Manual Recycle Row"
 
 
 def _gsm_resolve_spr_child_field(spr_meta, preferred_fieldname: str, child_doctype: str) -> str | None:
@@ -4637,6 +4643,22 @@ def _gsm_recycled_child_doctype() -> str:
 	meta = frappe.get_meta("Shaft Production Run")
 	df = meta.get_field("custom_recycled_wastage_details") if meta else None
 	return _cstr(getattr(df, "options", None) or "Recycled Wastage Detail Row") or "Recycled Wastage Detail Row"
+
+
+def _gsm_manual_recycle_field_and_doctype() -> tuple[str, str]:
+	"""Parent field + child DocType for GSM View Patty Stock / manual recycle."""
+	meta = frappe.get_meta("Shaft Production Run")
+	fieldname = _GSM_MANUAL_RECYCLE_FIELD
+	child_dt = _GSM_MANUAL_RECYCLE_DOCTYPE
+	if meta and meta.has_field(fieldname):
+		df = meta.get_field(fieldname)
+		child_dt = _cstr(getattr(df, "options", None) or child_dt) or child_dt
+		return fieldname, child_dt
+	# Fall back to any Table whose options match the manual recycle child.
+	for df in (meta.fields if meta else []) or []:
+		if df.fieldtype == "Table" and _cstr(df.options) == _GSM_MANUAL_RECYCLE_DOCTYPE:
+			return df.fieldname, _GSM_MANUAL_RECYCLE_DOCTYPE
+	return fieldname, child_dt
 
 
 def _gsm_child_writable_fields(child_doctype: str) -> set[str]:
@@ -5234,7 +5256,7 @@ def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) ->
 	}
 
 
-def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False, spr_doc=None) -> dict:
+def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False, spr_doc=None, child_doctype=None) -> dict:
 	if not from_roll_waste:
 		src = _gsm_hydrate_patty_selection(src)
 	elif not isinstance(src, dict):
@@ -5322,7 +5344,8 @@ def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False, spr_doc=None) -
 		row_name = _cstr(_pick_value(src, ["name"], ""))
 		if row_name:
 			logical["source_roll_waste_row"] = row_name
-	return _gsm_write_child_row(_gsm_recycled_child_doctype(), logical)
+	target_dt = _cstr(child_doctype).strip() or _gsm_recycled_child_doctype()
+	return _gsm_write_child_row(target_dt, logical)
 
 
 def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = None) -> dict:
@@ -5885,7 +5908,10 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 
 @frappe.whitelist(methods=["GET", "POST"])
 def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row_names=None):
-	"""Append Recycled Wastage Details from patty stock and/or roll waste selections."""
+	"""Append GSM manual recycle rows from View Patty Stock and/or roll waste selections.
+
+	Automated Recycled Wastage Details (custom_recycled_wastage_details) are left unchanged.
+	"""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_spr_operation_lock,
 	)
@@ -5899,9 +5925,17 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 	if not patty_selections and not roll_waste_row_names:
 		frappe.throw(_("Select patty stock and/or roll waste rows to recycle"))
 
+	manual_field, manual_doctype = _gsm_manual_recycle_field_and_doctype()
 	spr_meta = frappe.get_meta("Shaft Production Run")
-	if not spr_meta.has_field("custom_recycled_wastage_details"):
-		frappe.throw(_("Recycled Wastage Details is not configured on Shaft Production Run"))
+	if not spr_meta.has_field(manual_field):
+		frappe.throw(
+			_(
+				"GSM Manual Recycle Details is not configured on Shaft Production Run. "
+				"Run migrate / ensure_spr_gsm_manual_recycle_table."
+			)
+		)
+	if not frappe.db.exists("DocType", manual_doctype):
+		frappe.throw(_("DocType {0} is missing").format(manual_doctype))
 
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
@@ -5913,8 +5947,11 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			row = _gsm_hydrate_patty_selection(sel)
 			if not row:
 				continue
-			values = _gsm_map_to_recycled_row(row, from_roll_waste=False)
-			child = spr.append("custom_recycled_wastage_details", values)
+			values = _gsm_map_to_recycled_row(row, from_roll_waste=False, child_doctype=manual_doctype)
+			# Mark as manual patty consume so desk automation never overwrites this table.
+			if not _cstr(values.get("job_id") or "").strip():
+				values["job_id"] = "Patty"
+			child = spr.append(manual_field, values)
 			_gsm_stamp_child_values(child, row)
 			_gsm_stamp_child_values(child, values)
 			_gsm_stamp_width_on_child(
@@ -5959,8 +5996,10 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			rw = roll_waste_by_name.get(rn)
 			if not rw:
 				continue
-			values = _gsm_map_to_recycled_row(rw, from_roll_waste=True, spr_doc=spr)
-			child = spr.append("custom_recycled_wastage_details", values)
+			values = _gsm_map_to_recycled_row(
+				rw, from_roll_waste=True, spr_doc=spr, child_doctype=manual_doctype
+			)
+			child = spr.append(manual_field, values)
 			_gsm_stamp_child_values(child, values)
 			waste_kg = _gsm_pick_positive_qty(
 				values,
@@ -5990,9 +6029,8 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			"status": "ok",
 			"spr_name": spr_name,
 			"added": added,
-			"recycled": _gsm_spr_child_table_payload(
-				spr, "custom_recycled_wastage_details", "Recycled Wastage Detail Row"
-			),
+			"manual_field": manual_field,
+			"recycled": _gsm_spr_child_table_payload(spr, manual_field, manual_doctype),
 		}
 
 

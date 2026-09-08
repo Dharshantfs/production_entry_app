@@ -7903,7 +7903,20 @@ function applyShiftWisePrefill(doctype, opts) {
   if (!frm || frm.doctype !== doctype || !frm.is_new() || !opts) {
     return;
   }
-  Object.keys(opts).forEach((fname) => {
+  // Set Employee ID link fields first so fetch_from can fill names.
+  const idFirst = [
+    "custom_operator1",
+    "custom_supervisor1",
+    "coordinator",
+    "operator",
+    "supervisor",
+    "custom_coordinator",
+  ];
+  const ordered = [
+    ...idFirst.filter((k) => Object.prototype.hasOwnProperty.call(opts, k)),
+    ...Object.keys(opts).filter((k) => !idFirst.includes(k)),
+  ];
+  ordered.forEach((fname) => {
     const val = opts[fname];
     if (!val || !frm.fields_dict[fname]) {
       return;

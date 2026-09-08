@@ -1125,6 +1125,9 @@ function _recycledWastageTable(ctx) {
 		if (!table) {
 			continue;
 		}
+		if (/manual/i.test(key) || /manual/i.test(table.child_doctype || "")) {
+			continue;
+		}
 		if (/recycl/i.test(key) || /recycl/i.test(table.child_doctype || "")) {
 			if ((table.rows || []).length) {
 				return table;
@@ -1134,6 +1137,55 @@ function _recycledWastageTable(ctx) {
 	return direct || { rows: [], columns: [] };
 }
 
+function _manualRecycleTable(ctx) {
+	const tables = ctx?.tables || {};
+	const direct = tables.custom_gsm_manual_recycle_details;
+	if (direct) {
+		return direct;
+	}
+	for (const [key, table] of Object.entries(tables)) {
+		if (!table) {
+			continue;
+		}
+		if (/manual.*recycl|gsm_manual_recycl/i.test(key) || /Manual Recycle/i.test(table.child_doctype || "")) {
+			return table;
+		}
+	}
+	return { rows: [], columns: [], configured: false };
+}
+
+async function _renderRecycleMainBody(sprName) {
+	const ctx = await _fetchWastageContext(sprName);
+	const recycled = _recycledWastageTable(ctx);
+	const manual = _manualRecycleTable(ctx);
+	const autoRows = (recycled.rows || []).map(_normalizePattyRow);
+	const manualRows = (manual.rows || []).map(_normalizePattyRow);
+	const recycledCols = _apiColsToDesk(recycled.columns, DESK_RECYCLED_COLS);
+	const manualCols = _apiColsToDesk(manual.columns, DESK_RECYCLED_COLS);
+
+	const autoHtml = autoRows.length
+		? _deskTableHtml(recycledCols, autoRows)
+		: `<div class="gwm-empty">${__(
+				"No automated recycled rows yet."
+			)}</div>`;
+	const manualHtml = manualRows.length
+		? _deskTableHtml(manualCols, manualRows)
+		: `<div class="gwm-empty">${__(
+				"No manual recycle yet. Use View Patty Stock to add."
+			)}</div>`;
+
+	return `<div class="gwm-shell">
+		<div class="gwm-card">
+			<div class="gwm-section-title">${__("Automated Recycled Wastage Details")}</div>
+			${autoHtml}
+		</div>
+		<div class="gwm-card">
+			<div class="gwm-section-title">${__("GSM Manual Recycle (Patty Stock)")}</div>
+			${manualHtml}
+		</div>
+	</div>`;
+}
+
 export async function openGsmRecycleDialog(opts = {}) {
 	_injectGwmStyles();
 	const sprRow = await pickSessionSpr(opts.sessionSprList, opts);
@@ -1141,18 +1193,6 @@ export async function openGsmRecycleDialog(opts = {}) {
 		return;
 	}
 	await _openRecycleMain(sprRow.spr_name, sprRow, opts);
-}
-
-async function _renderRecycleMainBody(sprName) {
-	const ctx = await _fetchWastageContext(sprName);
-	const recycled = _recycledWastageTable(ctx);
-	const rows = (recycled.rows || []).map(_normalizePattyRow);
-	const recycledCols = _apiColsToDesk(recycled.columns, DESK_RECYCLED_COLS);
-	return rows.length
-		? _deskTableHtml(recycledCols, rows)
-		: `<div class="gwm-empty">${__(
-				"No recycled rows yet. Use View Patty Stock or Roll Waste to consume."
-		  )}</div>`;
 }
 
 async function _openRecycleMain(sprName, sprRow, opts) {
@@ -1165,10 +1205,7 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 			</button>
 			<button type="button" class="btn btn-default gwm-btn-roll-waste">${__("Roll Waste")}</button>
 		</div>
-		<div class="gwm-card">
-			<div class="gwm-section-title">${__("Recycled Wastage Details")}</div>
-			<div class="gwm-recycle-body">${recycledBody}</div>
-		</div>
+		<div class="gwm-recycle-body">${recycledBody}</div>
 	</div>`;
 
 	const d = new frappe.ui.Dialog({
@@ -1216,7 +1253,10 @@ async function _openPattyStockPicker(sprName, sprRow, onDone) {
 					patty_selections: JSON.stringify(picks),
 				},
 			});
-			frappe.show_alert({ message: __("Added to Recycled Wastage Details"), indicator: "green" });
+			frappe.show_alert({
+				message: __("Added to GSM Manual Recycle Details"),
+				indicator: "green",
+			});
 			if (dialog) {
 				dialog.hide();
 			}
@@ -1286,10 +1326,13 @@ async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
 				const recycledRows = res.message?.recycled?.rows || [];
 				if (!recycledRows.length) {
 					frappe.msgprint(
-						__("Recycle did not stay on Recycled Wastage Details. Refresh the SPR and try again.")
+						__("Recycle did not stay on GSM Manual Recycle Details. Refresh the SPR and try again.")
 					);
 				} else {
-					frappe.show_alert({ message: __("Added to Recycled Wastage Details"), indicator: "green" });
+					frappe.show_alert({
+						message: __("Added to GSM Manual Recycle Details"),
+						indicator: "green",
+					});
 				}
 				d.hide();
 				if (typeof onDone === "function") {
