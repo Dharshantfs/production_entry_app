@@ -38,9 +38,9 @@ def _rewrite_format_throw(script: str) -> str:
 		'                + " has a total weight of "\n'
 		'                + str(customer_weights[full_load_customers[0]])\n'
 		'                + " kgs (>= 5000 kgs). "\n'
-		'                + "Orders >= 5000 kgs must be clubbed separately as a Full Load."\n'
+		'                + "Normally a Full Load alone — save/submit still allowed."\n'
 		'            )\n'
-		'            frappe.throw(msg)'
+		'            frappe.msgprint(msg)'
 	)
 	if old in script:
 		return script.replace(old, new)

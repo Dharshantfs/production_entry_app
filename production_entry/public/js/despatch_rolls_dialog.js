@@ -1,6 +1,9 @@
 // Shared printable roll list dialog (Delivery Note items, Clubbing Sheet, Logistics, Transfer, etc.)
+/* global frappe, __ */
 
 function jsb_show_despatch_rolls_dialog(args) {
+	args = args || {};
+	window.jsb_show_despatch_rolls_dialog = jsb_show_despatch_rolls_dialog;
 	const rolls = args.rolls || [];
 	const itemCode = args.item_code || "";
 	const deliveryNote = args.delivery_note || "";

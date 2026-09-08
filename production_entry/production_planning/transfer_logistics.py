@@ -2660,7 +2660,14 @@ def get_transfer_approval_roll_list(approval_name=None, stock_entry=None):
 		if not bn:
 			continue
 		spec = _roll_spec_dict(ln, ln.get("item_code"))
-		if not spec.get("quality") or not spec.get("gsm"):
+		# Always fill missing width (and other specs) from SPR — quality/GSM alone can be present.
+		if (
+			not spec.get("quality")
+			or not spec.get("color")
+			or not cint(spec.get("gsm") or 0)
+			or flt(spec.get("width_inch") or 0) <= 0
+			or flt(spec.get("meter_per_roll") or 0) <= 0
+		):
 			spr_row = frappe.db.get_value(
 				"Shaft Production Run Item",
 				{"batch_no": bn},
@@ -2678,20 +2685,47 @@ def get_transfer_approval_roll_list(approval_name=None, stock_entry=None):
 				as_dict=True,
 			)
 			if spr_row:
-				spec = _roll_spec_dict(spr_row, spr_row.get("item_code") or ln.get("item_code"))
+				merged = dict(spr_row)
+				# Prefer non-empty TA line values, fill gaps from SPR
+				for k in ("quality", "color", "gsm", "width_inch", "meter_per_roll", "meter_roll", "item_code"):
+					if ln.get(k) not in (None, "", 0, 0.0):
+						merged[k] = ln.get(k)
+				spec = _roll_spec_dict(merged, merged.get("item_code") or ln.get("item_code"))
 		qty = flt(ln.get("qty") or 0)
+		party = _cstr(ln.get("party_code") or "")
 		rolls.append(
 			{
 				"batch_no": bn,
 				"item_code": _cstr(ln.get("item_code")),
-				"party_code": _cstr(ln.get("party_code")),
+				"party_code": party,
+				"order_code": party,
 				"net_weight": qty,
 				"gross_weight": qty,
 				"meter_per_roll": flt(spec.get("meter_per_roll") or 0),
 				**spec,
 			}
 		)
-	return {"approval_name": name, "rolls": rolls}
+	# Header order code from Transfer Approval / linked Stock Entry when lines lack party_code
+	header_order = ""
+	ta_meta = frappe.get_meta("Transfer Approval")
+	for fn in ("party_code", "order_code", "custom_order_code"):
+		if ta_meta.has_field(fn):
+			header_order = _cstr(frappe.db.get_value("Transfer Approval", name, fn) or "")
+			if header_order:
+				break
+	if not header_order and ste:
+		se_meta = frappe.get_meta("Stock Entry")
+		for fn in ("custom_order_code", "order_code", "party_code"):
+			if se_meta.has_field(fn):
+				header_order = _cstr(frappe.db.get_value("Stock Entry", ste, fn) or "")
+				if header_order:
+					break
+	if header_order:
+		for r in rolls:
+			if not _cstr(r.get("party_code") or r.get("order_code")):
+				r["party_code"] = header_order
+				r["order_code"] = header_order
+	return {"approval_name": name, "rolls": rolls, "order_code": header_order}
 
 
 def stock_entry_requires_logistics_scan(stock_entry):

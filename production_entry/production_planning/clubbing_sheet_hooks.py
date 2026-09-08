@@ -148,13 +148,19 @@ def _set_load_type(doc):
 
 	if full_load_customers:
 		if len(customers) > 1:
-			frappe.throw(
+			# Soft warning — planners may still save/submit mixed sheets
+			frappe.msgprint(
 				frappe._(
 					"Customer {0} has a total weight of {1} kgs (>= 5000 kgs). "
-					"Orders >= 5000 kgs must be clubbed separately as a Full Load."
-				).format(full_load_customers[0], customer_weights[full_load_customers[0]])
+					"Orders >= 5000 kgs are normally a Full Load alone — you can still save and submit."
+				).format(full_load_customers[0], customer_weights[full_load_customers[0]]),
+				title=frappe._("Full Load Warning"),
+				indicator="orange",
+				alert=True,
 			)
-		doc.load_type = "Full Load"
+			doc.load_type = "Part Load"
+		else:
+			doc.load_type = "Full Load"
 	elif customers:
 		doc.load_type = "Part Load"
 	else:
@@ -264,16 +270,22 @@ def _loading_customer_key(item) -> str:
 
 
 def _item_sort_tuple(item, active_belt):
+	"""Sort key for loading: farther from Madurai first → Inside.
+
+	Distance is primary (Namakkal 200 before Karur 140). Belt index is only a
+	tie-break when distances match — never override a larger distance.
+	"""
 	city_lower = cstr(item.get("party_location") or "").lower()
-	priority = 0
-	sort_val = flt(item.get("distance_from_madurai"))
+	dist = flt(item.get("distance_from_madurai"))
+	if dist <= 0:
+		dist = flt(_lookup_distance(item.get("party_location")))
+	belt_idx = 0
 	if active_belt:
 		for idx, bc in enumerate(active_belt):
 			if city_lower == bc or city_lower in bc or bc in city_lower:
-				priority = 1
-				sort_val = idx
+				belt_idx = idx
 				break
-	return priority, sort_val
+	return dist, belt_idx
 
 
 def _sequence_labels_for_customer_count(n: int) -> list[str]:
@@ -312,26 +324,26 @@ def _set_distances_and_loading_sequence(doc):
 
 	active_belt = _pick_active_belt(_selected_cities(doc))
 
-	# Group rows by customer — Gowtham's 5 lines share one slot, Dinesh's share another.
-	groups = {}  # key -> {priority, sort_val, items}
+	# Group rows by customer — one slot per customer (not per item row).
+	groups = {}  # key -> {dist, belt_idx, items}
 	order_keys = []
 	for item in items:
 		key = _loading_customer_key(item)
-		prio, sval = _item_sort_tuple(item, active_belt)
+		dist, belt_idx = _item_sort_tuple(item, active_belt)
 		if key not in groups:
-			groups[key] = {"priority": prio, "sort_val": sval, "items": []}
+			groups[key] = {"dist": dist, "belt_idx": belt_idx, "items": []}
 			order_keys.append(key)
 		else:
-			# Keep farthest / highest belt index for the customer group
 			g = groups[key]
-			if (prio, sval) > (g["priority"], g["sort_val"]):
-				g["priority"], g["sort_val"] = prio, sval
+			# Keep farthest distance for the customer group
+			if dist > g["dist"] or (dist == g["dist"] and belt_idx > g["belt_idx"]):
+				g["dist"], g["belt_idx"] = dist, belt_idx
 		groups[key]["items"].append(item)
 
-	# Farther customer first → Inside
+	# Farther from Madurai first → Inside (e.g. Namakkal then Karur → Outside)
 	ordered_keys = sorted(
 		order_keys,
-		key=lambda k: (-groups[k]["priority"], -groups[k]["sort_val"], k),
+		key=lambda k: (-groups[k]["dist"], -groups[k]["belt_idx"], k),
 	)
 	labels = _sequence_labels_for_customer_count(len(ordered_keys))
 	for i, key in enumerate(ordered_keys):

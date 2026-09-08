@@ -1106,8 +1106,13 @@ def get_despatch_approval_roll_list(approval_name=None):
 		if not bn:
 			continue
 		spec = _roll_spec_dict(ln, ln.get("item_code"))
-		# Prefer SPR produced row when still blank
-		if (not spec.get("quality") or not spec.get("gsm")) and bn:
+		# Prefer SPR produced row when quality/GSM/width still blank
+		if (
+			not spec.get("quality")
+			or not spec.get("color")
+			or not cint(spec.get("gsm") or 0)
+			or flt(spec.get("width_inch") or 0) <= 0
+		) and bn:
 			spr_row = frappe.db.get_value(
 				"Shaft Production Run Item",
 				{"batch_no": bn},
@@ -1125,7 +1130,11 @@ def get_despatch_approval_roll_list(approval_name=None):
 				as_dict=True,
 			)
 			if spr_row:
-				spec = _roll_spec_dict(spr_row, spr_row.get("item_code") or ln.get("item_code"))
+				merged = dict(spr_row)
+				for k in ("quality", "color", "gsm", "width_inch", "meter_per_roll", "meter_roll", "item_code"):
+					if ln.get(k) not in (None, "", 0, 0.0):
+						merged[k] = ln.get(k)
+				spec = _roll_spec_dict(merged, merged.get("item_code") or ln.get("item_code"))
 				if not flt(ln.get("qty")):
 					ln["qty"] = flt(spr_row.get("net_weight") or spr_row.get("gross_weight") or 0)
 		qty = flt(ln.get("qty") or ln.get("net_weight") or 0)

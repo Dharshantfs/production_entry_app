@@ -586,7 +586,7 @@ frappe.ui.form.on('Clubbing Sheet', {
         if (!is_valid) {
             frm.set_intro(__("ROUTE CONFLICT — cities do not fall on one forward route/belt (save/submit still allowed)."), "orange");
         } else if (full_load_customers.length > 0 && customers.length > 1) {
-            frm.set_intro(__("FULL LOAD VIOLATION — Customer {0} has {1} kgs (>= 5000). Must be dedicated vehicle.", [full_load_customers[0], customer_weights[full_load_customers[0]]]), "red");
+            frm.set_intro(__("FULL LOAD WARNING — Customer {0} has {1} kgs (>= 5000). Normally a dedicated Full Load — save/submit still allowed.", [full_load_customers[0], customer_weights[full_load_customers[0]]]), "orange");
         } else if (frm.doc.load_type === "Full Load") {
             frm.set_intro(__("Full Load — dedicated vehicle."), "blue");
         } else if (frm.doc.load_type === "Part Load") {
@@ -619,11 +619,12 @@ frappe.ui.form.on('Clubbing Sheet', {
         });
 
         let customers = Object.keys(customer_weights);
-        let has_full_load_order = Object.values(customer_weights).some(w => w >= 5000);
+        let full_load_customers = customers.filter(c => customer_weights[c] >= 5000);
 
-        // Do NOT clear load_type on route conflict — that hid Loading Sequence column.
-        // Still warn via show_load_type_indicator; server enforces unless ignore_route_conflict.
-        if (has_full_load_order) {
+        // Soft warn when ≥5000 kg customer is mixed with others — still Part Load so save works.
+        if (full_load_customers.length && customers.length > 1) {
+            frm.set_value('load_type', 'Part Load');
+        } else if (full_load_customers.length) {
             frm.set_value('load_type', 'Full Load');
         } else if (customers.length >= 1) {
             frm.set_value('load_type', 'Part Load');
@@ -895,25 +896,22 @@ frappe.ui.form.on('Clubbing Sheet', {
             }
         }
 
+        // Distance primary (farther → Inside). Belt index only ties distances.
         function get_sort_key(item) {
             let city = get_city(item);
+            let dist = flt(item.distance_from_madurai) || get_distance_from_madurai(item.party_location);
+            let beltIdx = 0;
             if (active_belt) {
                 for (let idx = 0; idx < active_belt.length; idx++) {
                     let bc = active_belt[idx];
                     if (city === bc || city.includes(bc) || bc.includes(city)) {
-                        return [1, idx];
+                        beltIdx = idx;
+                        break;
                     }
                 }
             }
-            let dist = flt(item.distance_from_madurai) || get_distance_from_madurai(item.party_location);
-            return [0, dist];
+            return [dist, beltIdx];
         }
-
-        items.sort((a, b) => {
-            let ka = get_sort_key(a), kb = get_sort_key(b);
-            if (ka[0] !== kb[0]) return kb[0] - ka[0];
-            return kb[1] - ka[1];
-        });
 
         if (frm.doc.load_type === 'Full Load') {
             items.forEach(item => { item.loading_sequence = 'Full Load'; });
@@ -942,21 +940,22 @@ frappe.ui.form.on('Clubbing Sheet', {
             const key = customerKey(item) || String(item.idx);
             const sk = get_sort_key(item);
             if (!groups.has(key)) {
-                groups.set(key, { priority: sk[0], sortVal: sk[1], items: [] });
+                groups.set(key, { dist: sk[0], beltIdx: sk[1], items: [] });
             } else {
                 const g = groups.get(key);
-                if (sk[0] > g.priority || (sk[0] === g.priority && sk[1] > g.sortVal)) {
-                    g.priority = sk[0];
-                    g.sortVal = sk[1];
+                if (sk[0] > g.dist || (sk[0] === g.dist && sk[1] > g.beltIdx)) {
+                    g.dist = sk[0];
+                    g.beltIdx = sk[1];
                 }
             }
             groups.get(key).items.push(item);
         });
 
+        // Farther from Madurai first → Inside (Namakkal 200 before Karur 140 → Outside)
         const orderedKeys = Array.from(groups.keys()).sort((a, b) => {
             const ga = groups.get(a), gb = groups.get(b);
-            if (ga.priority !== gb.priority) return gb.priority - ga.priority;
-            if (ga.sortVal !== gb.sortVal) return gb.sortVal - ga.sortVal;
+            if (ga.dist !== gb.dist) return gb.dist - ga.dist;
+            if (ga.beltIdx !== gb.beltIdx) return gb.beltIdx - ga.beltIdx;
             return String(a).localeCompare(String(b));
         });
 

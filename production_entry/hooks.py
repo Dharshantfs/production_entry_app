@@ -25,6 +25,8 @@ app_include_js = [
 	# Clubbing Sheet is a site Custom DocType — doctype_js alone is unreliable on Frappe Cloud.
 	# Load once via desk include; JS guards against double-register.
 	"/assets/production_entry/js/clubbing_sheet_form.js",
+	# Shared roll print dialog — needed on Logistics Kanban + Stock Entry (not only Delivery Note).
+	"/assets/production_entry/js/despatch_rolls_dialog.js",
 ]
 
 # include js, css files in header of web template
@@ -39,7 +41,7 @@ app_include_js = [
 # webform_include_css = {"doctype": "public/css/doctype.css"}
 
 # include js in page
-# page_js = {"page" : "public/js/file.js"}
+page_js = {"logistics-kanban": "public/js/despatch_rolls_dialog.js"}
 
 # include js in doctype views
 doctype_js = {
@@ -70,7 +72,10 @@ doctype_js = {
     "Roll Production Entry": "public/js/roll_production_entry.js",
     "Transfer Approval": "public/js/transfer_approval_form.js",
     "Despatch Approval": "public/js/despatch_approval_form.js",
-    "Stock Entry": "public/js/stock_entry_transfer.js",
+    "Stock Entry": [
+        "public/js/despatch_rolls_dialog.js",
+        "public/js/stock_entry_transfer.js",
+    ],
     "Delivery Note": [
         "public/js/despatch_rolls_dialog.js",
         "public/js/delivery_note_despatch.js",

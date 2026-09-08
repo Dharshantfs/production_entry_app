@@ -350,6 +350,8 @@ frappe.ui.form.on("Stock Entry", {
 							}
 							if (typeof jsb_show_despatch_rolls_dialog === "function") {
 								const orderCodes = [];
+								const headerOc = String(msg.order_code || frm.doc.custom_order_code || frm.doc.order_code || "").trim();
+								if (headerOc) orderCodes.push(headerOc);
 								rolls.forEach((row) => {
 									const oc = String(row.party_code || row.order_code || "").trim();
 									if (oc && orderCodes.indexOf(oc) === -1) orderCodes.push(oc);
@@ -361,29 +363,7 @@ frappe.ui.form.on("Stock Entry", {
 								});
 								return;
 							}
-							let html =
-								"<table class='table table-bordered'><tr><th>Batch No</th><th>Quality</th><th>Colour</th><th>GSM</th><th>Width</th><th>Qty</th></tr>";
-							rolls.forEach((row) => {
-								html += `<tr><td>${frappe.utils.escape_html(row.batch_no || "")}</td>
-									<td>${frappe.utils.escape_html(row.quality || "")}</td>
-									<td>${frappe.utils.escape_html(row.color || "")}</td>
-									<td>${frappe.utils.escape_html(String(row.gsm || ""))}</td>
-									<td>${frappe.utils.escape_html(String(row.width_inch || ""))}</td>
-									<td>${flt(row.net_weight || row.qty)}</td></tr>`;
-							});
-							html += "</table>";
-							const d = new frappe.ui.Dialog({
-								title: __("Approved Rolls"),
-								fields: [{ fieldtype: "HTML", fieldname: "html_content", options: html }],
-								primary_action_label: __("Print"),
-								primary_action() {
-									const w = window.open("", "_blank");
-									w.document.write(html);
-									w.document.close();
-									w.print();
-								},
-							});
-							d.show();
+							frappe.msgprint(__("Roll print dialog not loaded — hard refresh (Ctrl+Shift+R)."));
 						},
 					});
 				},

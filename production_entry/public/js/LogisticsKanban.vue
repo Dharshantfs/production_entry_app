@@ -944,8 +944,9 @@ function viewDespatchRolls(da) {
         return;
       }
       if (typeof jsb_show_despatch_rolls_dialog === "function") {
-        jsb_show_despatch_rolls_dialog({
+		jsb_show_despatch_rolls_dialog({
           rolls,
+          order_code: da.order_codes_label || "",
           sales_order: da.order_codes_label || da.clubbing_sheet || da.name,
           delivery_note: (da.delivery_notes && da.delivery_notes[0]) || da.delivery_note || "",
         });
