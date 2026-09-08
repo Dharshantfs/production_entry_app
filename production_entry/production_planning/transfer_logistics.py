@@ -972,6 +972,7 @@ def get_spr_produced_batches(
 				"party_code": (row or {}).get("party_code") or pc_filter,
 				"work_order": (row or {}).get("work_order"),
 				"warehouse": warehouse,
+				**_roll_spec_dict(row, (row or {}).get("item_code") or ic_filter),
 			}
 		)
 
@@ -1259,10 +1260,49 @@ def _resolve_planning_table_row_for_spr(spr_name: str, item_code: str = "", part
 def _spr_item_query_fields(*optional_fields) -> list[str]:
 	meta = frappe.get_meta("Shaft Production Run Item")
 	fields = {"batch_no", "item_code", "item_name", "net_weight", "gross_weight"}
-	for fieldname in optional_fields:
+	for fieldname in optional_fields + (
+		"quality",
+		"color",
+		"gsm",
+		"width_inch",
+		"meter_per_roll",
+		"meter_roll",
+		"party_code",
+	):
 		if meta.has_field(fieldname):
 			fields.add(fieldname)
 	return sorted(fields)
+
+
+def _roll_spec_dict(row=None, item_code: str = "") -> dict:
+	"""Quality / colour / GSM / width for logistics batch UIs."""
+	row = row or {}
+	quality = _cstr(row.get("quality") or "")
+	color = _cstr(row.get("color") or row.get("colour") or "")
+	gsm = cint(row.get("gsm") or 0)
+	width = flt(row.get("width_inch") or row.get("width") or 0)
+	meters = flt(row.get("meter_per_roll") or row.get("meter_roll") or 0)
+	ic = _cstr(row.get("item_code") or item_code)
+	if ic and (not quality or not color or gsm <= 0 or width <= 0):
+		try:
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				_spr_resolve_roll_line_specs_from_item_code,
+			)
+
+			specs = _spr_resolve_roll_line_specs_from_item_code(ic, _cstr(row.get("item_name") or "")) or {}
+			quality = quality or _cstr(specs.get("quality") or "")
+			color = color or _cstr(specs.get("color") or "")
+			gsm = gsm or cint(specs.get("gsm") or 0)
+			width = width or flt(specs.get("width_inch") or specs.get("width") or 0)
+		except Exception:
+			pass
+	return {
+		"quality": quality,
+		"color": color,
+		"gsm": gsm,
+		"width_inch": width,
+		"meter_per_roll": meters,
+	}
 
 
 def _spr_auto_approve_transfer_approval(ta_name: str) -> dict:
@@ -1458,8 +1498,10 @@ def _get_spr_produced_batches_fast(spr_name: str, from_company: str = "") -> lis
 				"item_code": row.get("item_code") or ic_filter,
 				"item_name": row.get("item_name") or "",
 				"qty": qty,
+				"available_qty": qty,
 				"party_code": row.get("party_code") or pc_filter,
 				"work_order": row.get("work_order"),
+				**_roll_spec_dict(row, row.get("item_code") or ic_filter),
 			}
 		)
 	return batches
@@ -1513,6 +1555,7 @@ def get_spr_transfer_bootstrap(spr_name=None):
 				"qty": flt(row.get("net_weight") or row.get("gross_weight") or 0),
 				"planning_table_row": pt.get("planning_table_row") or "",
 				"planning_sheet": pt.get("planning_sheet") or "",
+				**_roll_spec_dict(row, ic),
 			}
 		)
 
@@ -1533,6 +1576,10 @@ def get_spr_transfer_bootstrap(spr_name=None):
 				"planning_sheet": meta.get("planning_sheet") or "",
 				"available_qty": avail,
 				"qty": avail,
+				"quality": b.get("quality") or meta.get("quality") or "",
+				"color": b.get("color") or meta.get("color") or "",
+				"gsm": b.get("gsm") or meta.get("gsm") or "",
+				"width_inch": b.get("width_inch") or meta.get("width_inch") or "",
 			}
 		)
 
@@ -2584,6 +2631,67 @@ def record_transfer_barcode_scan(stock_entry, barcode):
 		"batch_no": (match.batch_no or "").strip() or barcode,
 		"item_code": match.item_code,
 	}
+
+
+@frappe.whitelist()
+def get_transfer_approval_roll_list(approval_name=None, stock_entry=None):
+	"""Batches on Transfer Approval for Approved Rolls dialog + print."""
+	name = _cstr(approval_name).strip()
+	ste = _cstr(stock_entry).strip()
+	if not name and ste:
+		name = _cstr(frappe.db.get_value("Transfer Approval", {"stock_entry": ste}, "name") or "")
+	if not name or not frappe.db.exists("Transfer Approval", name):
+		frappe.throw(_("Transfer Approval not found."))
+	meta = frappe.get_meta("Transfer Approval Line")
+	fields = ["batch_no", "item_code", "qty", "party_code", "customer_name"]
+	for f in ("quality", "color", "gsm", "width_inch", "spr_name"):
+		if meta.has_field(f):
+			fields.append(f)
+	lines = frappe.get_all(
+		"Transfer Approval Line",
+		filters={"parent": name},
+		fields=fields,
+		order_by="idx asc",
+		limit_page_length=0,
+	) or []
+	rolls = []
+	for ln in lines:
+		bn = _cstr(ln.get("batch_no"))
+		if not bn:
+			continue
+		spec = _roll_spec_dict(ln, ln.get("item_code"))
+		if not spec.get("quality") or not spec.get("gsm"):
+			spr_row = frappe.db.get_value(
+				"Shaft Production Run Item",
+				{"batch_no": bn},
+				[
+					"quality",
+					"color",
+					"gsm",
+					"width_inch",
+					"meter_per_roll",
+					"meter_roll",
+					"net_weight",
+					"gross_weight",
+					"item_code",
+				],
+				as_dict=True,
+			)
+			if spr_row:
+				spec = _roll_spec_dict(spr_row, spr_row.get("item_code") or ln.get("item_code"))
+		qty = flt(ln.get("qty") or 0)
+		rolls.append(
+			{
+				"batch_no": bn,
+				"item_code": _cstr(ln.get("item_code")),
+				"party_code": _cstr(ln.get("party_code")),
+				"net_weight": qty,
+				"gross_weight": qty,
+				"meter_per_roll": flt(spec.get("meter_per_roll") or 0),
+				**spec,
+			}
+		)
+	return {"approval_name": name, "rolls": rolls}
 
 
 def stock_entry_requires_logistics_scan(stock_entry):

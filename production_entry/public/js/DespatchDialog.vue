@@ -36,7 +36,10 @@
               <th>Clubbing Sheet ID</th>
               <th>Order Code</th>
               <th>Customer</th>
-              <th>Item</th>
+              <th>Quality</th>
+              <th>Colour</th>
+              <th>GSM</th>
+              <th>Width</th>
               <th>SPR</th>
               <th>Status</th>
               <th>Batches</th>
@@ -55,10 +58,10 @@
               <td>{{ row.clubbing_sheet || "—" }}</td>
               <td>{{ row.party_code }}</td>
               <td>{{ row.customer_name }}</td>
-              <td>
-                <span v-if="row._isSprGroup" :title="(row.item_codes || []).join(', ')">{{ row.item_code }}</span>
-                <span v-else>{{ row.item_code }}</span>
-              </td>
+              <td>{{ rowAttrs(row).quality }}</td>
+              <td>{{ rowAttrs(row).color }}</td>
+              <td>{{ rowAttrs(row).gsm }}</td>
+              <td>{{ rowAttrs(row).width }}</td>
               <td>{{ row.spr_name || "—" }}</td>
               <td><span :class="statusClass(row)">{{ statusLabel(row) }}</span></td>
               <td class="tl-batch-cell">
@@ -94,6 +97,8 @@
             </div>
           </div>
           <div class="tl-batch-head-actions">
+            <button type="button" class="cc-clear-btn tl-batch-mini" @click="selectAllBatches">Select all</button>
+            <button type="button" class="cc-clear-btn tl-batch-mini" @click="clearAllBatches">Clear</button>
             <label class="tl-batch-toggle">
               <input type="radio" value="spr" v-model="batchSource" @change="reloadBatches" />
               SPR produced
@@ -117,7 +122,10 @@
               <tr>
                 <th></th>
                 <th>Batch No</th>
-                <th>Item Code</th>
+                <th>Quality</th>
+                <th>Colour</th>
+                <th>GSM</th>
+                <th>Width</th>
                 <th class="text-right">Net / Avail (Kg)</th>
                 <th class="text-right">Despatch Qty (Kg)</th>
               </tr>
@@ -126,7 +134,10 @@
               <tr v-for="b in batchOptions" :key="b.batch_no" :class="{ 'is-selected': b.selected }" @click="toggleBatchRow(b)">
                 <td><input type="checkbox" v-model="b.selected" @click.stop /></td>
                 <td class="tl-batch-no">{{ b.batch_no }}</td>
-                <td class="tl-item-code">{{ b.item_code || "—" }}</td>
+                <td>{{ b.quality || "—" }}</td>
+                <td>{{ b.color || "—" }}</td>
+                <td>{{ b.gsm || "—" }}</td>
+                <td>{{ formatWidth(b.width_inch) }}</td>
                 <td class="text-right">{{ formatQty(b.available_qty) }}</td>
                 <td class="text-right" @click.stop>
                   <input type="number" class="tl-batch-qty-input" step="0.001" min="0.001" :disabled="!b.selected" v-model.number="b.qty" />
@@ -388,12 +399,45 @@ function applyLoadedBatches(batches, row, existingMap) {
     return {
       batch_no: b.batch_no,
       item_code: b.item_code || row.item_code,
+      quality: b.quality || "",
+      color: b.color || "",
+      gsm: b.gsm || "",
+      width_inch: b.width_inch || 0,
       available_qty: avail,
       net_weight: ltn(b.net_weight || b.qty),
       qty: prev ? ltn(prev.qty) : avail,
       selected: Boolean(prev),
     };
   });
+}
+
+function selectAllBatches() {
+  batchOptions.value.forEach((b) => {
+    b.selected = true;
+    if (ltn(b.qty) <= 0) b.qty = b.available_qty || 1;
+  });
+}
+
+function clearAllBatches() {
+  batchOptions.value.forEach((b) => {
+    b.selected = false;
+  });
+}
+
+function formatWidth(w) {
+  const n = ltn(w);
+  return n > 0 ? String(n) : "—";
+}
+
+function rowAttrs(row) {
+  const batches = selection.value[rowSelectionId(row)]?.batches || [];
+  const first = batches[0] || row || {};
+  return {
+    quality: first.quality || row.quality || "—",
+    color: first.color || row.color || "—",
+    gsm: first.gsm || row.gsm || "—",
+    width: formatWidth(first.width_inch || row.width_inch),
+  };
 }
 
 function closeBatchPicker() {
@@ -418,6 +462,10 @@ function applyBatches() {
       qty: ltn(b.qty),
       net_weight: ltn(b.net_weight || b.qty),
       item_code: b.item_code || row.item_code,
+      quality: b.quality || "",
+      color: b.color || "",
+      gsm: b.gsm || "",
+      width_inch: b.width_inch || 0,
     }));
   if (!picked.length) {
     frappe.msgprint("Select at least one batch.");

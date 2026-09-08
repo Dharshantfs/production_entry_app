@@ -103,9 +103,11 @@ if doc.items and len(doc.items) >= 2:
                 break
 
         if not is_valid and not doc.get("ignore_route_conflict"):
-            frappe.throw(
+            frappe.msgprint(
                 "Route conflict detected! The selected cities do not fall together "
-                "on any single established forward route/belt. Please verify or create separate Clubbing Sheets."
+                "on any single established forward route/belt. You can still save and submit.",
+                title="Route Conflict",
+                indicator="orange",
             )
 
 # ---------- 5) Distance + Loading sequence ----------

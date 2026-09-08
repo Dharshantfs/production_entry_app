@@ -181,6 +181,7 @@ def _selected_cities(doc):
 
 
 def _validate_route_belt(doc):
+	"""Soft warning only — never block Save / Submit (planners may club across belts)."""
 	items = doc.get("items") or []
 	if len(items) < 2:
 		return
@@ -189,12 +190,15 @@ def _validate_route_belt(doc):
 	if len(selected) <= 1:
 		return
 	is_valid = any(all(_city_in_belt(city, belt) for city in selected) for belt in ROUTE_BELTS)
-	if not is_valid and not doc.get("ignore_route_conflict"):
-		frappe.throw(
+	if not is_valid:
+		frappe.msgprint(
 			frappe._(
 				"Route conflict detected! Cities {0} do not fall together "
-				"on any single established forward route/belt. Please verify or create separate Clubbing Sheets."
-			).format(", ".join(selected))
+				"on any single established forward route/belt. You can still save and submit."
+			).format(", ".join(selected)),
+			title=frappe._("Route Conflict"),
+			indicator="orange",
+			alert=True,
 		)
 
 

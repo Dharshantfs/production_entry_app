@@ -460,6 +460,21 @@ function jsb_club_open_despatch_picker(frm) {
 	window._jsb_club_picker_impl(frm);
 }
 
+function jsb_club_hide_view_rolls(frm) {
+	const grid = frm.get_field('items') && frm.get_field('items').grid;
+	if (!grid) return;
+	if (typeof grid.toggle_display === 'function') {
+		try {
+			grid.toggle_display('view_rolls', false);
+		} catch (e) { /* ignore */ }
+	}
+	if (grid.set_column_disp) {
+		try {
+			grid.set_column_disp('view_rolls', false);
+		} catch (e2) { /* ignore */ }
+	}
+}
+
 frappe.ui.form.on('Clubbing Sheet', {
     refresh: function (frm) {
         jsb_club_bind_picker_button(frm);
@@ -482,6 +497,7 @@ frappe.ui.form.on('Clubbing Sheet', {
         frm.trigger('toggle_loading_sequence_visibility');
         frm.trigger('set_vehicle_no_options');
         jsb_club_bind_loading_sequence_lock_ui(frm);
+        jsb_club_hide_view_rolls(frm);
     },
 
     vehicle_feet: function (frm) {
@@ -567,8 +583,8 @@ frappe.ui.form.on('Clubbing Sheet', {
 
         let is_valid = jsb_club_cities_on_one_belt(selected_cities);
 
-        if (!is_valid && !frm.doc.ignore_route_conflict) {
-            frm.set_intro(__("ROUTE CONFLICT — cities do not fall on one forward route/belt. Check Ignore Route Conflict to override."), "red");
+        if (!is_valid) {
+            frm.set_intro(__("ROUTE CONFLICT — cities do not fall on one forward route/belt (save/submit still allowed)."), "orange");
         } else if (full_load_customers.length > 0 && customers.length > 1) {
             frm.set_intro(__("FULL LOAD VIOLATION — Customer {0} has {1} kgs (>= 5000). Must be dedicated vehicle.", [full_load_customers[0], customer_weights[full_load_customers[0]]]), "red");
         } else if (frm.doc.load_type === "Full Load") {
@@ -995,64 +1011,6 @@ frappe.ui.form.on('Clubbing Sheet Item', {
     loading_sequence(frm, cdt, cdn) {
         jsb_club_set_loading_sequence_lock(frm);
         jsb_club_bind_loading_sequence_lock_ui(frm);
-    },
-
-    view_rolls: function (frm, cdt, cdn) {
-        let row = locals[cdt][cdn];
-        let order_code = row.party_code || row.order_code || row.sales_order;
-        let alt_code = row.sales_order || row.party_code;
-
-        if (!order_code) {
-            frappe.msgprint(__('Order reference missing. Cannot view rolls.'));
-            return;
-        }
-
-        frappe.call({
-            method: 'frappe.client.get_list',
-            args: {
-                doctype: 'Shaft Production Run',
-                filters: [
-                    ['custom_order_code', 'in', [order_code, alt_code].filter(Boolean)],
-                    ['docstatus', '=', 1]
-                ],
-                fields: ['name', 'custom_unit', 'custom_order_code']
-            },
-            callback: function (rp) {
-                let runs = rp.message || [];
-                if (!runs.length) {
-                    frappe.msgprint(__('No production records found for this order.'));
-                    return;
-                }
-
-                let fetch_promises = runs.map(run => new Promise((resolve_fetch) => {
-                    frappe.call({
-                        method: 'frappe.client.get',
-                        args: { doctype: 'Shaft Production Run', name: run.name },
-                        callback: (res) => {
-                            let doc = res.message || {};
-                            let matched_items = (doc.items || []).filter(item => {
-                                let item_order = item.party_code || item.custom_order_code;
-                                return (item_order === order_code || item_order === alt_code) && flt(item.net_weight) > 0;
-                            });
-                            matched_items.forEach(item => {
-                                item.parent_run = doc.name;
-                                item.run_date = doc.run_date || doc.posting_date;
-                            });
-                            resolve_fetch(matched_items);
-                        }
-                    });
-                }));
-
-                Promise.all(fetch_promises).then((all_item_batches) => {
-                    let rolls = [].concat(...all_item_batches);
-                    if (!rolls.length) {
-                        frappe.msgprint(__('No weighed rolls found for this order.'));
-                        return;
-                    }
-                    show_rolls_dialog_JSB(frm, { rolls: rolls, sales_order: order_code });
-                });
-            }
-        });
     },
 
     items_remove: function (frm) {

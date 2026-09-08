@@ -24,6 +24,7 @@ from production_entry.production_planning.transfer_logistics import (
 	_parse_chart_rows,
 	_primary_submitted_spr_for_batch,
 	_resolve_submitted_spr_ids,
+	_roll_spec_dict,
 	_row_matches_filters,
 	_transfer_date_in_scope,
 	_transfer_row_unit_is_unassigned,
@@ -898,7 +899,7 @@ def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, fro
 	seen = set()
 	out = []
 
-	def _append(bn, row_ic, row_name, qty, row_pc="", warehouse=""):
+	def _append(bn, row_ic, row_name, qty, row_pc="", warehouse="", row=None):
 		bn = _cstr(bn)
 		if not bn or bn in seen or bn in reserved:
 			return
@@ -914,6 +915,7 @@ def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, fro
 			)
 		if q <= 0:
 			q = flt(frappe.db.get_value("Batch", bn, "batch_qty") or 0) or 1.0
+		spec = _roll_spec_dict(row or {}, _cstr(row_ic) or ic)
 		out.append(
 			{
 				"batch_no": bn,
@@ -926,16 +928,21 @@ def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, fro
 				"party_code": _cstr(row_pc) or pc,
 				"warehouse": warehouse or "",
 				"source": "spr_item",
+				**spec,
 			}
 		)
 
 	placeholders = ", ".join(["%s"] * len(spr_ids))
 	has_roll = frappe.db.has_column("Shaft Production Run Item", "roll_no")
 	roll_col = ", roll_no" if has_roll else ""
+	spec_cols = ""
+	for col in ("quality", "color", "gsm", "width_inch", "meter_per_roll", "meter_roll"):
+		if frappe.db.has_column("Shaft Production Run Item", col):
+			spec_cols += f", {col}"
 	rows = frappe.db.sql(
 		f"""
 		select parent, idx, batch_no, item_code, item_name, net_weight, gross_weight,
-		       party_code, work_order{roll_col}
+		       party_code, work_order{roll_col}{spec_cols}
 		from `tabShaft Production Run Item`
 		where parent in ({placeholders})
 		order by parent asc, idx asc
@@ -979,6 +986,7 @@ def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, fro
 			r.get("item_name"),
 			r.get("net_weight") or r.get("gross_weight") or 0,
 			r.get("party_code"),
+			row=r,
 		)
 
 	if out:
@@ -1003,6 +1011,7 @@ def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, fro
 			b.get("qty") or b.get("available_qty") or 0,
 			b.get("party_code"),
 			b.get("warehouse"),
+			row=b,
 		)
 	if out:
 		return out
@@ -1067,9 +1076,82 @@ def get_despatch_other_batches(item_code=None, from_company=None, party_code=Non
 				"warehouse": sle.warehouse,
 				"party_code": party_code or "",
 				"source": "other",
+				**_roll_spec_dict({}, sle.item_code),
 			}
 		)
 	return out
+
+
+@frappe.whitelist()
+def get_despatch_approval_roll_list(approval_name=None):
+	"""Batches selected on Production Despatch (for Logistics Kanban View Rolls + print)."""
+	name = _cstr(approval_name).strip()
+	if not name or not frappe.db.exists("Despatch Approval", name):
+		frappe.throw(_("Despatch Approval not found."))
+	meta = frappe.get_meta("Despatch Approval Line")
+	fields = ["batch_no", "item_code", "qty", "party_code", "customer_name"]
+	for f in ("quality", "color", "gsm", "width_inch", "net_weight", "meter_per_roll", "spr_name"):
+		if meta.has_field(f):
+			fields.append(f)
+	lines = frappe.get_all(
+		"Despatch Approval Line",
+		filters={"parent": name},
+		fields=fields,
+		order_by="idx asc",
+		limit_page_length=0,
+	) or []
+	rolls = []
+	for ln in lines:
+		bn = _cstr(ln.get("batch_no"))
+		if not bn:
+			continue
+		spec = _roll_spec_dict(ln, ln.get("item_code"))
+		# Prefer SPR produced row when still blank
+		if (not spec.get("quality") or not spec.get("gsm")) and bn:
+			spr_row = frappe.db.get_value(
+				"Shaft Production Run Item",
+				{"batch_no": bn},
+				[
+					"quality",
+					"color",
+					"gsm",
+					"width_inch",
+					"meter_per_roll",
+					"meter_roll",
+					"net_weight",
+					"gross_weight",
+					"item_code",
+				],
+				as_dict=True,
+			)
+			if spr_row:
+				spec = _roll_spec_dict(spr_row, spr_row.get("item_code") or ln.get("item_code"))
+				if not flt(ln.get("qty")):
+					ln["qty"] = flt(spr_row.get("net_weight") or spr_row.get("gross_weight") or 0)
+		qty = flt(ln.get("qty") or ln.get("net_weight") or 0)
+		rolls.append(
+			{
+				"batch_no": bn,
+				"item_code": _cstr(ln.get("item_code")),
+				"party_code": _cstr(ln.get("party_code")),
+				"customer_name": _cstr(ln.get("customer_name")),
+				"net_weight": qty,
+				"gross_weight": qty,
+				"meter_per_roll": flt(spec.get("meter_per_roll") or 0),
+				**spec,
+			}
+		)
+	da = frappe.db.get_value(
+		"Despatch Approval",
+		name,
+		["name", "custom_clubbing_sheet"] if _has_da_club_field() else ["name"],
+		as_dict=True,
+	) or {}
+	return {
+		"approval_name": name,
+		"clubbing_sheet": _cstr(da.get("custom_clubbing_sheet") or ""),
+		"rolls": rolls,
+	}
 
 
 @frappe.whitelist()

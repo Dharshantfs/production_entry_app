@@ -253,6 +253,9 @@
                     :value="da.despatch_date || ''"
                     @change="moveDespatchToDate(da, $event.target.value)"
                   />
+                  <button type="button" class="lk-dn-btn lk-dn-btn-scan lk-view-rolls-btn" @click="viewDespatchRolls(da)">
+                    View Rolls
+                  </button>
                 </div>
 
                 <template v-if="da.clubbing_sheet">
@@ -924,6 +927,33 @@ function openDespatch(card) {
 function openDespatchApproval(name) {
   frappe.route_options = { approval: name };
   frappe.set_route("despatch-approval-dashboard");
+}
+
+function viewDespatchRolls(da) {
+  if (!da?.name) return;
+  frappe.call({
+    method: `${DESPATCH_API}.get_despatch_approval_roll_list`,
+    args: { approval_name: da.name },
+    freeze: true,
+    freeze_message: __("Loading rolls…"),
+    callback(r) {
+      const msg = r.message || {};
+      const rolls = msg.rolls || [];
+      if (!rolls.length) {
+        frappe.msgprint(__("No batches selected on this Despatch Approval."));
+        return;
+      }
+      if (typeof jsb_show_despatch_rolls_dialog === "function") {
+        jsb_show_despatch_rolls_dialog({
+          rolls,
+          sales_order: da.order_codes_label || da.clubbing_sheet || da.name,
+          delivery_note: (da.delivery_notes && da.delivery_notes[0]) || da.delivery_note || "",
+        });
+        return;
+      }
+      frappe.msgprint(__("Roll print dialog not loaded — hard refresh (Ctrl+Shift+R)."));
+    },
+  });
 }
 
 function despatchCardBadge(da) {
@@ -1903,6 +1933,15 @@ watch([despatchArrangementLocked, approvedArrangementLocked, mode], () => {
 .lk-da-date-row {
   margin: 4px 0 8px;
   padding: 0 2px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.lk-view-rolls-btn {
+  margin-left: auto;
+  font-size: 11px !important;
+  padding: 4px 8px !important;
 }
 .lk-da-date-input {
   max-width: 140px;

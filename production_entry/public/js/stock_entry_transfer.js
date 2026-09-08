@@ -339,52 +339,46 @@ frappe.ui.form.on("Stock Entry", {
 				__("Approved Rolls"),
 				() => {
 					frappe.call({
-						method: "frappe.client.get_list",
-						args: {
-							doctype: "Transfer Approval",
-							filters: { stock_entry: frm.doc.name },
-							fields: ["name"],
-						},
+						method: "production_entry.production_planning.transfer_logistics.get_transfer_approval_roll_list",
+						args: { stock_entry: frm.doc.name },
 						callback: function (r) {
-							if (r.message && r.message.length > 0) {
-								let ta_name = r.message[0].name;
-								frappe.call({
-									method: "frappe.client.get",
-									args: { doctype: "Transfer Approval", name: ta_name },
-									callback: function (r2) {
-										if (r2.message) {
-											let grouped = {};
-											(r2.message.lines || []).forEach((row) => {
-												if (!grouped[row.item_code]) grouped[row.item_code] = [];
-												grouped[row.item_code].push(row);
-											});
-											let html = "";
-											for (let ic in grouped) {
-												html += `<h4>${ic}</h4>`;
-												html +=
-													"<table class='table table-bordered'><tr><th>Batch No</th><th>Qty</th></tr>";
-												grouped[ic].forEach((row) => {
-													html += `<tr><td>${row.batch_no || ""}</td><td>${row.qty}</td></tr>`;
-												});
-												html += "</table><br>";
-											}
-											let d = new frappe.ui.Dialog({
-												title: "Approved Rolls",
-												fields: [
-													{
-														fieldtype: "HTML",
-														fieldname: "html_content",
-														options: html,
-													},
-												],
-											});
-											d.show();
-										}
-									},
-								});
-							} else {
-								frappe.msgprint("No Transfer Approval linked to this Stock Entry.");
+							const msg = r.message || {};
+							const rolls = msg.rolls || [];
+							if (!rolls.length) {
+								frappe.msgprint(__("No Transfer Approval lines linked to this Stock Entry."));
+								return;
 							}
+							if (typeof jsb_show_despatch_rolls_dialog === "function") {
+								jsb_show_despatch_rolls_dialog({
+									rolls: rolls,
+									sales_order: msg.approval_name || frm.doc.name,
+									title_suffix: __("Transfer Approval"),
+								});
+								return;
+							}
+							let html =
+								"<table class='table table-bordered'><tr><th>Batch No</th><th>Quality</th><th>Colour</th><th>GSM</th><th>Width</th><th>Qty</th></tr>";
+							rolls.forEach((row) => {
+								html += `<tr><td>${frappe.utils.escape_html(row.batch_no || "")}</td>
+									<td>${frappe.utils.escape_html(row.quality || "")}</td>
+									<td>${frappe.utils.escape_html(row.color || "")}</td>
+									<td>${frappe.utils.escape_html(String(row.gsm || ""))}</td>
+									<td>${frappe.utils.escape_html(String(row.width_inch || ""))}</td>
+									<td>${flt(row.net_weight || row.qty)}</td></tr>`;
+							});
+							html += "</table>";
+							const d = new frappe.ui.Dialog({
+								title: __("Approved Rolls"),
+								fields: [{ fieldtype: "HTML", fieldname: "html_content", options: html }],
+								primary_action_label: __("Print"),
+								primary_action() {
+									const w = window.open("", "_blank");
+									w.document.write(html);
+									w.document.close();
+									w.print();
+								},
+							});
+							d.show();
 						},
 					});
 				},

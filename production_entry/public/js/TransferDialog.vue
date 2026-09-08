@@ -32,7 +32,10 @@
               <th></th>
               <th>Order Code</th>
               <th>Customer</th>
-              <th>Item</th>
+              <th>Quality</th>
+              <th>Colour</th>
+              <th>GSM</th>
+              <th>Width</th>
               <th>Unit</th>
               <th>SPR</th>
               <th>Status</th>
@@ -51,10 +54,10 @@
               </td>
               <td>{{ row.party_code }}</td>
               <td>{{ row.customer_name }}</td>
-              <td>
-                <span v-if="row._isSprGroup" :title="(row.item_codes || []).join(', ')">{{ row.item_code }}</span>
-                <span v-else>{{ row.item_code }}</span>
-              </td>
+              <td>{{ rowAttrs(row).quality }}</td>
+              <td>{{ rowAttrs(row).color }}</td>
+              <td>{{ rowAttrs(row).gsm }}</td>
+              <td>{{ rowAttrs(row).width }}</td>
               <td>{{ row.unit }}</td>
               <td>{{ row.spr_name || "—" }}</td>
               <td>
@@ -99,7 +102,10 @@
               <tr>
                 <th></th>
                 <th>Batch No</th>
-                <th>Item</th>
+                <th>Quality</th>
+                <th>Colour</th>
+                <th>GSM</th>
+                <th>Width</th>
                 <th class="text-right">Available (Kg)</th>
                 <th class="text-right">Transfer Qty (Kg)</th>
               </tr>
@@ -113,7 +119,10 @@
               >
                 <td><input type="checkbox" v-model="b.selected" @click.stop /></td>
                 <td class="tl-batch-no">{{ b.batch_no }}</td>
-                <td>{{ b.item_code }}</td>
+                <td>{{ b.quality || "—" }}</td>
+                <td>{{ b.color || "—" }}</td>
+                <td>{{ b.gsm || "—" }}</td>
+                <td>{{ formatWidth(b.width_inch) }}</td>
                 <td class="text-right">{{ formatQty(b.available_qty) }}</td>
                 <td class="text-right" @click.stop>
                   <input
@@ -277,8 +286,25 @@ function batchSummary(row) {
 }
 
 function formatQty(q) {
-  const n = ltn(q);
-  return Number.isFinite(n) ? (Math.round(n * 1000) / 1000).toString() : "0";
+  const n = Number(q);
+  if (!Number.isFinite(n)) return "0";
+  return n.toFixed(3).replace(/\.?0+$/, "") || "0";
+}
+
+function formatWidth(w) {
+  const n = Number(w);
+  return Number.isFinite(n) && n > 0 ? String(n) : "—";
+}
+
+function rowAttrs(row) {
+  const batches = selection.value[rowSelectionId(row)]?.batches || [];
+  const first = batches[0] || row || {};
+  return {
+    quality: first.quality || row.quality || "—",
+    color: first.color || row.color || "—",
+    gsm: first.gsm || row.gsm || "—",
+    width: formatWidth(first.width_inch || row.width_inch),
+  };
 }
 
 function transferStatusLabel(row) {
@@ -362,11 +388,15 @@ function openBatchPicker(row) {
       const batches = r.message || [];
       batchOptions.value = batches.map((b) => {
         const prev = existingMap[b.batch_no];
-        const avail = ltn(b.qty) || 1;
+        const avail = ltn(b.qty || b.available_qty) || 1;
         return {
           batch_no: b.batch_no,
           item_code: b.item_code || row.item_code,
           item_name: b.item_name,
+          quality: b.quality || "",
+          color: b.color || "",
+          gsm: b.gsm || "",
+          width_inch: b.width_inch || 0,
           available_qty: avail,
           qty: prev ? ltn(prev.qty) : avail,
           selected: Boolean(prev),
@@ -419,6 +449,10 @@ function applyBatches() {
       batch_no: b.batch_no,
       qty: ltn(b.qty),
       item_code: b.item_code || row.item_code,
+      quality: b.quality || "",
+      color: b.color || "",
+      gsm: b.gsm || "",
+      width_inch: b.width_inch || 0,
     }));
   if (!picked.length) {
     frappe.msgprint("Select at least one batch with qty.");

@@ -60,7 +60,10 @@
                 <tr>
                   <th></th>
                   <th>Batch No</th>
-                  <th>Item</th>
+                  <th>Quality</th>
+                  <th>Colour</th>
+                  <th>GSM</th>
+                  <th>Width</th>
                   <th>Order</th>
                   <th class="text-right">Qty (Kg)</th>
                 </tr>
@@ -81,7 +84,10 @@
                     />
                   </td>
                   <td class="tl-batch-no">{{ b.batch_no }}</td>
-                  <td>{{ b.item_code }}</td>
+                  <td>{{ b.quality || "—" }}</td>
+                  <td>{{ b.color || "—" }}</td>
+                  <td>{{ b.gsm || "—" }}</td>
+                  <td>{{ b.width_inch || "—" }}</td>
                   <td>{{ b.party_code || "—" }}</td>
                   <td class="text-right" @click.stop>
                     <input
@@ -202,6 +208,10 @@ async function loadContext() {
       return {
         batch_no: b.batch_no,
         item_code: b.item_code,
+        quality: b.quality || "",
+        color: b.color || "",
+        gsm: b.gsm || "",
+        width_inch: b.width_inch || "",
         party_code: b.party_code || "",
         planning_table_row: b.planning_table_row || "",
         planning_sheet: b.planning_sheet || "",
