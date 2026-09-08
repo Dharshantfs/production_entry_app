@@ -25,6 +25,7 @@ from production_entry.production_planning.transfer_logistics import (
 	_primary_submitted_spr_for_batch,
 	_resolve_submitted_spr_ids,
 	_roll_spec_dict,
+	_spr_item_query_fields,
 	_row_matches_filters,
 	_transfer_date_in_scope,
 	_transfer_row_unit_is_unassigned,
@@ -1116,17 +1117,7 @@ def get_despatch_approval_roll_list(approval_name=None):
 			spr_row = frappe.db.get_value(
 				"Shaft Production Run Item",
 				{"batch_no": bn},
-				[
-					"quality",
-					"color",
-					"gsm",
-					"width_inch",
-					"meter_per_roll",
-					"meter_roll",
-					"net_weight",
-					"gross_weight",
-					"item_code",
-				],
+				_spr_item_query_fields(),
 				as_dict=True,
 			)
 			if spr_row:

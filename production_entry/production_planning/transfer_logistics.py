@@ -1258,7 +1258,9 @@ def _resolve_planning_table_row_for_spr(spr_name: str, item_code: str = "", part
 
 
 def _spr_item_query_fields(*optional_fields) -> list[str]:
+	"""Only columns that exist on Shaft Production Run Item (site may lack meter_per_roll)."""
 	meta = frappe.get_meta("Shaft Production Run Item")
+	cols = set(frappe.db.get_table_columns("Shaft Production Run Item") or [])
 	fields = {"batch_no", "item_code", "item_name", "net_weight", "gross_weight"}
 	for fieldname in optional_fields + (
 		"quality",
@@ -1269,7 +1271,10 @@ def _spr_item_query_fields(*optional_fields) -> list[str]:
 		"meter_roll",
 		"party_code",
 	):
-		if meta.has_field(fieldname):
+		if fieldname in cols or meta.has_field(fieldname):
+			# Prefer DB columns when meta/DB diverge (avoids OperationalError 1054)
+			if cols and fieldname not in cols:
+				continue
 			fields.add(fieldname)
 	return sorted(fields)
 
@@ -2671,17 +2676,7 @@ def get_transfer_approval_roll_list(approval_name=None, stock_entry=None):
 			spr_row = frappe.db.get_value(
 				"Shaft Production Run Item",
 				{"batch_no": bn},
-				[
-					"quality",
-					"color",
-					"gsm",
-					"width_inch",
-					"meter_per_roll",
-					"meter_roll",
-					"net_weight",
-					"gross_weight",
-					"item_code",
-				],
+				_spr_item_query_fields(),
 				as_dict=True,
 			)
 			if spr_row:
