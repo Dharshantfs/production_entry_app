@@ -33,10 +33,15 @@ else:
 
     if full_load_customers:
         if len(customers) > 1:
+            # Do NOT use str.format — Frappe Server Script safe_exec blocks .format
             msg = (
-                "Customer {0} has a total weight of {1} kgs (>= 5000 kgs). "
-                "Orders >= 5000 kgs must be clubbed separately as a Full Load."
-            ).format(full_load_customers[0], customer_weights[full_load_customers[0]])
+                "Customer "
+                + str(full_load_customers[0])
+                + " has a total weight of "
+                + str(customer_weights[full_load_customers[0]])
+                + " kgs (>= 5000 kgs). "
+                + "Orders >= 5000 kgs must be clubbed separately as a Full Load."
+            )
             frappe.throw(msg)
         doc.load_type = "Full Load"
     elif len(customers) >= 1:
