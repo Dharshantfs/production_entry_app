@@ -290,24 +290,83 @@ if doc.items:
         for item in doc.items:
             item.loading_sequence = "Full Load"
     else:
-        n = len(sortable)
-        if n == 1:
-            sortable[0][2].loading_sequence = "Full Load"
-        elif n == 2:
-            sortable[0][2].loading_sequence = "Inside"
-            sortable[1][2].loading_sequence = "Outside"
-        elif n > 2:
-            sortable[0][2].loading_sequence = "Inside"
-            sortable[n - 1][2].loading_sequence = "Outside"
-            middle_count = n - 2
-            center1_count = int((middle_count + 1) / 2)
-            k = 1
-            while k < n - 1:
-                if (k - 1) < center1_count:
-                    sortable[k][2].loading_sequence = "Center 1"
-                else:
-                    sortable[k][2].loading_sequence = "Center 2"
-                k = k + 1
+        # One loading slot per customer (not per item row)
+        group_map = {}
+        group_order = []
+        for item in doc.items:
+            key = (
+                frappe.utils.cstr(item.get("custom_despatch_customer") or "")
+                or frappe.utils.cstr(item.get("customer") or "")
+                or frappe.utils.cstr(item.get("party_code") or "")
+                or frappe.utils.cstr(item.get("sales_order") or "")
+                or str(item.idx)
+            )
+            city_lower = frappe.utils.cstr(item.party_location or "").lower()
+            priority = 0
+            sort_val = frappe.utils.flt(item.distance_from_madurai)
+            if active_belt:
+                idx = 0
+                while idx < len(active_belt):
+                    bc = active_belt[idx]
+                    if city_lower == bc or city_lower in bc or bc in city_lower:
+                        priority = 1
+                        sort_val = idx
+                        break
+                    idx = idx + 1
+            if key not in group_map:
+                group_map[key] = {"priority": priority, "sort_val": sort_val, "items": []}
+                group_order.append(key)
+            else:
+                g = group_map[key]
+                if priority > g["priority"] or (priority == g["priority"] and sort_val > g["sort_val"]):
+                    g["priority"] = priority
+                    g["sort_val"] = sort_val
+            group_map[key]["items"].append(item)
+
+        # Sort customer groups farthest first
+        gi = 0
+        gn = len(group_order)
+        while gi < gn:
+            gj = gi + 1
+            while gj < gn:
+                ga = group_map[group_order[gi]]
+                gb = group_map[group_order[gj]]
+                swap = False
+                if gb["priority"] > ga["priority"]:
+                    swap = True
+                elif gb["priority"] == ga["priority"] and gb["sort_val"] > ga["sort_val"]:
+                    swap = True
+                if swap:
+                    tmp = group_order[gi]
+                    group_order[gi] = group_order[gj]
+                    group_order[gj] = tmp
+                gj = gj + 1
+            gi = gi + 1
+
+        n_cust = len(group_order)
+        max_center = 10
+        labels = []
+        if n_cust == 1:
+            labels = ["Full Load"]
+        elif n_cust == 2:
+            labels = ["Inside", "Outside"]
+        else:
+            labels = ["Inside"]
+            mi = 0
+            while mi < n_cust - 2:
+                cno = mi + 1
+                if cno > max_center:
+                    cno = max_center
+                labels.append("Center " + str(cno))
+                mi = mi + 1
+            labels.append("Outside")
+
+        ci = 0
+        while ci < n_cust:
+            seq = labels[ci]
+            for item in group_map[group_order[ci]]["items"]:
+                item.loading_sequence = seq
+            ci = ci + 1
 
 # ---------- 6) Bypass bad customer link display names ----------
 doc.flags.ignore_links = True

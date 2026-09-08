@@ -901,27 +901,75 @@ frappe.ui.form.on('Clubbing Sheet', {
 
         if (frm.doc.load_type === 'Full Load') {
             items.forEach(item => { item.loading_sequence = 'Full Load'; });
-        } else {
-            let n = items.length;
-            if (n === 1) {
-                items[0].loading_sequence = 'Full Load';
-            } else if (n === 2) {
-                items[0].loading_sequence = 'Inside';
-                items[1].loading_sequence = 'Outside';
-            } else {
-                items[0].loading_sequence = 'Inside';
-                items[n - 1].loading_sequence = 'Outside';
-                // Truck supports only 4 slots: Inside, Center 1, Center 2, Outside.
-                let middleCount = n - 2; // items between first and last
-                let center1Count = Math.ceil(middleCount / 2);
-                for (let i = 1; i < n - 1; i++) {
-                    // i = 1..(n-2) maps to middle index = i-1
-                    items[i].loading_sequence = (i - 1) < center1Count ? 'Center 1' : 'Center 2';
-                }
-            }
+            items.forEach((item, idx) => { item.idx = idx + 1; });
+            frm.refresh_field('items');
+            return;
         }
 
-        items.forEach((item, idx) => { item.idx = idx + 1; });
+        // One loading slot per customer/order — not per item row
+        function customerKey(item) {
+            return String(
+                item.custom_despatch_customer ||
+                item.despatch_customer ||
+                item.customer ||
+                item.party_code ||
+                item.order_code ||
+                item.sales_order ||
+                item.name ||
+                item.idx ||
+                ''
+            ).trim();
+        }
+
+        const groups = new Map();
+        items.forEach(item => {
+            const key = customerKey(item) || String(item.idx);
+            const sk = get_sort_key(item);
+            if (!groups.has(key)) {
+                groups.set(key, { priority: sk[0], sortVal: sk[1], items: [] });
+            } else {
+                const g = groups.get(key);
+                if (sk[0] > g.priority || (sk[0] === g.priority && sk[1] > g.sortVal)) {
+                    g.priority = sk[0];
+                    g.sortVal = sk[1];
+                }
+            }
+            groups.get(key).items.push(item);
+        });
+
+        const orderedKeys = Array.from(groups.keys()).sort((a, b) => {
+            const ga = groups.get(a), gb = groups.get(b);
+            if (ga.priority !== gb.priority) return gb.priority - ga.priority;
+            if (ga.sortVal !== gb.sortVal) return gb.sortVal - ga.sortVal;
+            return String(a).localeCompare(String(b));
+        });
+
+        const nCust = orderedKeys.length;
+        const maxCenter = 10;
+        let labels = [];
+        if (nCust === 1) {
+            labels = ['Full Load'];
+        } else if (nCust === 2) {
+            labels = ['Inside', 'Outside'];
+        } else {
+            labels = ['Inside'];
+            for (let i = 0; i < nCust - 2; i++) {
+                labels.push('Center ' + Math.min(i + 1, maxCenter));
+            }
+            labels.push('Outside');
+        }
+
+        const flat = [];
+        orderedKeys.forEach((key, i) => {
+            const seq = labels[i] || ('Center ' + Math.min(i, maxCenter));
+            groups.get(key).items.forEach(item => {
+                item.loading_sequence = seq;
+                flat.push(item);
+            });
+        });
+
+        flat.forEach((item, idx) => { item.idx = idx + 1; });
+        frm.doc.items = flat;
         frm.refresh_field('items');
     }
 });

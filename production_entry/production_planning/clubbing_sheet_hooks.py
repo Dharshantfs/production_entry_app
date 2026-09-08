@@ -243,6 +243,52 @@ def _loading_sequence_locked(doc):
 	return cint(doc.get("custom_lock_loading_sequence")) > 0
 
 
+def _loading_customer_key(item) -> str:
+	"""One loading slot per customer/order — not per item row."""
+	for key in (
+		"custom_despatch_customer",
+		"despatch_customer",
+		"customer",
+		"party_code",
+		"order_code",
+		"sales_order",
+	):
+		val = cstr(item.get(key) or "").strip()
+		if val:
+			return val
+	return cstr(item.get("name") or item.get("idx") or "")
+
+
+def _item_sort_tuple(item, active_belt):
+	city_lower = cstr(item.get("party_location") or "").lower()
+	priority = 0
+	sort_val = flt(item.get("distance_from_madurai"))
+	if active_belt:
+		for idx, bc in enumerate(active_belt):
+			if city_lower == bc or city_lower in bc or bc in city_lower:
+				priority = 1
+				sort_val = idx
+				break
+	return priority, sort_val
+
+
+def _sequence_labels_for_customer_count(n: int) -> list[str]:
+	"""Inside / Center 1..10 / Outside — one label per distinct customer."""
+	max_center = 10
+	if n <= 0:
+		return []
+	if n == 1:
+		return ["Full Load"]
+	if n == 2:
+		return ["Inside", "Outside"]
+	labels = ["Inside"]
+	middle = n - 2
+	for i in range(middle):
+		labels.append(f"Center {min(i + 1, max_center)}")
+	labels.append("Outside")
+	return labels
+
+
 def _set_distances_and_loading_sequence(doc):
 	items = doc.get("items") or []
 	if not items:
@@ -255,43 +301,48 @@ def _set_distances_and_loading_sequence(doc):
 	if _loading_sequence_locked(doc):
 		return
 
-	active_belt = _pick_active_belt(_selected_cities(doc))
-
-	sortable = []
-	for item in items:
-		city_lower = cstr(item.get("party_location") or "").lower()
-		priority = 0
-		sort_val = flt(item.get("distance_from_madurai"))
-		if active_belt:
-			for idx, bc in enumerate(active_belt):
-				if city_lower == bc or city_lower in bc or bc in city_lower:
-					priority = 1
-					sort_val = idx
-					break
-		sortable.append([priority, sort_val, item])
-
-	# Farther / higher belt index first → Inside
-	sortable.sort(key=lambda row: (-row[0], -row[1]))
-
 	if cstr(doc.get("load_type")) == "Full Load":
 		for item in items:
 			item.loading_sequence = "Full Load"
 		return
 
-	n = len(sortable)
-	if n == 1:
-		sortable[0][2].loading_sequence = "Full Load"
-	elif n == 2:
-		sortable[0][2].loading_sequence = "Inside"
-		sortable[1][2].loading_sequence = "Outside"
-	elif n > 2:
-		sortable[0][2].loading_sequence = "Inside"
-		sortable[n - 1][2].loading_sequence = "Outside"
-		# DocType allows only Center 1 and Center 2 (not Center 3+)
-		middle_count = n - 2
-		center1_count = (middle_count + 1) // 2
-		for k in range(1, n - 1):
-			sortable[k][2].loading_sequence = "Center 1" if (k - 1) < center1_count else "Center 2"
+	active_belt = _pick_active_belt(_selected_cities(doc))
+
+	# Group rows by customer — Gowtham's 5 lines share one slot, Dinesh's share another.
+	groups = {}  # key -> {priority, sort_val, items}
+	order_keys = []
+	for item in items:
+		key = _loading_customer_key(item)
+		prio, sval = _item_sort_tuple(item, active_belt)
+		if key not in groups:
+			groups[key] = {"priority": prio, "sort_val": sval, "items": []}
+			order_keys.append(key)
+		else:
+			# Keep farthest / highest belt index for the customer group
+			g = groups[key]
+			if (prio, sval) > (g["priority"], g["sort_val"]):
+				g["priority"], g["sort_val"] = prio, sval
+		groups[key]["items"].append(item)
+
+	# Farther customer first → Inside
+	ordered_keys = sorted(
+		order_keys,
+		key=lambda k: (-groups[k]["priority"], -groups[k]["sort_val"], k),
+	)
+	labels = _sequence_labels_for_customer_count(len(ordered_keys))
+	for i, key in enumerate(ordered_keys):
+		seq = labels[i] if i < len(labels) else f"Center {min(i, 10)}"
+		for item in groups[key]["items"]:
+			item.loading_sequence = seq
+
+	# Re-order child rows: Inside customer block → centers → Outside
+	flat = []
+	for key in ordered_keys:
+		flat.extend(groups[key]["items"])
+	if flat and hasattr(doc, "set"):
+		for idx, item in enumerate(flat, start=1):
+			item.idx = idx
+		doc.set("items", flat)
 
 
 def clubbing_sheet_before_submit(doc, method=None):
