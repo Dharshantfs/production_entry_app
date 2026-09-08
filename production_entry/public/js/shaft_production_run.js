@@ -1176,6 +1176,31 @@ function spr_is_submitted_spr(frm) {
 	return !!(frm && frm.doc && cint(frm.doc.docstatus) === 1);
 }
 
+/** After submit, site Client Scripts (core / wastage) used to rewrite child tables and leave "Not Saved". */
+function spr_persist_or_clear_submitted_client_dirty(frm) {
+	if (!spr_is_submitted_spr(frm) || frm._spr_submitted_dirty_handled) {
+		return;
+	}
+	if (frm._spr_submitted_dirty_timer) {
+		clearTimeout(frm._spr_submitted_dirty_timer);
+	}
+	frm._spr_submitted_dirty_timer = setTimeout(function () {
+		frm._spr_submitted_dirty_timer = null;
+		if (!spr_is_submitted_spr(frm)) {
+			return;
+		}
+		if (typeof frm.is_dirty !== 'function' || !frm.is_dirty()) {
+			return;
+		}
+		frm._spr_submitted_dirty_handled = true;
+		if (typeof frm.save === 'function') {
+			frm.save('Update').fail(function () {
+				frm._spr_submitted_dirty_handled = false;
+			});
+		}
+	}, 2200);
+}
+
 function spr_grid_run_without_paint_hook(grid, fn) {
 	if (!grid || typeof fn !== 'function') {
 		return;
@@ -3977,6 +4002,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		}
 
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
+		spr_persist_or_clear_submitted_client_dirty(frm);
 	},
 
 	onload_post_render: function (frm) {
