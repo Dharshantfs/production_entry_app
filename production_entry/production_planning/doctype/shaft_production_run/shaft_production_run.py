@@ -13246,8 +13246,18 @@ def persist_spr_patty_and_core(
 	try:
 		rec_field = _spr_recycled_wastage_fieldname()
 		if rec_field:
-			if submitted and refresh_zero_rows:
-				# Clear auto recycled rows then rebuild (preserve job_id=Patty)
+			auto_existing = [
+				r
+				for r in (spr.get(rec_field) or [])
+				if _cstr(getattr(r, "job_id", None) or "").lower() != "patty"
+			]
+			need_recycled = (
+				(not submitted)
+				or refresh_zero_rows
+				or result.get("patty_added")
+				or (submitted and not auto_existing)
+			)
+			if need_recycled and submitted:
 				keep_patty = []
 				for row in list(spr.get(rec_field) or []):
 					jid = _cstr(getattr(row, "job_id", None) or "").lower()
@@ -13262,14 +13272,13 @@ def persist_spr_patty_and_core(
 							frappe.db.sql(f"DELETE FROM `tab{row.doctype}` WHERE name=%s", (row.name,))
 				spr.set(rec_field, keep_patty)
 				added = _spr_sync_recycled_wastage_from_patty(spr)
-				# Newly appended dict rows need db_insert when submitted
 				for row in spr.get(rec_field) or []:
-					if getattr(row, "name", None) and not str(row.name).startswith("new-"):
+					if getattr(row, "name", None) and frappe.db.exists(row.doctype, row.name):
 						continue
 					if hasattr(row, "db_insert"):
 						row.db_insert()
 				result["recycled_synced"] = added
-			elif not submitted:
+			elif need_recycled and not submitted:
 				result["recycled_synced"] = _spr_sync_recycled_wastage_from_patty(spr)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"SPR sync recycled from patty:{spr.name}")
@@ -13347,6 +13356,41 @@ def sync_spr_running_patty_wastage(spr_name, persist=1, refresh_zero_rows=0):
 	return res
 
 
+def _spr_submitted_needs_wastage_repair(spr_name: str) -> bool:
+	"""True when submitted SPR has empty/zero patty qty or auto-recycle table is empty."""
+	patty_field = _spr_patty_wastage_fieldname()
+	rec_field = _spr_recycled_wastage_fieldname()
+	if not patty_field:
+		return False
+	try:
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+	except Exception:
+		return False
+	if cint(spr.docstatus) != 1:
+		return False
+	if not _spr_patty_is_valid_unit(spr):
+		return False
+	if _spr_patty_rows_are_effectively_empty(spr, patty_field):
+		return True
+	if rec_field:
+		auto = [
+			r
+			for r in (spr.get(rec_field) or [])
+			if _cstr(getattr(r, "job_id", None) or "").lower() != "patty"
+		]
+		if not auto:
+			# Has real wastage but no auto recycled rows — still repair recycle side
+			patty_rows = spr.get(patty_field) or []
+			if any(_spr_patty_row_wastage_kg(r.as_dict() if hasattr(r, "as_dict") else {}) > 0 for r in patty_rows):
+				return True
+			if any(
+				cint(getattr(r, "recycle_to_next", None) or getattr(r, "custom_recycle_to_next", None) or 0)
+				for r in patty_rows
+			):
+				return True
+	return False
+
+
 @frappe.whitelist()
 def backfill_spr_patty_and_core(
 	spr_names=None,
@@ -13354,11 +13398,19 @@ def backfill_spr_patty_and_core(
 	shift=None,
 	unit=None,
 	only_empty=1,
+	refresh_zero_rows=1,
+	limit=200,
 ):
-	"""Fill empty wastage/core on submitted (or draft) SPRs via DB child insert — no form dirty."""
+	"""Restore Running Patty Wastage + Recycled Wastage Details on submitted/draft SPRs.
+
+	Default refresh_zero_rows=1 repairs rows that show shafts/recycle but qty=0 after GSM submit.
+	Also fills empty Recycled Wastage Details from patty rows.
+	"""
 	import json
 
 	only_empty = cint(only_empty)
+	force_refresh = cint(refresh_zero_rows)
+	limit = max(1, min(cint(limit) or 200, 500))
 	names = spr_names
 	if isinstance(names, str):
 		try:
@@ -13368,7 +13420,7 @@ def backfill_spr_patty_and_core(
 	names = [_cstr(n).strip() for n in (names or []) if _cstr(n).strip()]
 
 	if not names:
-		filters = {"docstatus": 1}
+		filters = {"docstatus": ["in", [0, 1]]}
 		meta = frappe.get_meta("Shaft Production Run")
 		if run_date and meta.has_field("run_date"):
 			filters["run_date"] = run_date
@@ -13380,22 +13432,65 @@ def backfill_spr_patty_and_core(
 			shift_field = "shift" if meta.has_field("shift") else ("custom_shift" if meta.has_field("custom_shift") else None)
 			if shift_field:
 				filters[shift_field] = ["like", f"%{shift}%"]
-		names = frappe.get_all(
+		# Prefer recent submitted first
+		order = "modified desc"
+		candidates = frappe.get_all(
 			"Shaft Production Run",
 			filters=filters,
 			pluck="name",
-			limit_page_length=200,
+			order_by=order,
+			limit_page_length=limit,
 		) or []
+		names = [n for n in candidates if _spr_submitted_needs_wastage_repair(n)]
+		# If filters narrowed the set (date/unit), also include drafts that need repair
+		if run_date or unit or shift:
+			for n in candidates:
+				if n in names:
+					continue
+				if cint(frappe.db.get_value("Shaft Production Run", n, "docstatus")) == 0:
+					try:
+						spr = frappe.get_doc("Shaft Production Run", n)
+						pf = _spr_patty_wastage_fieldname()
+						if pf and _spr_patty_is_valid_unit(spr) and _spr_patty_rows_are_effectively_empty(spr, pf):
+							names.append(n)
+					except Exception:
+						pass
 
 	results = []
+	fixed = 0
 	for name in names:
 		try:
 			with _spr_operation_lock(name, "write", ttl_sec=120):
-				res = persist_spr_patty_and_core(name, only_if_empty=bool(only_empty))
+				res = persist_spr_patty_and_core(
+					name,
+					only_if_empty=bool(only_empty) and not force_refresh,
+					save_if_draft=True,
+					refresh_zero_rows=bool(force_refresh),
+				)
+			if res.get("patty_added") or res.get("recycled_synced") or res.get("core_added"):
+				fixed += 1
 			results.append(res)
 		except Exception as e:
 			results.append({"spr_name": name, "status": "error", "error": _cstr(e)})
-	return {"status": "ok", "count": len(results), "results": results}
+	return {
+		"status": "ok",
+		"count": len(results),
+		"fixed": fixed,
+		"results": results,
+	}
+
+
+@frappe.whitelist()
+def repair_submitted_spr_wastage_and_recycle(spr_names=None, run_date=None, unit=None, limit=100):
+	"""One-shot: restore wastage qty + Recycled Wastage Details on submitted SPRs that are broken/empty."""
+	return backfill_spr_patty_and_core(
+		spr_names=spr_names,
+		run_date=run_date,
+		unit=unit,
+		only_empty=0,
+		refresh_zero_rows=1,
+		limit=limit,
+	)
 
 
 @frappe.whitelist()
