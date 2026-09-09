@@ -1536,8 +1536,15 @@
             <span>Gross <strong>{{ formatKg(submitConfirmGrossKg) }}</strong> Kg</span>
           </div>
           <p v-if="submitIncompleteRolls.length" class="gpe-hint gpe-submit-skip-hint">
-            {{ submitIncompleteRolls.length }} grid row(s) not included (missing produced length, gross weight, or Save Row):
+            {{ submitIncompleteRolls.length }} grid row(s) not included (missing produced length, gross weight, or incomplete):
             {{ submitIncompleteRolls.map((r) => r.batch_no || r._id).join(", ") }}
+          </p>
+          <p
+            v-if="!allSubmitRollsSaved"
+            class="gpe-hint gpe-submit-skip-hint"
+            style="color:#b45309"
+          >
+            Unsaved rolls must be Save Row'd before submit — they will not appear on Shaft Production Run / wastage until saved.
           </p>
           <h4 class="gpe-submit-section-title">Orders</h4>
           <table class="gpe-confirm-grid">
@@ -5356,6 +5363,8 @@ const canSubmitEntry = computed(() => {
   if (!allSubmitSprList.value.length || !submitConfirmRolls.value.length) {
     return false;
   }
+  // Completeness only — Save Row is enforced in openSubmitConfirmDialog / submitEntry
+  // so the button stays clickable and can auto-save unsaved lines.
   return submitConfirmRolls.value.every(
     (r) =>
       (r.is_mix_roll_row ? r.spr_name : sprNameForPp(r.pp_id)) &&
@@ -5363,6 +5372,10 @@ const canSubmitEntry = computed(() => {
       sprNormalizeGrossWeightInput(r.gross_weight) > 0
   );
 });
+
+const allSubmitRollsSaved = computed(() =>
+  submitConfirmRolls.value.every((r) => r.row_locked || r.spr_item_name)
+);
 
 const toleranceFormComplete = computed(() => {
   if (!toleranceOrders.value.length) {
@@ -6515,22 +6528,35 @@ function openToleranceDialog(orders) {
 }
 
 async function openSubmitConfirmDialog() {
-  if (!canSubmitEntry.value) {
-    const hasMix = submitConfirmRolls.value.some((r) => r.is_mix_roll_row);
-    frappe.msgprint(
-      hasMix
-        ? __("Save each mix roll row, then submit.")
-        : __("Create SPRs, enter rolls, and Save Row on each line before submit.")
-    );
-    return;
-  }
-  const unsaved = submitConfirmRolls.value.filter((r) => !r.row_locked);
+  // Auto Save Row any complete lines that still lack spr_item_name / lock.
+  const unsaved = submitConfirmRolls.value.filter((r) => !(r.row_locked || r.spr_item_name));
+  const failed = [];
   for (const row of unsaved) {
     try {
       await saveRow(row);
+      if (!(row.row_locked || row.spr_item_name)) {
+        failed.push(row.batch_no || row._id);
+      }
     } catch (e) {
       console.error(e);
+      failed.push(row.batch_no || row._id);
     }
+  }
+  if (!canSubmitEntry.value || failed.length || !allSubmitRollsSaved.value) {
+    const hasMix = submitConfirmRolls.value.some((r) => r.is_mix_roll_row);
+    if (failed.length) {
+      frappe.msgprint(
+        __(
+          "Cannot submit until every roll is Save Row'd to its SPR. Still unsaved: {0}",
+          [failed.join(", ")]
+        )
+      );
+    } else if (hasMix) {
+      frappe.msgprint(__("Save each mix roll row, then submit."));
+    } else {
+      frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
+    }
+    return;
   }
   submitDialogPhase.value = "review";
   submitSuccessResult.value = null;
@@ -6697,6 +6723,16 @@ async function callSubmitGsm(overrides = []) {
 async function submitEntry(overrides = []) {
   if (!canSubmitEntry.value && !overrides.length) {
     frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
+    return;
+  }
+  const unsavedStill = submitConfirmRolls.value.filter((r) => !(r.row_locked || r.spr_item_name));
+  if (unsavedStill.length && !overrides.length) {
+    frappe.msgprint(
+      __(
+        "Save Row required for {0} roll(s) before submit: {1}",
+        [unsavedStill.length, unsavedStill.map((r) => r.batch_no || r._id).join(", ")]
+      )
+    );
     return;
   }
   if (!(await ensureGsmDeskSession())) {

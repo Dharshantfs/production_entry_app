@@ -5784,10 +5784,14 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 	base = base_payload or {}
 	columns = base.get("columns") or _gsm_child_table_columns("Running Patty Wastage Row")
 	preview_rows = []
+	from_jobs_only = False
 	for logical in computed.values():
 		if flt(logical.get("wastage") or 0) <= 0:
 			continue
+		if cint(logical.get("_from_jobs_only") or 0):
+			from_jobs_only = True
 		row_dict = dict(logical)
+		row_dict.pop("_from_jobs_only", None)
 		jid = _cstr(row_dict.get("job_id") or "")
 		flag = saved_flags.get(jid, cint(logical.get("recycle_to_next") or 0))
 		row_dict["recycle_to_next"] = flag
@@ -5813,6 +5817,7 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 		"rows": preview_rows,
 		"configured": True,
 		"source": "gsm_preview_from_spr",
+		"from_jobs_only": from_jobs_only,
 		"read_only": True,
 	}
 
@@ -5948,6 +5953,33 @@ def get_gsm_spr_wastage_context(spr_name):
 		if preview:
 			tables["custom_running_patty_wastage"] = preview
 
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_is_real_roll_item_row,
+		_spr_patty_row_wastage_kg,
+	)
+
+	real_roll_count = sum(1 for it in (spr.items or []) if _spr_is_real_roll_item_row(it))
+	patty_rows_now = (tables.get("custom_running_patty_wastage") or {}).get("rows") or []
+	patty_kg = 0.0
+	for r in patty_rows_now:
+		row_dict = r if isinstance(r, dict) else (r.as_dict() if hasattr(r, "as_dict") else {})
+		patty_kg += _spr_patty_row_wastage_kg(row_dict or {})
+	recycle_rows = (tables.get("custom_recycled_wastage_details") or {}).get("rows") or []
+	warnings = []
+	if real_roll_count <= 0 and (patty_kg > 0 or recycle_rows):
+		warnings.append(
+			_(
+				"This SPR has running patty / recycle data but no produced rolls yet. "
+				"Save Row on GSM for each roll, then Refresh — otherwise submit will miss rolls."
+			)
+		)
+	elif real_roll_count <= 0 and not patty_rows_now:
+		warnings.append(
+			_(
+				"No produced rolls on this SPR yet. Enter rolls on GSM and click Save Row before relying on wastage."
+			)
+		)
+
 	order_code = _cstr(
 		getattr(spr, "custom_order_code", None)
 		or getattr(spr, "order_code", None)
@@ -5959,6 +5991,8 @@ def get_gsm_spr_wastage_context(spr_name):
 	return {
 		"spr_name": spr_name,
 		"order_code": order_code,
+		"real_roll_count": real_roll_count,
+		"warnings": warnings,
 		"tables": tables,
 	}
 

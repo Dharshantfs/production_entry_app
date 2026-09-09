@@ -2973,6 +2973,43 @@ function spr_sync_no_of_rolls_created(frm, opts) {
 	}
 }
 
+/** Dashboard alert when wastage/recycle exists but Roll Production Results is empty. */
+function spr_warn_patty_without_rolls(frm) {
+	if (!frm || !frm.doc || !frm.dashboard || typeof frm.dashboard.set_headline_alert !== 'function') {
+		return;
+	}
+	if (cint(frm.doc.docstatus) !== 0) {
+		return;
+	}
+	const rollCount = typeof spr_count_created_roll_lines === 'function' ? spr_count_created_roll_lines(frm) : 0;
+	if (rollCount > 0) {
+		return;
+	}
+	const wastageField = ['custom_running_patty_wastage', 'running_patty_wastage', 'wastage_details', 'custom_wastage_details'].find(
+		(f) => frm.fields_dict[f]
+	);
+	const recycleField = ['custom_recycled_wastage_details', 'recycled_wastage_details'].find((f) => frm.fields_dict[f]);
+	const pattyRows = wastageField ? frm.doc[wastageField] || [] : [];
+	const recycleRows = recycleField ? frm.doc[recycleField] || [] : [];
+	const hasPattyQty = pattyRows.some((r) => {
+		const qty = flt(r.wastage_qty || r.wastage || r.net_wastage || 0);
+		return qty > 0;
+	});
+	if (!hasPattyQty && !(recycleRows || []).length) {
+		return;
+	}
+	if (frm._spr_patty_no_rolls_alert_shown === frm.doc.name) {
+		return;
+	}
+	frm._spr_patty_no_rolls_alert_shown = frm.doc.name;
+	frm.dashboard.set_headline_alert(
+		__(
+			'Running patty / recycle is filled but there are no produced rolls on this SPR. Save Row from GSM Production Entry (or Create Entry) so rolls appear here before submit.'
+		),
+		'orange'
+	);
+}
+
 function spr_should_skip_desk_auto_sync(frm) {
 	if (!frm) {
 		return false;
@@ -3899,6 +3936,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_sync_total_planned_qty_from_jobs(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_planned_qty sync');
 		spr_sync_no_of_rolls_created(frm, { silent: true });
+		spr_warn_patty_without_rolls(frm);
 		spr_enforce_roll_line_grid_policy(frm);
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });

@@ -12638,7 +12638,12 @@ def _spr_patty_tail_weight_kg(gsm, width_inch, meter) -> float:
 
 
 def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
-	"""Running patty wastage — same concept as desk wastage_automation.js, not roll-width GSM-diff."""
+	"""Running patty wastage — same concept as desk wastage_automation.js, not roll-width GSM-diff.
+
+	Prefer jobs that already have real roll lines. If items are empty (common when desk
+	filled wastage from shaft_jobs alone, or GSM grid not yet Save Row'd), fall back to
+	shaft_jobs so GSM Wastage preview matches the SPR job plan.
+	"""
 	if not _spr_patty_is_valid_unit(spr):
 		return {}
 
@@ -12655,19 +12660,34 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 		if not jid:
 			continue
 		job_rolls.setdefault(jid, []).append(it)
+
+	# No saved rolls yet — still compute from Available Jobs (shafts × meters × trim).
+	if not job_rolls:
+		for sj in spr.shaft_jobs or []:
+			jid = _cstr(_spr_job_id(sj) or getattr(sj, "job", None) or getattr(sj, "idx", None) or "")
+			if not jid:
+				continue
+			job_rolls.setdefault(jid, [])
+
 	if not job_rolls:
 		return {}
 
 	out: dict[str, dict] = {}
 	for jid, rolls in job_rolls.items():
-		item_row = rolls[0]
+		item_row = rolls[0] if rolls else None
 		job_row = _spr_patty_job_row(spr, jid)
 
-		specs = _gsm_resolve_item_row_display_specs(item_row)
+		specs = _gsm_resolve_item_row_display_specs(item_row) if item_row is not None else {
+			"quality": "",
+			"color": "",
+			"gsm": 0,
+			"item_code": "",
+			"item_name": "",
+		}
 		gsm = cint(
 			(_spr_row_get(job_row, "gsm") if job_row else 0)
 			or specs.get("gsm")
-			or getattr(item_row, "gsm", 0)
+			or (getattr(item_row, "gsm", 0) if item_row is not None else 0)
 			or 0
 		)
 		meter = 0.0
@@ -12678,7 +12698,7 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 					meter = flt(_spr_row_get(job_row, key) or 0)
 					if meter > 0:
 						break
-		if meter <= 0:
+		if meter <= 0 and item_row is not None:
 			meter = flt(
 				getattr(item_row, "meter_roll", 0)
 				or getattr(item_row, "produced_length_mtrs", 0)
@@ -12693,14 +12713,16 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 					shafts = cint(_spr_row_get(job_row, key) or 0)
 					if shafts > 0:
 						break
-		if shafts <= 0:
+		if shafts <= 0 and rolls:
 			shafts = max(
 				cint(getattr(r, "custom_no_of_shaft", 0) or getattr(r, "no_of_shaft", 0) or 0)
 				for r in rolls
 			) or 1
+		elif shafts <= 0:
+			shafts = 1
 
 		width = _spr_patty_trim_width_inch(spr, job_row, gsm, item_row)
-		if width <= 0:
+		if width <= 0 and item_row is not None:
 			ic = _cstr(getattr(item_row, "item_code", "") or "")
 			if len(ic) == 16:
 				mm = flt(ic[12:16])
@@ -12711,14 +12733,24 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			continue
 
 		party_code = _cstr(
-			getattr(rolls[0], "party_code", None)
+			(getattr(rolls[0], "party_code", None) if rolls else None)
 			or (getattr(job_row, "party_code", None) if job_row else None)
 			or ""
 		)
 		out[jid] = {
 			"job_id": jid,
-			"quality": _cstr(specs.get("quality") or (getattr(job_row, "quality", None) if job_row else "") or ""),
-			"color": _cstr(specs.get("color") or (getattr(job_row, "color", None) if job_row else "") or ""),
+			"quality": _cstr(
+				specs.get("quality")
+				or (_spr_row_get(job_row, "quality") if job_row else None)
+				or (getattr(job_row, "quality", None) if job_row else "")
+				or ""
+			),
+			"color": _cstr(
+				specs.get("color")
+				or (_spr_row_get(job_row, "color") if job_row else None)
+				or (getattr(job_row, "color", None) if job_row else "")
+				or ""
+			),
 			"gsm": gsm,
 			"width_inch": width,
 			"width": width,
@@ -12732,10 +12764,11 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			"recycle_to_next": 0,
 			"order_code": party_code,
 			"party_code": party_code,
-			"batch_no": _cstr(getattr(item_row, "batch_no", None) or ""),
-			"item_code": _cstr(getattr(item_row, "item_code", None) or ""),
-			"item_name": _cstr(getattr(item_row, "item_name", None) or ""),
-			"item": _cstr(getattr(item_row, "item_code", None) or ""),
+			"batch_no": _cstr(getattr(item_row, "batch_no", None) or "") if item_row is not None else "",
+			"item_code": _cstr(getattr(item_row, "item_code", None) or "") if item_row is not None else "",
+			"item_name": _cstr(getattr(item_row, "item_name", None) or "") if item_row is not None else "",
+			"item": _cstr(getattr(item_row, "item_code", None) or "") if item_row is not None else "",
+			"_from_jobs_only": 0 if rolls else 1,
 		}
 	return out
 

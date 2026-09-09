@@ -267,6 +267,18 @@ function _injectGwmStyles() {
   border-radius: 10px;
   background: #f8fafc;
 }
+.gwm-warn {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.gwm-warn p { margin: 0 0 6px; }
+.gwm-warn p:last-child { margin-bottom: 0; }
 `;
 	document.head.appendChild(style);
 }
@@ -725,10 +737,31 @@ function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 60000) {
 	};
 }
 
-async function _renderPattyWastageView(sprName) {
+async function _renderPattyWastageView(sprName, opts = {}) {
 	const ctx = await _fetchWastageContext(sprName);
 	const table = _pattyWastageTable(ctx);
 	const orderCode = _cstr(ctx.order_code);
+	const realRollCount = Number(ctx.real_roll_count || 0) || 0;
+	const warnings = Array.isArray(ctx.warnings) ? ctx.warnings.filter(Boolean) : [];
+	const unsavedOnGsm = (opts.rollLines || []).filter(
+		(r) =>
+			r &&
+			!r.is_wasted &&
+			!r.is_bundle_row &&
+			r.pp_id &&
+			opts.sprRow &&
+			r.pp_id === opts.sprRow.pp_id &&
+			r.batch_no &&
+			!(r.row_locked || r.spr_item_name)
+	);
+	if (unsavedOnGsm.length) {
+		warnings.push(
+			__(
+				"{0} roll row(s) on GSM for this order are not Save Row'd yet — save them so rolls appear on the Shaft Production Run.",
+				[unsavedOnGsm.length]
+			)
+		);
+	}
 	const rows = (table.rows || []).map((raw) => {
 		const row = _normalizePattyRow(raw);
 		if (!row.order_code && orderCode) {
@@ -745,12 +778,30 @@ async function _renderPattyWastageView(sprName) {
 	}
 	const isPreview =
 		table.source === "gsm_preview_from_spr" || table.source === "gsm_preview_from_roll_lines";
-	const hint = isPreview
+	const fromJobsOnly = !!table.from_jobs_only;
+	let hint = isPreview
 		? __("Same formula as desk Shaft Production Run (unit trim width × GSM × meters). Not saved on SPR yet.")
 		: __("Saved on Shaft Production Run.");
+	if (fromJobsOnly || (isPreview && realRollCount <= 0)) {
+		hint = __(
+			"Preview from Available Jobs (no produced rolls on this SPR yet). Save Row on GSM so rolls and wastage stay in sync."
+		);
+	}
+	const warnHtml = warnings.length
+		? `<div class="gwm-warn">${warnings.map((w) => `<p>${_esc(String(w))}</p>`).join("")}</div>`
+		: "";
+	const emptyMsg =
+		unsavedOnGsm.length > 0
+			? __("No patty wastage yet. Save Row on the {0} unsaved GSM roll(s) for this order first.", [
+					unsavedOnGsm.length,
+			  ])
+			: realRollCount <= 0
+			  ? __("No patty wastage yet. This SPR has no produced rolls — Save Row on GSM first.")
+			  : __("No patty wastage yet. Save roll rows on GSM first.");
 	const content =
 		rows.length > 0
 			? `<div class="gwm-shell">
+				${warnHtml}
 				<div class="gwm-card">
 					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${hint}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
@@ -761,9 +812,7 @@ async function _renderPattyWastageView(sprName) {
 					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
 				</div>
 			</div>`
-			: `<div class="gwm-empty">${__(
-					"No patty wastage yet. Save roll rows on GSM first."
-			  )}</div>`;
+			: `<div class="gwm-shell">${warnHtml}<div class="gwm-empty">${emptyMsg}</div></div>`;
 	return { content, table, rows };
 }
 
@@ -908,8 +957,9 @@ export async function openGsmWastageDialog(opts = {}) {
 	await _openRollWastage(sprRow.spr_name, sprRow, opts);
 }
 
-async function _openRunningPattyWastage(sprName, sprRow) {
-	const initial = await _renderPattyWastageView(sprName);
+async function _openRunningPattyWastage(sprName, sprRow, opts = {}) {
+	const viewOpts = { sprRow, rollLines: opts.rollLines || [] };
+	const initial = await _renderPattyWastageView(sprName, viewOpts);
 	const d = new frappe.ui.Dialog({
 		title: __("Running Patty Wasteage") + ` · ${sprRow.order_code || ""}`,
 		size: "extra-large",
@@ -917,7 +967,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		primary_action_label: __("Refresh"),
 		primary_action() {
 			d.hide();
-			_openRunningPattyWastage(sprName, sprRow);
+			_openRunningPattyWastage(sprName, sprRow, opts);
 		},
 	});
 	d.show();
@@ -931,7 +981,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 			view.rows
 		);
 		_bindRecycleToNext(d.$wrapper, sprName, view.rows, async () => {
-			const next = await _renderPattyWastageView(sprName);
+			const next = await _renderPattyWastageView(sprName, viewOpts);
 			await paint(next);
 		});
 	};
@@ -940,7 +990,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		if (d.$wrapper.find(".gwm-recycle-next-cb:disabled").length) {
 			return;
 		}
-		const view = await _renderPattyWastageView(sprName);
+		const view = await _renderPattyWastageView(sprName, viewOpts);
 		await paint(view);
 	});
 }
@@ -1000,7 +1050,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 		secondary_action_label: __("View Patty Wastage"),
 		secondary_action() {
 			d.hide();
-			_openRunningPattyWastage(sprName, sprRow);
+			_openRunningPattyWastage(sprName, sprRow, opts);
 		},
 		primary_action_label: rolls.length ? __("Mark as Waste") : __("Refresh"),
 		async primary_action() {
