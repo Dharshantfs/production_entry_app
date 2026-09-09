@@ -3131,9 +3131,12 @@ class ShaftProductionRun(Document):
 	def before_submit(self):
 		self.flags._spr_force_roll_summaries = True
 		self.sync_roll_attribute_summaries()
-		# Persist wastage + core before submit so GSM path matches desk Client Scripts
+		# Persist wastage + core before submit so GSM path matches desk Client Scripts.
+		# Zero-qty rows (shafts set / recycle checked but qty=0) are auto-repaired.
 		try:
-			persist_spr_patty_and_core(self, only_if_empty=True, save_if_draft=False)
+			persist_spr_patty_and_core(
+				self, only_if_empty=True, save_if_draft=False, refresh_zero_rows=False
+			)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR persist patty/core before_submit:{self.name}")
 		self._validate_production_submit_readiness()
@@ -12418,10 +12421,15 @@ def _spr_patty_wastage_fieldname() -> str | None:
 
 
 def _spr_write_patty_child_row(logical: dict) -> dict:
-	"""Map logical patty keys to whichever fieldnames exist on the live child DocType."""
+	"""Map logical patty keys to whichever fieldnames exist on the live child DocType.
+
+	IMPORTANT: do not cross-map net_wastage ↔ wastage_qty. Desk sets net_wastage=0 when
+	Recycle to Next is checked; if that value is also written onto wastage_qty, submit
+	persists zeros for every qty column (the bug users see after GSM submit).
+	"""
 	child_dt = "Running Patty Wastage Row"
 	if not frappe.db.exists("DocType", child_dt):
-		return logical
+		return {k: v for k, v in (logical or {}).items() if not _cstr(k).startswith("_")}
 	meta = frappe.get_meta(child_dt)
 	existing = {df.fieldname for df in meta.fields}
 	aliases = {
@@ -12430,19 +12438,28 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		"color": ("color", "fabric_colour", "custom_color"),
 		"gsm": ("gsm",),
 		"width_inch": ("width_inch", "width", "w"),
+		"width": ("width", "width_inch", "w"),
 		"meter_per_roll": (
+			"meter__roll",
 			"meter_per_roll",
 			"meter_roll",
 			"meter",
 			"produced_length_mtrs",
 			"produced_length_mtr",
-			"meter__roll",
 		),
 		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
-		"wastage": ("wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg"),
-		"wastage_qty": ("wastage_qty", "wastage_qt", "wastage", "net_wastage", "net_wastage_kg"),
-		"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage"),
-		"recycled": ("recycled", "recycled_qty", "recycled_kg"),
+		# Wastage qty (shafts × one-tail) — never write net_wastage here
+		"wastage": ("wastage_qty", "wastage_qt", "wastage"),
+		"wastage_qty": ("wastage_qty", "wastage_qt", "wastage"),
+		# One-shaft / net — separate from wastage_qty
+		"one_shaft_gross": (
+			"one_shaft_gross",
+			"one_shaft_wastage",
+			"one_shaft",
+			"one_shaft_weight",
+		),
+		"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs"),
+		"recycled": ("recycled_qty", "recycled", "recycled_kg"),
 		"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
 		"recycle_to_next": ("recycle_to_next", "custom_recycle_to_next"),
 		"batch_no": ("batch_no", "source_roll"),
@@ -12452,8 +12469,44 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		"party_code": ("party_code", "order_code"),
 		"order_code": ("order_code", "party_code"),
 	}
+	# Prefer wastage_qty over wastage when both keys present so totals win.
+	ordered_keys = []
+	seen = set()
+	for key in (
+		"job_id",
+		"quality",
+		"color",
+		"gsm",
+		"width_inch",
+		"width",
+		"meter_per_roll",
+		"no_of_shafts",
+		"one_shaft_gross",
+		"wastage_qty",
+		"wastage",
+		"recycled_qty",
+		"recycled",
+		"net_wastage",
+		"recycle_to_next",
+		"batch_no",
+		"item_code",
+		"item_name",
+		"item",
+		"party_code",
+		"order_code",
+	):
+		if key in (logical or {}) and key not in seen:
+			ordered_keys.append(key)
+			seen.add(key)
+	for key in logical or {}:
+		if key.startswith("_") or key in seen:
+			continue
+		ordered_keys.append(key)
+		seen.add(key)
+
 	out: dict = {}
-	for key, val in (logical or {}).items():
+	for key in ordered_keys:
+		val = (logical or {}).get(key)
 		if val is None:
 			continue
 		if isinstance(val, str) and not val.strip():
@@ -12737,6 +12790,9 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			or (getattr(job_row, "party_code", None) if job_row else None)
 			or ""
 		)
+		# Desk formula: wastage_qty = shafts × one-tail; recycled = (shafts-1)×tail; net = one tail
+		wastage_qty = flt(shafts * tail, 3)
+		recycled_qty = flt(((shafts - 1) * tail) if shafts > 1 else 0.0, 3)
 		out[jid] = {
 			"job_id": jid,
 			"quality": _cstr(
@@ -12756,11 +12812,12 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			"width": width,
 			"meter_per_roll": meter,
 			"no_of_shafts": shafts,
-			"wastage": tail,
-			"wastage_qty": tail,
+			"one_shaft_gross": tail,
+			"wastage": wastage_qty,
+			"wastage_qty": wastage_qty,
 			"net_wastage": tail,
-			"recycled": 0,
-			"recycled_qty": 0,
+			"recycled": recycled_qty,
+			"recycled_qty": recycled_qty,
 			"recycle_to_next": 0,
 			"order_code": party_code,
 			"party_code": party_code,
@@ -12771,6 +12828,163 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			"_from_jobs_only": 0 if rolls else 1,
 		}
 	return out
+
+
+def _spr_apply_patty_recycle_net(logical: dict, recycle_to_next: int = 0) -> dict:
+	"""Apply Recycle to Next: net_wastage = 0 when checked (desk recalculate_all_wastage)."""
+	out = dict(logical or {})
+	flag = 1 if cint(recycle_to_next) else 0
+	out["recycle_to_next"] = flag
+	tail = flt(
+		out.get("one_shaft_gross")
+		or out.get("net_wastage")
+		or (
+			(flt(out.get("wastage_qty") or out.get("wastage") or 0) / max(cint(out.get("no_of_shafts") or 1), 1))
+		)
+		or 0
+	)
+	if tail > 0:
+		out["one_shaft_gross"] = tail
+	# Never put 0 into wastage_qty — only net_wastage goes to 0 when recycling.
+	out["net_wastage"] = 0.0 if flag else flt(tail or out.get("net_wastage") or 0)
+	return out
+
+
+def _spr_patty_rows_are_effectively_empty(spr, field: str) -> bool:
+	"""True when table is missing or every row has zero wastage qty (broken GSM write)."""
+	rows = spr.get(field) or []
+	if not rows:
+		return True
+	for row in rows:
+		row_dict = row.as_dict() if hasattr(row, "as_dict") else dict(row or {})
+		if _spr_patty_row_wastage_kg(row_dict) > 0:
+			return False
+		# Also treat one_shaft_gross / meter as evidence of a real row
+		if flt(row_dict.get("one_shaft_gross") or row_dict.get("one_shaft_wastage") or 0) > 0:
+			return False
+		if flt(
+			row_dict.get("meter_per_roll")
+			or row_dict.get("meter__roll")
+			or row_dict.get("meter_roll")
+			or row_dict.get("meter")
+			or 0
+		) > 0 and cint(row_dict.get("no_of_shafts") or row_dict.get("shafts") or 0) > 0:
+			# shafts+meter but zero qty → broken; allow refresh
+			continue
+	return True
+
+
+def _spr_recycled_wastage_fieldname() -> str | None:
+	meta = frappe.get_meta("Shaft Production Run")
+	if meta.has_field("custom_recycled_wastage_details"):
+		return "custom_recycled_wastage_details"
+	for df in meta.fields or []:
+		if df.fieldtype != "Table":
+			continue
+		fn = _cstr(df.fieldname).lower()
+		if "manual" in fn or "gsm_manual" in fn:
+			continue
+		if "recycled_wastage" in fn or fn == "recycled_wastage_details":
+			return df.fieldname
+	return None
+
+
+def _spr_write_recycled_child_row(logical: dict) -> dict:
+	"""Map recycled wastage detail keys onto live child fields."""
+	child_dt = "Recycled Wastage Detail Row"
+	if not frappe.db.exists("DocType", child_dt):
+		return {k: v for k, v in (logical or {}).items() if not _cstr(k).startswith("_")}
+	meta = frappe.get_meta(child_dt)
+	existing = {df.fieldname for df in meta.fields}
+	aliases = {
+		"job_id": ("job_id", "job"),
+		"quality": ("quality", "custom_quality"),
+		"color": ("color", "fabric_colour", "custom_color", "colour"),
+		"gsm": ("gsm",),
+		"width_inch": ("width_inch", "width", "w", "patty_width"),
+		"width": ("width", "width_inch", "w"),
+		"meter_per_roll": ("meter__roll", "meter_per_roll", "meter_roll", "meter"),
+		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
+		"available": ("available_qty_kgs", "available_qty", "available", "available_kg"),
+		"available_qty": ("available_qty_kgs", "available_qty", "available", "available_kg"),
+		"recycled": ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
+		"recycled_qty": ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
+		"wastage": ("wastage", "wastage_qty"),
+		"wastage_qty": ("wastage_qty", "wastage"),
+		"calculation_details": ("calculation_details",),
+	}
+	out: dict = {}
+	for key, val in (logical or {}).items():
+		if key.startswith("_") or val is None:
+			continue
+		if isinstance(val, str) and not val.strip():
+			continue
+		wrote = False
+		for fn in aliases.get(key, (key,)):
+			if fn in existing:
+				out[fn] = val
+				wrote = True
+		if not wrote and key in existing:
+			out[key] = val
+	return out
+
+
+def _spr_sync_recycled_wastage_from_patty(spr) -> int:
+	"""Rebuild auto Recycled Wastage Details from Running Patty (desk update_recycled_table).
+
+	Preserves manual / Patty-stock rows (job_id == 'Patty'). Does not touch GSM Manual Recycle.
+	"""
+	patty_field = _spr_patty_wastage_fieldname()
+	rec_field = _spr_recycled_wastage_fieldname()
+	if not patty_field or not rec_field:
+		return 0
+
+	existing = list(spr.get(rec_field) or [])
+	keep = []
+	for row in existing:
+		jid = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "").lower()
+		if jid == "patty":
+			keep.append(row)
+
+	added = 0
+	for w_row in spr.get(patty_field) or []:
+		w = w_row.as_dict() if hasattr(w_row, "as_dict") else dict(w_row or {})
+		shafts = cint(w.get("no_of_shafts") or w.get("shafts") or w.get("no_of_shaft") or 1)
+		tail = flt(w.get("one_shaft_gross") or w.get("one_shaft_wastage") or w.get("one_shaft") or 0)
+		if tail <= 0:
+			qty = _spr_patty_row_wastage_kg(w)
+			tail = flt(qty / shafts, 3) if shafts > 0 and qty > 0 else 0.0
+		recycled_shafts = (shafts - 1) if shafts > 1 else 0
+		total_available = flt(recycled_shafts * tail, 3)
+		if total_available <= 0:
+			continue
+		logical = {
+			"job_id": _cstr(w.get("job_id") or w.get("job") or ""),
+			"quality": _cstr(w.get("quality") or ""),
+			"color": _cstr(w.get("color") or w.get("colour") or ""),
+			"gsm": cint(w.get("gsm") or 0),
+			"width_inch": flt(w.get("width_inch") or w.get("width") or 0),
+			"width": flt(w.get("width") or w.get("width_inch") or 0),
+			"meter_per_roll": flt(
+				w.get("meter_per_roll") or w.get("meter__roll") or w.get("meter_roll") or w.get("meter") or 0
+			),
+			"no_of_shafts": shafts,
+			"available": total_available,
+			"available_qty": total_available,
+			"recycled": total_available,
+			"recycled_qty": total_available,
+			"wastage": flt(w.get("wastage_qty") or w.get("wastage") or 0),
+			"wastage_qty": flt(w.get("wastage_qty") or w.get("wastage") or 0),
+			"calculation_details": f"{recycled_shafts} shaft(s) × {tail:.3f} Kg = {total_available:.3f} Kg recycled",
+		}
+		values = _spr_write_recycled_child_row(logical)
+		if not values:
+			continue
+		keep.append(values)
+		added += 1
+
+	spr.set(rec_field, keep)
+	return added
 
 
 def _spr_core_details_fieldname() -> str | None:
@@ -12941,15 +13155,21 @@ def _spr_table_row_count(spr, fieldname: str) -> int:
 	)
 
 
-def persist_spr_patty_and_core(spr, *, only_if_empty: bool = True, save_if_draft: bool = True) -> dict:
+def persist_spr_patty_and_core(
+	spr, *, only_if_empty: bool = True, save_if_draft: bool = True, refresh_zero_rows: bool = False
+) -> dict:
 	"""Write Running Patty Wastage + Core Details onto SPR (draft save or submitted db_insert).
 
 	Submitted docs use child.db_insert only — no parent.save() — so desk forms do not go dirty.
 	During before_submit pass save_if_draft=False so rows ride on the submit write.
+
+	When refresh_zero_rows=True (or only_if_empty and rows exist with all-zero qty), rewrite
+	patty from jobs/rolls so Recycle to Next / GSM does not leave shafts=N with qty=0.
+	Also sync auto Recycled Wastage Details from patty rows.
 	"""
 	if isinstance(spr, str):
 		spr = frappe.get_doc("Shaft Production Run", spr)
-	result = {"spr_name": spr.name, "patty_added": 0, "core_added": 0, "skipped": []}
+	result = {"spr_name": spr.name, "patty_added": 0, "core_added": 0, "recycled_synced": 0, "skipped": []}
 
 	try:
 		spr.calculate_produced_gsm(missing_only=True)
@@ -12963,19 +13183,51 @@ def persist_spr_patty_and_core(spr, *, only_if_empty: bool = True, save_if_draft
 	# --- Patty wastage ---
 	if patty_field:
 		existing_patty = _spr_table_row_count(spr, patty_field)
-		if only_if_empty and existing_patty > 0:
+		zero_broken = refresh_zero_rows or (
+			only_if_empty and existing_patty > 0 and _spr_patty_rows_are_effectively_empty(spr, patty_field)
+		)
+		if only_if_empty and existing_patty > 0 and not zero_broken:
 			result["skipped"].append("patty_already_present")
 		else:
+			# Preserve recycle_to_next flags before rewrite
+			saved_flags = {}
+			for row in spr.get(patty_field) or []:
+				jid = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+				if not jid:
+					continue
+				saved_flags[jid] = cint(
+					getattr(row, "recycle_to_next", None) or getattr(row, "custom_recycle_to_next", None) or 0
+				)
+
 			computed = _spr_compute_patty_wastage_by_job(spr) or {}
 			if not computed:
 				result["skipped"].append("patty_no_computed")
 			else:
-				if not only_if_empty and existing_patty > 0 and not submitted:
-					spr.set(patty_field, [])
+				if (not only_if_empty or zero_broken) and existing_patty > 0:
+					if submitted:
+						# Submitted: replace broken zero rows via delete + db_insert
+						for old in list(spr.get(patty_field) or []):
+							try:
+								frappe.delete_doc(
+									old.doctype, old.name, force=1, ignore_permissions=True, delete_permanently=True
+								)
+							except Exception:
+								frappe.db.sql(
+									f"DELETE FROM `tab{old.doctype}` WHERE name=%s",
+									(old.name,),
+								)
+						spr.set(patty_field, [])
+						existing_patty = 0
+					else:
+						spr.set(patty_field, [])
+						existing_patty = 0
 				idx = existing_patty
 				for logical in computed.values():
-					if flt(logical.get("wastage") or 0) <= 0:
+					if flt(logical.get("wastage") or logical.get("wastage_qty") or 0) <= 0:
 						continue
+					jid = _cstr(logical.get("job_id") or "")
+					flag = saved_flags.get(jid, cint(logical.get("recycle_to_next") or 0))
+					logical = _spr_apply_patty_recycle_net(logical, flag)
 					values = _spr_write_patty_child_row(logical)
 					if not values:
 						continue
@@ -12989,6 +13241,39 @@ def persist_spr_patty_and_core(spr, *, only_if_empty: bool = True, save_if_draft
 					result["patty_added"] += 1
 	else:
 		result["skipped"].append("patty_field_missing")
+
+	# --- Recycled wastage details (auto from patty) ---
+	try:
+		rec_field = _spr_recycled_wastage_fieldname()
+		if rec_field:
+			if submitted and refresh_zero_rows:
+				# Clear auto recycled rows then rebuild (preserve job_id=Patty)
+				keep_patty = []
+				for row in list(spr.get(rec_field) or []):
+					jid = _cstr(getattr(row, "job_id", None) or "").lower()
+					if jid == "patty":
+						keep_patty.append(row)
+					else:
+						try:
+							frappe.delete_doc(
+								row.doctype, row.name, force=1, ignore_permissions=True, delete_permanently=True
+							)
+						except Exception:
+							frappe.db.sql(f"DELETE FROM `tab{row.doctype}` WHERE name=%s", (row.name,))
+				spr.set(rec_field, keep_patty)
+				added = _spr_sync_recycled_wastage_from_patty(spr)
+				# Newly appended dict rows need db_insert when submitted
+				for row in spr.get(rec_field) or []:
+					if getattr(row, "name", None) and not str(row.name).startswith("new-"):
+						continue
+					if hasattr(row, "db_insert"):
+						row.db_insert()
+				result["recycled_synced"] = added
+			elif not submitted:
+				result["recycled_synced"] = _spr_sync_recycled_wastage_from_patty(spr)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"SPR sync recycled from patty:{spr.name}")
+		result["skipped"].append("recycled_sync_failed")
 
 	# --- Core details ---
 	if core_field and frappe.db.exists("DocType", "Shaft Core Detail"):
@@ -13021,7 +13306,7 @@ def persist_spr_patty_and_core(spr, *, only_if_empty: bool = True, save_if_draft
 	if (
 		not submitted
 		and save_if_draft
-		and (result["patty_added"] or result["core_added"])
+		and (result["patty_added"] or result["core_added"] or result["recycled_synced"])
 	):
 		spr.flags._spr_incremental_roll_save = True
 		spr.flags.ignore_version = True
@@ -13037,19 +13322,28 @@ def sync_running_patty_wastage_from_items(
 	"""Persist computed running patty wastage (+ core when persist)."""
 	if not persist:
 		return False
-	res = persist_spr_patty_and_core(spr, only_if_empty=not refresh_zero_rows)
-	return bool(res.get("patty_added") or res.get("core_added"))
+	res = persist_spr_patty_and_core(
+		spr, only_if_empty=not refresh_zero_rows, refresh_zero_rows=refresh_zero_rows
+	)
+	return bool(res.get("patty_added") or res.get("core_added") or res.get("recycled_synced"))
 
 
 @frappe.whitelist()
-def sync_spr_running_patty_wastage(spr_name, persist=1):
-	"""Persist patty wastage (and core) from roll lines onto the SPR."""
+def sync_spr_running_patty_wastage(spr_name, persist=1, refresh_zero_rows=0):
+	"""Persist patty wastage (and core) from roll lines onto the SPR.
+
+	Pass refresh_zero_rows=1 to rewrite rows that have shafts/recycle but qty=0
+	(common after GSM Recycle to Next before this fix).
+	"""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
+	force = cint(refresh_zero_rows)
 	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		res = persist_spr_patty_and_core(spr_name, only_if_empty=True)
-	res["synced"] = bool(res.get("patty_added") or res.get("core_added"))
+		res = persist_spr_patty_and_core(
+			spr_name, only_if_empty=not force, refresh_zero_rows=bool(force)
+		)
+	res["synced"] = bool(res.get("patty_added") or res.get("core_added") or res.get("recycled_synced"))
 	return res
 
 

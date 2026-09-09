@@ -5824,12 +5824,18 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 
 @frappe.whitelist(methods=["GET", "POST"])
 def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_to_next=0):
-	"""Toggle Running Patty Wastage Row.recycle_to_next from the GSM wastage popup."""
+	"""Toggle Running Patty Wastage Row.recycle_to_next from the GSM wastage popup.
+
+	Also rewrites qty fields with the desk formula and syncs Recycled Wastage Details so
+	checking Recycle to Next actually lands recycled rows on the SPR (not just the flag).
+	"""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_gsm_publish_session_update,
+		_spr_apply_patty_recycle_net,
 		_spr_compute_patty_wastage_by_job,
 		_spr_operation_lock,
 		_spr_patty_wastage_fieldname,
+		_spr_sync_recycled_wastage_from_patty,
 		_spr_write_patty_child_row,
 	)
 
@@ -5865,6 +5871,8 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 		if not field:
 			frappe.throw(_("Running Patty Wastage is not configured on Shaft Production Run"))
 
+		computed = _spr_compute_patty_wastage_by_job(spr) or {}
+
 		target = None
 		for row in spr.get(field) or []:
 			if row_name and _cstr(row.name) == row_name:
@@ -5875,22 +5883,46 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 				target = row
 				break
 
+		logical = None
+		if job_id and computed.get(job_id):
+			logical = computed.get(job_id)
+		elif target is not None:
+			tj = _cstr(getattr(target, "job_id", None) or getattr(target, "job", None) or "")
+			logical = computed.get(tj) if tj else None
+		elif len(computed) == 1:
+			logical = next(iter(computed.values()))
+
+		if not logical:
+			frappe.throw(_("Patty wastage row not found to recycle — save rolls / jobs first."))
+
+		payload = _spr_apply_patty_recycle_net(dict(logical), flag)
+		values = _spr_write_patty_child_row(payload)
+		values[flag_field] = flag
+
 		if not target:
-			computed = _spr_compute_patty_wastage_by_job(spr) or {}
-			logical = None
-			if job_id and computed.get(job_id):
-				logical = computed.get(job_id)
-			elif len(computed) == 1:
-				logical = next(iter(computed.values()))
-			if not logical:
-				frappe.throw(_("Patty wastage row not found to recycle"))
-			payload = dict(logical)
-			payload["recycle_to_next"] = flag
-			values = _spr_write_patty_child_row(payload)
-			values[flag_field] = flag
 			target = spr.append(field, values)
 		else:
-			target.set(flag_field, flag)
+			for k, v in values.items():
+				try:
+					target.set(k, v)
+				except Exception:
+					setattr(target, k, v)
+
+		# Ensure every computed job has a saved patty row (not only the toggled one)
+		existing_jobs = {
+			_cstr(getattr(r, "job_id", None) or getattr(r, "job", None) or "")
+			for r in (spr.get(field) or [])
+		}
+		for jid, log in computed.items():
+			if jid in existing_jobs:
+				continue
+			other_flag = 0
+			other = _spr_apply_patty_recycle_net(dict(log), other_flag)
+			other_vals = _spr_write_patty_child_row(other)
+			if other_vals:
+				spr.append(field, other_vals)
+
+		_spr_sync_recycled_wastage_from_patty(spr)
 
 		spr.flags._spr_incremental_roll_save = True
 		spr.save(ignore_permissions=True)
