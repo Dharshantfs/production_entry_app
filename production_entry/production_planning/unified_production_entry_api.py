@@ -3269,6 +3269,10 @@ def _apply_gsm_session_header_to_spr(
 	if unit and _cstr(spr.get("custom_unit")) != _cstr(unit):
 		spr.custom_unit = unit
 		changed = True
+	if unit and _gsm_is_lamination_unit(unit) and frappe.db.has_column("Shaft Production Run", "custom_is_lamination"):
+		if not cint(spr.get("custom_is_lamination") or 0):
+			spr.custom_is_lamination = 1
+			changed = True
 	if run_date and str(spr.get("run_date") or "") != str(run_date):
 		spr.run_date = run_date
 		changed = True
@@ -4063,6 +4067,319 @@ def create_gsm_sprs_for_session(
 			}
 		)
 	return {"status": "ok", "sprs": sprs_out}
+
+
+def _gsm_is_lamination_unit(unit) -> bool:
+	from production_entry.production_planning.planning_doctypes import LAMINATION_UNIT
+
+	u = _cstr(unit).strip().upper()
+	return "LAMINATION" in u or u == _cstr(LAMINATION_UNIT).strip().upper()
+
+
+def _gsm_rm_input_kind(item_code: str, process_code: str = "") -> str:
+	"""Classify BOM RM as fabric (100*) vs bopp/other for lamination input UI."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		spr_fg_item_process_code,
+	)
+
+	ic = _cstr(item_code)
+	pc = _cstr(process_code) or spr_fg_item_process_code(ic)
+	icu = ic.upper()
+	if pc.startswith("100") or icu.startswith("100") or " FABRIC" in icu:
+		return "fabric"
+	if "BOPP" in icu or pc in ("101", "105", "106", "108", "109") or pc.startswith("10") and not pc.startswith("100"):
+		return "bopp"
+	# Non-100 batch RM on 107 plans → treat as BOPP/film input
+	return "bopp" if pc and not pc.startswith("100") else "fabric"
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_gsm_lamination_order_board(run_date=None, unit=None, lamination_process=None):
+	"""Order-centric board for GSM Lamination mode (104 and/or 107)."""
+	from production_entry.production_planning.planning_doctypes import LAMINATION_UNIT
+	from production_entry.production_planning.scheduler_api import get_lamination_order_table_data
+
+	run_date = getdate(run_date) if run_date else getdate()
+	unit = _cstr(unit).strip() or LAMINATION_UNIT
+	want_proc = _cstr(lamination_process).strip()
+	procs = [want_proc] if want_proc in ("104", "107") else ["104", "107"]
+
+	orders = []
+	seen = set()
+	for proc in procs:
+		try:
+			rows = get_lamination_order_table_data(
+				date=str(run_date),
+				planned_only=1,
+				lamination_process=proc,
+				board_process_scope="lamination_only",
+				board_slug="gsm-production-entry",
+			) or []
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"get_gsm_lamination_order_board:{proc}")
+			rows = []
+		for r in rows:
+			if not isinstance(r, dict):
+				continue
+			pp_id = _cstr(r.get("pp_id") or r.get("production_plan") or r.get("ppId")).strip()
+			if not pp_id or pp_id in seen:
+				# Still allow same PP once; prefer first
+				if pp_id and pp_id in seen:
+					continue
+			order_code = _cstr(
+				r.get("lamination_order_code")
+				or r.get("booking_id")
+				or r.get("order_code")
+				or r.get("party_code")
+				or r.get("custom_order_code")
+				or _gsm_order_code_for_pp(pp_id)
+				or pp_id
+			)
+			fg_proc = _cstr(r.get("lamination_process") or r.get("process") or proc)
+			if fg_proc not in ("104", "107"):
+				fg_proc = proc
+			key = pp_id or f"{order_code}|{fg_proc}"
+			if key in seen:
+				continue
+			seen.add(key)
+			if pp_id:
+				seen.add(pp_id)
+			target_kg = flt(r.get("qty") or r.get("planned_qty") or r.get("required_qty") or 0)
+			produced_kg = flt(r.get("spr_kg") or r.get("achieved_kg") or r.get("actual_production_weight_kgs") or 0)
+			orders.append(
+				{
+					"key": key,
+					"pp_id": pp_id,
+					"order_code": order_code,
+					"customer": _cstr(r.get("customer") or r.get("customer_name") or ""),
+					"party_code": _cstr(r.get("party_code") or ""),
+					"quality": _cstr(r.get("quality") or ""),
+					"color": _cstr(r.get("color") or r.get("colour") or ""),
+					"unit": unit,
+					"lamination_process": fg_proc,
+					"needs_fabric_input": 1,
+					"needs_bopp_input": 1 if fg_proc == "107" else 0,
+					"target_kg": target_kg,
+					"produced_kg": produced_kg,
+					"remaining_kg": max(0.0, target_kg - produced_kg),
+					"combination": _cstr(r.get("combination") or r.get("combination_label") or ""),
+					"fabric_gsm": cint(r.get("fabric_gsm") or r.get("gsm") or 0),
+					"lam_gsm": cint(r.get("lam_gsm") or r.get("custom_lam_gsm") or 0),
+					"bopp_gsm": cint(r.get("bopp_gsm") or r.get("custom_bopp_gsm") or 0),
+					"pp_docstatus": cint(r.get("pp_docstatus") or 1),
+					"planned_date": str(r.get("planned_date") or r.get("date") or run_date),
+				}
+			)
+	return {"status": "ok", "run_date": str(run_date), "unit": unit, "orders": orders}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def gsm_lamination_input_context(spr_name=None, input_kind=None):
+	"""RM pick context for GSM lamination inputs, filtered to fabric or bopp."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		spr_doc_is_lamination,
+		spr_fg_item_process_code,
+		spr_get_fabric_batch_pick_context,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	kind = _cstr(input_kind).strip().lower() or "fabric"
+	if kind not in ("fabric", "bopp"):
+		frappe.throw(_("input_kind must be fabric or bopp"))
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	fg_process = ""
+	for it in spr.items or []:
+		ic = _cstr(getattr(it, "item_code", None) or "")
+		if ic:
+			fg_process = spr_fg_item_process_code(ic)
+			if fg_process in ("104", "107"):
+				break
+	if not fg_process:
+		pp = _cstr(spr.get("production_plan") or "")
+		if pp and frappe.db.exists("Production Plan", pp):
+			for w in frappe.get_all(
+				"Work Order",
+				filters={"production_plan": pp, "docstatus": ["!=", 2]},
+				fields=["production_item"],
+				limit=20,
+			) or []:
+				fg_process = spr_fg_item_process_code(_cstr((w or {}).get("production_item") or ""))
+				if fg_process in ("104", "107"):
+					break
+
+	if kind == "bopp" and fg_process == "104":
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"fg_process": fg_process or "104",
+			"input_kind": kind,
+			"allowed": False,
+			"message": _("Process 104 needs fabric inputs only (no BOPP)."),
+			"rm_options": [],
+			"current_picks": [],
+		}
+
+	ctx = spr_get_fabric_batch_pick_context(spr_name) or {}
+	rm_options = []
+	for ln in ctx.get("lines") or []:
+		wo = _cstr(ln.get("work_order") or "")
+		for rm in ln.get("raw_materials") or []:
+			ic = _cstr(rm.get("item_code") or "")
+			pc = _cstr(rm.get("process_code") or "")
+			if _gsm_rm_input_kind(ic, pc) != kind:
+				continue
+			rm_options.append(
+				{
+					"work_order": wo,
+					"item_code": ic,
+					"item_name": _cstr(rm.get("item_name") or ""),
+					"process_code": pc,
+					"required_qty": flt(rm.get("required_qty") or 0),
+					"quality": _cstr(rm.get("quality") or ""),
+					"colour": _cstr(rm.get("colour") or ""),
+					"gsm": flt(rm.get("gsm") or 0),
+					"width_inch": flt(rm.get("width_inch") or 0),
+					"batches": rm.get("batches") or [],
+				}
+			)
+
+	cur = []
+	for p in ctx.get("current_picks") or []:
+		ic = _cstr(p.get("item_code") or "")
+		if _gsm_rm_input_kind(ic) != kind:
+			continue
+		cur.append(p)
+
+	return {
+		"status": "ok",
+		"spr_name": spr_name,
+		"fg_process": fg_process or "",
+		"is_lamination": 1 if spr_doc_is_lamination(spr) else cint(spr.get("custom_is_lamination") or 0),
+		"input_kind": kind,
+		"allowed": True,
+		"needs_picks": cint(ctx.get("needs_picks") or 0),
+		"rm_options": rm_options,
+		"current_picks": cur,
+		"all_current_picks": ctx.get("current_picks") or [],
+	}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def gsm_lamination_prepare_input_rows(spr_name=None, input_kind=None, num_rolls=None):
+	"""Ask N → return N blank editable input rows (fabric or bopp) for the operator to fill."""
+	kind = _cstr(input_kind).strip().lower() or "fabric"
+	n = max(1, cint(num_rolls or 1))
+	ctx = gsm_lamination_input_context(spr_name=spr_name, input_kind=kind)
+	if not ctx.get("allowed"):
+		return {**ctx, "rows": []}
+	opts = ctx.get("rm_options") or []
+	default_rm = opts[0] if opts else {}
+	rows = []
+	for i in range(n):
+		rows.append(
+			{
+				"idx": i + 1,
+				"input_kind": kind,
+				"work_order": _cstr(default_rm.get("work_order") or ""),
+				"item_code": _cstr(default_rm.get("item_code") or ""),
+				"item_name": _cstr(default_rm.get("item_name") or ""),
+				"batch_no": "",
+				"qty": 0,
+				"batches": default_rm.get("batches") or [],
+			}
+		)
+	return {
+		"status": "ok",
+		"spr_name": _cstr(spr_name),
+		"input_kind": kind,
+		"fg_process": ctx.get("fg_process"),
+		"rm_options": opts,
+		"rows": rows,
+		"message": _("Enter batch and qty for each of the {0} {1} input roll(s).").format(n, kind),
+	}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def gsm_lamination_save_input_picks(spr_name=None, picks_json=None, merge_with_other_kind=1):
+	"""Save fabric/bopp input rows onto SPR fabric_batch_picks (merge keeps the other kind)."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		spr_save_fabric_batch_picks,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	picks = _parse_json_arg(picks_json, [])
+	if not spr_name:
+		frappe.throw(_("SPR is required"))
+	new_picks = []
+	for p in picks or []:
+		if not isinstance(p, dict):
+			continue
+		wo = _cstr(p.get("work_order") or "")
+		ic = _cstr(p.get("item_code") or "")
+		bn = _cstr(p.get("batch_no") or "")
+		q = flt(p.get("qty") or 0)
+		if wo and ic and bn and q > 0:
+			new_picks.append({"work_order": wo, "item_code": ic, "batch_no": bn, "qty": q})
+
+	if cint(merge_with_other_kind):
+		# Keep existing picks that are the opposite kind of this save batch
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		incoming_kinds = {_gsm_rm_input_kind(p["item_code"]) for p in new_picks}
+		keep = []
+		for r in spr.get("fabric_batch_picks") or []:
+			ic = _cstr(getattr(r, "item_code", None) or "")
+			k = _gsm_rm_input_kind(ic)
+			if k not in incoming_kinds:
+				keep.append(
+					{
+						"work_order": _cstr(getattr(r, "work_order", None) or ""),
+						"item_code": ic,
+						"batch_no": _cstr(getattr(r, "batch_no", None) or ""),
+						"qty": flt(getattr(r, "qty", None) or 0),
+					}
+				)
+		new_picks = keep + new_picks
+
+	return spr_save_fabric_batch_picks(spr_name=spr_name, picks_json=new_picks)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def gsm_lamination_add_output_rolls(spr_name=None, job_id=None, rolls_per_combination=None, exact_roll_lines=None):
+	"""Add FG output rolls on a lamination SPR (wraps desk append API)."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_job_id,
+		_spr_job_rows,
+		append_roll_lines_for_job_and_save,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	job_id = _cstr(job_id).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if not job_id:
+		jobs = _spr_job_rows(spr)
+		if not jobs:
+			frappe.throw(_("No Available Jobs on this SPR — create SPR from the order first."))
+		job_id = _cstr(_spr_job_id(jobs[0]))
+	lam_n = cint(rolls_per_combination or 0)
+	exact_n = cint(exact_roll_lines or 0)
+	if lam_n <= 0 and exact_n <= 0:
+		frappe.throw(_("Enter rolls per combination (or exact roll lines)."))
+	# Ensure lamination flag for create-entry rules
+	if frappe.get_meta("Shaft Production Run").has_field("custom_is_lamination"):
+		if not cint(spr.get("custom_is_lamination") or 0):
+			frappe.db.set_value("Shaft Production Run", spr_name, "custom_is_lamination", 1, update_modified=False)
+
+	return append_roll_lines_for_job_and_save(
+		shaft_production_run=spr_name,
+		job_id=job_id,
+		lamination_rolls_per_combination=lam_n if lam_n > 0 else None,
+		lamination_exact_roll_lines=exact_n if exact_n > 0 else None,
+	)
 
 
 @frappe.whitelist(methods=["GET", "POST"])

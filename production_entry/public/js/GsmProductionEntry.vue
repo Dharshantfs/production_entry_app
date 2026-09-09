@@ -71,8 +71,11 @@
     <!-- Entry tab -->
     <div v-show="pageTab === 'entry'" class="gpe-layout gpe-layout-entry">
       <aside class="gpe-sidebar gpe-card">
-        <h3>Orders &amp; Jobs</h3>
-        <p class="gpe-hint">PP shaft jobs. Confirm selection, then add roll rows.</p>
+        <h3>{{ isLaminationMode ? "Lamination Orders" : "Orders & Jobs" }}</h3>
+        <p class="gpe-hint">
+          <template v-if="isLaminationMode">Order-based entry. Confirm selection, add fabric/BOPP inputs, then output rolls.</template>
+          <template v-else>PP shaft jobs. Confirm selection, then add roll rows.</template>
+        </p>
         <div v-if="shiftOpened && selectionLocked && selectedEntries.length" class="gpe-session-panel">
           <div class="gpe-session-panel-head">Locked session · {{ selectedEntries.length }} job(s)</div>
           <div v-for="e in selectedEntries" :key="e.key" class="gpe-session-entry">
@@ -137,11 +140,16 @@
                 <span v-if="job.color" class="gpe-spec-chip gpe-spec-color">{{ job.color }}</span>
               </div>
               <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
+              <div v-if="isLaminationMode && (job.lamination_process || grp.laminationProcess)" class="gpe-job-target">
+                <span class="gpe-spec-chip">Process {{ job.lamination_process || grp.laminationProcess }}</span>
+                <span v-if="(job.lamination_process || grp.laminationProcess) === '107'" class="gpe-spec-chip">Fabric + BOPP</span>
+                <span v-else class="gpe-spec-chip">Fabric input</span>
+              </div>
               <div v-if="job.job_target_kg > 0" class="gpe-job-target">
                 <span class="gpe-day-target">Job Tgt {{ formatKg(job.job_target_kg) }} Kg</span>
                 <span class="gpe-day-rem">Rem {{ formatKg(job.job_remaining_kg) }} Kg</span>
               </div>
-              <div class="gpe-dual-meter" :class="{ 'gpe-dual-meter-full': job.quota_full }">
+              <div v-if="!isLaminationMode" class="gpe-dual-meter" :class="{ 'gpe-dual-meter-full': job.quota_full }">
                 <div class="gpe-meter-col">
                   <span class="gpe-meter-label">Shafts</span>
                   <span class="gpe-meter-frac">
@@ -154,6 +162,9 @@
                     <em>{{ job.job_rolls_produced }}</em><span>/</span><strong>{{ job.max_rolls }}</strong>
                   </span>
                 </div>
+              </div>
+              <div v-else class="gpe-job-remaining">
+                Order remaining — produce by rolls per combination after inputs.
               </div>
               <div class="gpe-meter-context">{{ shift }} · {{ formatPlannedDate(runDate) }}</div>
               <div v-if="cint(job.today_rolls) > 0" class="gpe-shift-breakdown">
@@ -510,6 +521,9 @@
                 <button type="button" @click="runTool('bundle')">SPR — Bundle packaging</button>
                 <button type="button" @click="runTool('bundlese')">SPR — Bundle SE on Submit</button>
                 <button type="button" @click="runTool('rmbatches')">SPR — Select RM batches</button>
+                <button v-if="isLaminationMode" type="button" @click="runTool('lamFabricIn')">Lamination — Add Fabric Inputs</button>
+                <button v-if="isLaminationMode" type="button" @click="runTool('lamBoppIn')">Lamination — Add BOPP Inputs</button>
+                <button v-if="isLaminationMode" type="button" @click="runTool('lamOutput')">Lamination — Add Output Rolls</button>
                 <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
@@ -1959,6 +1973,8 @@ const STORAGE_KEY = `gsm_production_entry_draft_v3_${frappe.session.user || "gue
 const BOARD_SLUG = "gsm-production-entry";
 const GSM_BOARD_SLUG = "gsm-production-entry";
 const FABRIC_UNITS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4"];
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const GSM_ENTRY_UNITS = [...FABRIC_UNITS, LAMINATION_UNIT];
 
 const viewScope = ref("daily");
 const filterDate = ref(frappe.datetime.get_today());
@@ -2795,6 +2811,7 @@ function orderMetaForPp(ppId) {
     color: row?.color || row?.fabric_colour || boardJob?.color || "",
     gsm: boardJob?.gsm || row?.gsm || 0,
     planningLineId: row?.itemName || row?.name || "",
+    lamination_process: row?.lamination_process || boardJob?.lamination_process || "",
   };
 }
 
@@ -3430,8 +3447,20 @@ function isFabricUnit(unit) {
   return FABRIC_UNITS.includes(u);
 }
 
+function isLaminationUnit(unit) {
+  const u = _cstr(unit).trim().toUpperCase();
+  return u.includes("LAMINATION") || u === LAMINATION_UNIT.toUpperCase();
+}
+
+function isGsmEntryUnit(unit) {
+  return isFabricUnit(unit) || isLaminationUnit(unit);
+}
+
 function normalizeGsmUnit(unit) {
   const u = _cstr(unit).trim();
+  if (isLaminationUnit(u)) {
+    return LAMINATION_UNIT;
+  }
   const m = u.match(/unit\s*(\d+)/i);
   if (m) {
     return `Unit ${m[1]}`;
@@ -3538,7 +3567,7 @@ function quotaLabelForLine(lineId) {
 
 const ppSubmittedRows = computed(() =>
   (rawOrders.value || []).filter(
-    (r) => r.pp_id && Number(r.pp_docstatus) === 1 && isFabricUnit(r.unit)
+    (r) => r.pp_id && Number(r.pp_docstatus) === 1 && isGsmEntryUnit(r.unit)
   )
 );
 
@@ -3672,18 +3701,22 @@ function buildLineFromItem(item) {
 const unitOptions = computed(() => {
   const pool = gsmUnitFilterState.value.pool;
   if (pool && pool.length) {
-    return pool.filter((u) => isFabricUnit(u));
+    return pool.filter((u) => isGsmEntryUnit(u));
   }
   const s = new Set();
   ppSubmittedRows.value.forEach((r) => {
-    if (r.unit && isFabricUnit(r.unit)) {
-      s.add(r.unit);
+    if (r.unit && isGsmEntryUnit(r.unit)) {
+      s.add(normalizeGsmUnit(r.unit));
     }
   });
-  return FABRIC_UNITS.filter((u) => s.has(u));
+  // Always offer fabric units that appear + Lamination when present or always available
+  const out = GSM_ENTRY_UNITS.filter((u) => s.has(u) || isLaminationUnit(u));
+  return out.length ? out : GSM_ENTRY_UNITS;
 });
 
-const fabricUnitOptions = computed(() => unitOptions.value);
+const fabricUnitOptions = computed(() => unitOptions.value.filter((u) => isFabricUnit(u)));
+
+const isLaminationMode = computed(() => isLaminationUnit(headerUnit.value || filterUnit.value));
 
 const freezeGsmUnit = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_unit"));
 const freezeGsmDate = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_date"));
@@ -3719,6 +3752,7 @@ const jobOrderGroups = computed(() => {
         ppId: job.pp_id,
         quality: orderMeta.quality || "",
         color: orderMeta.color || "",
+        laminationProcess: orderMeta.lamination_process || job.lamination_process || "",
         isTrial: !!job.is_trial,
         dayTargetKg: dayStats.dayTargetKg,
         dayRemKg: dayStats.dayRemKg,
@@ -3727,6 +3761,58 @@ const jobOrderGroups = computed(() => {
     }
     map.get(key).jobs.push(enriched);
   }
+
+  // Lamination: show order cards even before SPR/job board exists
+  if (isLaminationMode.value) {
+    for (const row of ppSubmittedRows.value) {
+      if (!row.pp_id || (allowedPpIds.size && !allowedPpIds.has(row.pp_id))) {
+        continue;
+      }
+      const orderCode = row.order_code || row.party_code || row.pp_id;
+      const key = `${orderCode}::${row.pp_id}`;
+      if (map.has(key) && map.get(key).jobs.length) {
+        const g = map.get(key);
+        g.laminationProcess = g.laminationProcess || row.lamination_process || "";
+        continue;
+      }
+      const dayStats = orderDayStatsForPp(row.pp_id);
+      map.set(key, {
+        key,
+        orderCode,
+        partyName: row.customer || "",
+        ppId: row.pp_id,
+        quality: row.quality || "",
+        color: row.color || "",
+        laminationProcess: row.lamination_process || "",
+        isTrial: false,
+        dayTargetKg: dayStats.dayTargetKg || sprFlt(row.qty),
+        dayRemKg: dayStats.dayRemKg || Math.max(0, sprFlt(row.qty) - sprFlt(row.actual_production_weight_kgs)),
+        jobs: [
+          enrichJobCard({
+            pp_id: row.pp_id,
+            job_id: "1",
+            job_key: `${row.pp_id}::1`,
+            order_code: orderCode,
+            gsm: row.gsm || 0,
+            quality: row.quality || "",
+            color: row.color || "",
+            combination_label: row.combination || "",
+            lamination_process: row.lamination_process || "",
+            max_shafts: 0,
+            max_rolls: 0,
+            job_shafts_produced: 0,
+            job_rolls_produced: 0,
+            rem_shafts: 0,
+            rem_rolls: 0,
+            selectable: true,
+            quota_full: false,
+            tooltip: "Lamination order — select to create SPR",
+          }),
+        ],
+      });
+    }
+  }
+
   return [...map.values()].sort((a, b) => a.orderCode.localeCompare(b.orderCode));
 });
 
@@ -5656,6 +5742,10 @@ async function runTool(kind) {
     });
     return;
   }
+  if (kind === "lamFabricIn" || kind === "lamBoppIn" || kind === "lamOutput") {
+    await runLaminationTool(kind);
+    return;
+  }
   const ctx = await resolveToolContext();
   if (!ctx) {
     return;
@@ -5677,6 +5767,198 @@ async function runTool(kind) {
     await gsmBackfillShaftNumbers(ppId);
     await refreshSessionFromServer({ quiet: true, merge: true });
   }
+}
+
+async function resolveLaminationSprTarget() {
+  const opts = (selectedSessionSprList.value || []).filter((s) => s?.spr_name);
+  const all = opts.length ? opts : (shiftSessionSprList.value || []).filter((s) => s?.spr_name);
+  if (!all.length) {
+    frappe.msgprint(__("Confirm order selection and Create SPRs first."));
+    return null;
+  }
+  if (all.length === 1) {
+    return all[0];
+  }
+  return (await pickToolOrder(all.map((s) => ({
+    ppId: s.pp_id,
+    orderCode: s.order_code || s.pp_id,
+    spr_name: s.spr_name,
+  })))) || null;
+}
+
+async function runLaminationTool(kind) {
+  if (!isLaminationMode.value) {
+    frappe.msgprint(__("Switch Unit to Lamination first."));
+    return;
+  }
+  const target = await resolveLaminationSprTarget();
+  if (!target?.spr_name) {
+    return;
+  }
+  const sprName = target.spr_name;
+  const jobId = selectedEntries.value.find((e) => e.ppId === target.ppId)?.jobId
+    || selectedEntries.value.find((e) => e.ppId === target.ppId)?.job_id
+    || "";
+
+  if (kind === "lamOutput") {
+    const n = await new Promise((resolve) => {
+      frappe.prompt(
+        [
+          {
+            fieldname: "rolls_per_combination",
+            fieldtype: "Int",
+            label: __("Rolls per combination"),
+            reqd: 1,
+            default: 1,
+          },
+        ],
+        (v) => resolve(cint(v.rolls_per_combination)),
+        __("Lamination output rolls"),
+        __("Add rolls")
+      );
+    });
+    if (!n || n < 1) {
+      return;
+    }
+    frappe.dom.freeze(__("Adding output rolls…"));
+    try {
+      const r = await frappe.call({
+        method:
+          "production_entry.production_planning.unified_production_entry_api.gsm_lamination_add_output_rolls",
+        args: {
+          spr_name: sprName,
+          job_id: jobId || undefined,
+          rolls_per_combination: n,
+        },
+      });
+      frappe.show_alert({
+        message: __("Added {0} roll line(s)", [cint(r.message?.added || 0)]),
+        indicator: "green",
+      });
+      await refreshSessionFromServer({ quiet: true, merge: true });
+      await fetchOrders();
+    } catch (e) {
+      console.error(e);
+      frappe.msgprint(__("Could not add output rolls."));
+    } finally {
+      frappe.dom.unfreeze();
+    }
+    return;
+  }
+
+  const inputKind = kind === "lamBoppIn" ? "bopp" : "fabric";
+  const n = await new Promise((resolve) => {
+    frappe.prompt(
+      [
+        {
+          fieldname: "num_rolls",
+          fieldtype: "Int",
+          label: __("How many {0} input rolls?", [inputKind === "bopp" ? "BOPP" : "fabric"]),
+          reqd: 1,
+          default: 1,
+        },
+      ],
+      (v) => resolve(cint(v.num_rolls)),
+      __("Lamination {0} inputs", [inputKind === "bopp" ? "BOPP" : "fabric"]),
+      __("Continue")
+    );
+  });
+  if (!n || n < 1) {
+    return;
+  }
+  frappe.dom.freeze(__("Preparing input rows…"));
+  let prep;
+  try {
+    const r = await frappe.call({
+      method:
+        "production_entry.production_planning.unified_production_entry_api.gsm_lamination_prepare_input_rows",
+      args: { spr_name: sprName, input_kind: inputKind, num_rolls: n },
+    });
+    prep = r.message || {};
+  } catch (e) {
+    console.error(e);
+    frappe.dom.unfreeze();
+    frappe.msgprint(__("Could not prepare input rows."));
+    return;
+  }
+  frappe.dom.unfreeze();
+  if (prep.allowed === false) {
+    frappe.msgprint(prep.message || __("This input type is not allowed for this process."));
+    return;
+  }
+  const rows = prep.rows || [];
+  if (!rows.length) {
+    frappe.msgprint(
+      __(
+        "No {0} RM options on this SPR yet. Save FG roll lines / ensure WO BOM has batch-tracked {0}, or use Select RM batches.",
+        [inputKind]
+      )
+    );
+    return;
+  }
+  const rmOpts = prep.rm_options || [];
+  const fields = [];
+  rows.forEach((row, idx) => {
+    fields.push({ fieldtype: "Section Break", label: __("Input roll {0}", [idx + 1]) });
+    fields.push({
+      fieldname: `item_${idx}`,
+      fieldtype: "Select",
+      label: __("RM Item"),
+      options: rmOpts.map((o) => o.item_code).join("\n") || row.item_code,
+      default: row.item_code,
+      reqd: 1,
+    });
+    fields.push({
+      fieldname: `batch_${idx}`,
+      fieldtype: "Data",
+      label: __("Batch No"),
+      reqd: 1,
+    });
+    fields.push({
+      fieldname: `qty_${idx}`,
+      fieldtype: "Float",
+      label: __("Qty (Kg)"),
+      reqd: 1,
+    });
+  });
+  const d = new frappe.ui.Dialog({
+    title: __("Enter {0} input rolls ({1})", [inputKind === "bopp" ? "BOPP" : "Fabric", n]),
+    fields,
+    primary_action_label: __("Save inputs"),
+    primary_action(values) {
+      const picks = [];
+      rows.forEach((row, idx) => {
+        const ic = values[`item_${idx}`] || row.item_code;
+        const opt = rmOpts.find((o) => o.item_code === ic) || row;
+        picks.push({
+          work_order: opt.work_order || row.work_order,
+          item_code: ic,
+          batch_no: values[`batch_${idx}`],
+          qty: flt(values[`qty_${idx}`]),
+        });
+      });
+      d.hide();
+      frappe.dom.freeze(__("Saving inputs…"));
+      frappe
+        .call({
+          method:
+            "production_entry.production_planning.unified_production_entry_api.gsm_lamination_save_input_picks",
+          args: { spr_name: sprName, picks_json: JSON.stringify(picks), merge_with_other_kind: 1 },
+        })
+        .then((r) => {
+          frappe.show_alert({
+            message: __("Saved {0} input pick(s)", [cint(r.message?.count || picks.length)]),
+            indicator: "green",
+          });
+        })
+        .catch((e) => {
+          console.error(e);
+          frappe.msgprint(__("Could not save input picks."));
+        })
+        .finally(() => frappe.dom.unfreeze());
+    },
+  });
+  d.show();
 }
 
 async function resolveQualityCheckTarget() {
@@ -6792,7 +7074,16 @@ async function printQcLabel(row) {
 }
 
 function buildFetchArgs() {
-  const args = { board_slug: BOARD_SLUG, plan_name: "__all__", planned_only: 1, board_process_scope: "only_100" };
+  const lam = isLaminationUnit(filterUnit.value || headerUnit.value);
+  const args = {
+    board_slug: BOARD_SLUG,
+    plan_name: "__all__",
+    planned_only: 1,
+    board_process_scope: lam ? "lamination_only" : "only_100",
+  };
+  if (lam) {
+    args.lamination_process = ""; // both 104 + 107 via chart when empty — API may need one; fetch both client-side if needed
+  }
   if (viewScope.value === "monthly" && filterMonth.value) {
     const [year, month] = filterMonth.value.split("-");
     const lastDay = new Date(parseInt(year, 10), parseInt(month, 10), 0).getDate();
@@ -6965,7 +7256,41 @@ function enrichSelectedEntriesFromBoard() {
   }
 }
 
+async function fetchLaminationOrdersForDate(overrideDate = null) {
+  const d = overrideDate || ordersBrowseDate();
+  const unit = filterUnit.value || headerUnit.value || LAMINATION_UNIT;
+  const r = await frappe.call({
+    method: "production_entry.production_planning.unified_production_entry_api.get_gsm_lamination_order_board",
+    args: { run_date: d, unit },
+  });
+  const orders = r.message?.orders || [];
+  return orders.map((o) =>
+    normalizeChartRow({
+      pp_id: o.pp_id,
+      ppId: o.pp_id,
+      pp_docstatus: o.pp_docstatus || 1,
+      party_code: o.order_code || o.party_code,
+      order_code: o.order_code,
+      customer: o.customer,
+      unit: o.unit || LAMINATION_UNIT,
+      planned_date: o.planned_date || d,
+      quality: o.quality,
+      color: o.color,
+      qty: o.target_kg,
+      gsm: o.fabric_gsm || o.lam_gsm,
+      combination: o.combination,
+      lamination_process: o.lamination_process,
+      needs_fabric_input: o.needs_fabric_input,
+      needs_bopp_input: o.needs_bopp_input,
+      actual_production_weight_kgs: o.produced_kg,
+    })
+  );
+}
+
 async function fetchColorChartForDate(overrideDate = null) {
+  if (isLaminationUnit(filterUnit.value || headerUnit.value)) {
+    return fetchLaminationOrdersForDate(overrideDate);
+  }
   const args = { ...buildFetchArgs() };
   if (viewScope.value === "daily") {
     args.date = overrideDate || ordersBrowseDate();
@@ -7018,7 +7343,9 @@ async function fetchOrders() {
   loadingOrders.value = true;
   try {
     rawOrders.value = await fetchColorChartForDate(ordersBrowseDate());
-    await fetchPpOrdersSupplement();
+    if (!isLaminationMode.value) {
+      await fetchPpOrdersSupplement();
+    }
     if (!filterUnit.value && headerUnit.value) {
       filterUnit.value = headerUnit.value;
     }
@@ -8086,7 +8413,7 @@ async function loadGsmBoardAccess() {
     if (!scope || scope.unlimited) {
       gsmUnitFilterState.value = { pool: null, showUnitFilter: true, unitLocked: false };
     } else {
-      gsmUnitFilterState.value = applyBoardAccessUnitScope(scope, filterUnit, FABRIC_UNITS);
+      gsmUnitFilterState.value = applyBoardAccessUnitScope(scope, filterUnit, GSM_ENTRY_UNITS);
     }
   } catch (e) {
     console.warn("gsm board access", e);
