@@ -1368,7 +1368,7 @@ function add_polybag_items(frm, polybag_field, items) {
 
 // --- PROCESS WASTAGE AUTOMATION ---
 function auto_populate_process_wastage(frm) {
-    if (frm.doc.docstatus > 0) return;
+    if (cint(frm.doc.docstatus) > 0) return;
 
     let wastage_field = ['running_patty_wastage', 'wastage_details', 'custom_wastage_details', 'custom_running_patty_wastage'].find(f => frm.fields_dict[f]);
     if (!wastage_field) return;

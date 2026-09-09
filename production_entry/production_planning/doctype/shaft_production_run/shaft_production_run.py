@@ -3131,6 +3131,11 @@ class ShaftProductionRun(Document):
 	def before_submit(self):
 		self.flags._spr_force_roll_summaries = True
 		self.sync_roll_attribute_summaries()
+		# Persist wastage + core before submit so GSM path matches desk Client Scripts
+		try:
+			persist_spr_patty_and_core(self, only_if_empty=True, save_if_draft=False)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR persist patty/core before_submit:{self.name}")
 		self._validate_production_submit_readiness()
 		if spr_doc_is_mix_roll(self):
 			self.create_mix_roll_material_receipts()
@@ -12440,6 +12445,12 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		"recycled": ("recycled", "recycled_qty", "recycled_kg"),
 		"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
 		"recycle_to_next": ("recycle_to_next", "custom_recycle_to_next"),
+		"batch_no": ("batch_no", "source_roll"),
+		"item_code": ("item_code", "item"),
+		"item_name": ("item_name",),
+		"item": ("item", "item_code"),
+		"party_code": ("party_code", "order_code"),
+		"order_code": ("order_code", "party_code"),
 	}
 	out: dict = {}
 	for key, val in (logical or {}).items():
@@ -12721,29 +12732,343 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			"recycle_to_next": 0,
 			"order_code": party_code,
 			"party_code": party_code,
+			"batch_no": _cstr(getattr(item_row, "batch_no", None) or ""),
+			"item_code": _cstr(getattr(item_row, "item_code", None) or ""),
+			"item_name": _cstr(getattr(item_row, "item_name", None) or ""),
+			"item": _cstr(getattr(item_row, "item_code", None) or ""),
 		}
 	return out
+
+
+def _spr_core_details_fieldname() -> str | None:
+	meta = frappe.get_meta("Shaft Production Run")
+	if meta.has_field("custom_core_details"):
+		return "custom_core_details"
+	for df in meta.fields or []:
+		if df.fieldtype != "Table":
+			continue
+		opts = _cstr(df.options or "")
+		label = _cstr(df.label or "").lower()
+		if opts == "Shaft Core Detail" or "core detail" in label:
+			return df.fieldname
+	return None
+
+
+def _spr_map_core_item_for_inch(inch: float) -> tuple[str, str]:
+	"""Desk spr_site_core_automation.js stock core item map."""
+	w = flt(inch)
+	if w <= 63:
+		return "PC - 1005307", '63"'
+	if w <= 85:
+		return "PC - 1005158", '85"'
+	if w <= 90:
+		return "PC - 1005308", '90"'
+	if w <= 118:
+		return "PC - 1005161", '118"'
+	return "PC - 1005309", '126"'
+
+
+def _spr_selected_core_inch_from_row(row, width_inch: float) -> float:
+	"""Prefer explicit core width link / value on the roll line."""
+	raw = _cstr(
+		getattr(row, "custom_core_width_mm", None)
+		or getattr(row, "core_item_code", None)
+		or getattr(row, "core_item_name", None)
+		or ""
+	)
+	import re
+
+	m = re.search(r"(\d+(?:\.\d+)?)", raw)
+	if m:
+		val = flt(m.group(1))
+		# mm values are typically >= 1000; inch labels are 63–126
+		if val >= 200:
+			from production_entry.production_planning.unified_production_entry_api import (
+				_fabric_width_to_stock_core_inch,
+			)
+
+			# Map mm presets back roughly via fabric width helper on inches of fabric
+			return _fabric_width_to_stock_core_inch(width_inch) if width_inch > 0 else 63.0
+		if val > 0:
+			return val
+	from production_entry.production_planning.unified_production_entry_api import (
+		_fabric_width_to_stock_core_inch,
+	)
+
+	return _fabric_width_to_stock_core_inch(width_inch) if width_inch > 0 else 0.0
+
+
+def _spr_compute_core_details_from_items(spr) -> list[dict]:
+	"""Aggregate custom_core_details like desk calculate_aggregate_totals (fabric units)."""
+	unit = _spr_patty_unit_text(spr)
+	unit_u = unit.upper()
+	if any(x in unit_u for x in ("JVE", "SHEET CUTTING", "BAG")):
+		return []
+	if any(x in unit_u for x in ("REWINDING",)):
+		return []
+	if not any(u in unit_u for u in ("UNIT 1", "UNIT 2", "UNIT 3", "UNIT 4")):
+		# Still allow when unit blank but rolls look like fabric
+		if not (spr.items or []):
+			return []
+
+	totals: dict[str, dict] = {}
+	for row in spr.items or []:
+		if not _spr_is_real_roll_item_row(row):
+			continue
+		width = flt(getattr(row, "width_inch", None) or 0)
+		if width <= 0:
+			ic = _cstr(getattr(row, "item_code", "") or "")
+			if len(ic) == 16:
+				mm = flt(ic[12:16])
+				if mm > 0:
+					width = mm / 25.4
+		if width <= 0:
+			continue
+		selected_inch = _spr_selected_core_inch_from_row(row, width)
+		map_inch = selected_inch or width
+		ic, name = _spr_map_core_item_for_inch(map_inch)
+		# Prefer explicit core item on the row when present
+		explicit = _cstr(getattr(row, "core_item_code", None) or "")
+		if explicit.startswith("PC"):
+			ic = explicit
+			name = _cstr(getattr(row, "core_item_name", None) or name)
+		bucket = totals.setdefault(ic, {"core_item": ic, "item_name": name, "core_nos": 0, "quantity_kgs": 0.0, "wastage_quantity_kgs": 0.0})
+		bucket["core_nos"] += 1
+		shaft_core_kgs = flt(getattr(row, "gross_weight", None) or 0) - flt(getattr(row, "net_weight", None) or 0)
+		if shaft_core_kgs < 0:
+			shaft_core_kgs = 0.0
+		# Proportional used/wastage when fabric width < selected core inch (desk parity)
+		base_weight = shaft_core_kgs
+		if selected_inch > 0 and width > 0 and width < selected_inch and shaft_core_kgs > 0:
+			# Infer selected base from shaft_core when width ratio applied: used = (w/sel)*base ⇒ base = shaft? 
+			# Desk uses master base weight; without it use shaft_core as used kg and skip wastage.
+			bucket["quantity_kgs"] += shaft_core_kgs
+		else:
+			bucket["quantity_kgs"] += shaft_core_kgs if shaft_core_kgs > 0 else base_weight
+
+	out = []
+	for row in totals.values():
+		if cint(row.get("core_nos") or 0) <= 0:
+			continue
+		out.append(
+			{
+				"core_item": row["core_item"],
+				"item_name": row["item_name"],
+				"core_nos": cint(row["core_nos"]),
+				"quantity_kgs": flt(row["quantity_kgs"], 3),
+				"wastage_quantity_kgs": flt(row.get("wastage_quantity_kgs") or 0, 3),
+				"uom": "Kg",
+				"conversion_factor": 1,
+			}
+		)
+	return out
+
+
+def _spr_write_core_child_row(logical: dict) -> dict:
+	child_dt = "Shaft Core Detail"
+	if not frappe.db.exists("DocType", child_dt):
+		return logical
+	meta = frappe.get_meta(child_dt)
+	existing = {df.fieldname for df in meta.fields}
+	out: dict = {}
+	aliases = {
+		"core_item": ("core_item", "item_code"),
+		"item_name": ("item_name",),
+		"core_nos": ("core_nos", "quantity_nos", "qty_nos"),
+		"quantity_kgs": ("quantity_kgs", "consumed_quantity", "qty"),
+		"wastage_quantity_kgs": ("wastage_quantity_kgs", "wastage_kgs"),
+		"uom": ("uom",),
+		"conversion_factor": ("conversion_factor",),
+	}
+	for key, val in (logical or {}).items():
+		if val is None:
+			continue
+		wrote = False
+		for fn in aliases.get(key, (key,)):
+			if fn in existing:
+				out[fn] = val
+				wrote = True
+		if not wrote and key in existing:
+			out[key] = val
+	return out
+
+
+def _spr_table_row_count(spr, fieldname: str) -> int:
+	if not fieldname:
+		return 0
+	rows = getattr(spr, fieldname, None) or []
+	if rows:
+		return len(rows)
+	df = frappe.get_meta("Shaft Production Run").get_field(fieldname)
+	child_dt = _cstr(getattr(df, "options", None) or "") if df else ""
+	if not child_dt or not frappe.db.table_exists(child_dt):
+		return 0
+	return cint(
+		frappe.db.count(child_dt, {"parent": spr.name, "parenttype": "Shaft Production Run", "parentfield": fieldname})
+	)
+
+
+def persist_spr_patty_and_core(spr, *, only_if_empty: bool = True, save_if_draft: bool = True) -> dict:
+	"""Write Running Patty Wastage + Core Details onto SPR (draft save or submitted db_insert).
+
+	Submitted docs use child.db_insert only — no parent.save() — so desk forms do not go dirty.
+	During before_submit pass save_if_draft=False so rows ride on the submit write.
+	"""
+	if isinstance(spr, str):
+		spr = frappe.get_doc("Shaft Production Run", spr)
+	result = {"spr_name": spr.name, "patty_added": 0, "core_added": 0, "skipped": []}
+
+	try:
+		spr.calculate_produced_gsm(missing_only=True)
+	except Exception:
+		pass
+
+	submitted = cint(spr.docstatus) == 1
+	patty_field = _spr_patty_wastage_fieldname()
+	core_field = _spr_core_details_fieldname()
+
+	# --- Patty wastage ---
+	if patty_field:
+		existing_patty = _spr_table_row_count(spr, patty_field)
+		if only_if_empty and existing_patty > 0:
+			result["skipped"].append("patty_already_present")
+		else:
+			computed = _spr_compute_patty_wastage_by_job(spr) or {}
+			if not computed:
+				result["skipped"].append("patty_no_computed")
+			else:
+				if not only_if_empty and existing_patty > 0 and not submitted:
+					spr.set(patty_field, [])
+				idx = existing_patty
+				for logical in computed.values():
+					if flt(logical.get("wastage") or 0) <= 0:
+						continue
+					values = _spr_write_patty_child_row(logical)
+					if not values:
+						continue
+					idx += 1
+					values["idx"] = idx
+					if submitted:
+						child = spr.append(patty_field, values)
+						child.db_insert()
+					else:
+						spr.append(patty_field, values)
+					result["patty_added"] += 1
+	else:
+		result["skipped"].append("patty_field_missing")
+
+	# --- Core details ---
+	if core_field and frappe.db.exists("DocType", "Shaft Core Detail"):
+		existing_core = _spr_table_row_count(spr, core_field)
+		if only_if_empty and existing_core > 0:
+			result["skipped"].append("core_already_present")
+		else:
+			computed_core = _spr_compute_core_details_from_items(spr) or []
+			if not computed_core:
+				result["skipped"].append("core_no_computed")
+			else:
+				if not only_if_empty and existing_core > 0 and not submitted:
+					spr.set(core_field, [])
+				idx = existing_core
+				for logical in computed_core:
+					values = _spr_write_core_child_row(logical)
+					if not values:
+						continue
+					idx += 1
+					values["idx"] = idx
+					if submitted:
+						child = spr.append(core_field, values)
+						child.db_insert()
+					else:
+						spr.append(core_field, values)
+					result["core_added"] += 1
+	else:
+		result["skipped"].append("core_field_missing")
+
+	if (
+		not submitted
+		and save_if_draft
+		and (result["patty_added"] or result["core_added"])
+	):
+		spr.flags._spr_incremental_roll_save = True
+		spr.flags.ignore_version = True
+		spr.save(ignore_permissions=True)
+
+	result["status"] = "ok"
+	return result
 
 
 def sync_running_patty_wastage_from_items(
 	spr, *, persist: bool = False, refresh_zero_rows: bool = False
 ) -> bool:
-	"""Desk manual / explicit sync only — GSM does not auto-persist patty rows."""
-	return False
+	"""Persist computed running patty wastage (+ core when persist)."""
+	if not persist:
+		return False
+	res = persist_spr_patty_and_core(spr, only_if_empty=not refresh_zero_rows)
+	return bool(res.get("patty_added") or res.get("core_added"))
 
 
 @frappe.whitelist()
 def sync_spr_running_patty_wastage(spr_name, persist=1):
-	"""No-op — GSM uses read-only preview from roll lines."""
+	"""Persist patty wastage (and core) from roll lines onto the SPR."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	return {
-		"status": "ok",
-		"spr_name": spr_name,
-		"synced": False,
-		"message": _("Patty preview is computed on read — not auto-saved to SPR."),
-	}
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		res = persist_spr_patty_and_core(spr_name, only_if_empty=True)
+	res["synced"] = bool(res.get("patty_added") or res.get("core_added"))
+	return res
+
+
+@frappe.whitelist()
+def backfill_spr_patty_and_core(
+	spr_names=None,
+	run_date=None,
+	shift=None,
+	unit=None,
+	only_empty=1,
+):
+	"""Fill empty wastage/core on submitted (or draft) SPRs via DB child insert — no form dirty."""
+	import json
+
+	only_empty = cint(only_empty)
+	names = spr_names
+	if isinstance(names, str):
+		try:
+			names = json.loads(names)
+		except Exception:
+			names = [n.strip() for n in names.split(",") if n.strip()]
+	names = [_cstr(n).strip() for n in (names or []) if _cstr(n).strip()]
+
+	if not names:
+		filters = {"docstatus": 1}
+		meta = frappe.get_meta("Shaft Production Run")
+		if run_date and meta.has_field("run_date"):
+			filters["run_date"] = run_date
+		if unit:
+			unit_field = "custom_unit" if meta.has_field("custom_unit") else ("unit" if meta.has_field("unit") else None)
+			if unit_field:
+				filters[unit_field] = ["like", f"%{unit}%"]
+		if shift:
+			shift_field = "shift" if meta.has_field("shift") else ("custom_shift" if meta.has_field("custom_shift") else None)
+			if shift_field:
+				filters[shift_field] = ["like", f"%{shift}%"]
+		names = frappe.get_all(
+			"Shaft Production Run",
+			filters=filters,
+			pluck="name",
+			limit_page_length=200,
+		) or []
+
+	results = []
+	for name in names:
+		try:
+			with _spr_operation_lock(name, "write", ttl_sec=120):
+				res = persist_spr_patty_and_core(name, only_if_empty=bool(only_empty))
+			results.append(res)
+		except Exception as e:
+			results.append({"spr_name": name, "status": "error", "error": _cstr(e)})
+	return {"status": "ok", "count": len(results), "results": results}
 
 
 @frappe.whitelist()
