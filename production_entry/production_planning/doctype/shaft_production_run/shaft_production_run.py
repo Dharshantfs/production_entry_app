@@ -12690,12 +12690,36 @@ def _spr_patty_tail_weight_kg(gsm, width_inch, meter) -> float:
 	return flt((g * w * m * 0.0254) / 1000.0, 3)
 
 
-def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
-	"""Running patty wastage — same concept as desk wastage_automation.js, not roll-width GSM-diff.
+def _spr_row_first_positive(row, keys) -> float:
+	if row is None:
+		return 0.0
+	for key in keys:
+		try:
+			val = flt(_spr_row_get(row, key) if not isinstance(row, dict) else row.get(key) or 0)
+		except Exception:
+			val = 0.0
+		if val > 0:
+			return val
+	# fuzzy: any key containing fragments
+	for key in _spr_patty_row_keys(row):
+		kl = _cstr(key).lower()
+		for frag in keys:
+			fl = _cstr(frag).lower()
+			if fl and fl in kl:
+				try:
+					val = flt(_spr_row_get(row, key) if not isinstance(row, dict) else row.get(key) or 0)
+				except Exception:
+					val = 0.0
+				if val > 0:
+					return val
+	return 0.0
 
-	Prefer jobs that already have real roll lines. If items are empty (common when desk
-	filled wastage from shaft_jobs alone, or GSM grid not yet Save Row'd), fall back to
-	shaft_jobs so GSM Wastage preview matches the SPR job plan.
+
+def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
+	"""Running patty wastage — same concept as desk wastage_automation.js.
+
+	Always unions shaft_jobs with roll-line jobs. Resolves meter/GSM/shafts from job + rolls
+	aggressively so submitted repairs do not leave shafts>0 with meter/qty=0.
 	"""
 	if not _spr_patty_is_valid_unit(spr):
 		return {}
@@ -12714,13 +12738,12 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			continue
 		job_rolls.setdefault(jid, []).append(it)
 
-	# No saved rolls yet — still compute from Available Jobs (shafts × meters × trim).
-	if not job_rolls:
-		for sj in spr.shaft_jobs or []:
-			jid = _cstr(_spr_job_id(sj) or getattr(sj, "job", None) or getattr(sj, "idx", None) or "")
-			if not jid:
-				continue
-			job_rolls.setdefault(jid, [])
+	# Always include Available Jobs (even when some rolls exist) so multi-job SPRs repair fully.
+	for sj in spr.shaft_jobs or []:
+		jid = _cstr(_spr_job_id(sj) or getattr(sj, "job", None) or getattr(sj, "idx", None) or "")
+		if not jid:
+			continue
+		job_rolls.setdefault(jid, job_rolls.get(jid) or [])
 
 	if not job_rolls:
 		return {}
@@ -12730,42 +12753,76 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 		item_row = rolls[0] if rolls else None
 		job_row = _spr_patty_job_row(spr, jid)
 
-		specs = _gsm_resolve_item_row_display_specs(item_row) if item_row is not None else {
-			"quality": "",
-			"color": "",
-			"gsm": 0,
-			"item_code": "",
-			"item_name": "",
-		}
+		specs = (
+			_gsm_resolve_item_row_display_specs(item_row)
+			if item_row is not None
+			else {"quality": "", "color": "", "gsm": 0, "item_code": "", "item_name": ""}
+		)
+		if job_row and (not specs.get("quality") or not specs.get("color") or not specs.get("gsm")):
+			job_specs = {
+				"quality": _cstr(_spr_row_get(job_row, "quality") or ""),
+				"color": _cstr(_spr_row_get(job_row, "color") or _spr_row_get(job_row, "colour") or ""),
+				"gsm": cint(_spr_row_get(job_row, "gsm") or 0),
+			}
+			if not specs.get("quality"):
+				specs["quality"] = job_specs["quality"]
+			if not specs.get("color"):
+				specs["color"] = job_specs["color"]
+			if not specs.get("gsm"):
+				specs["gsm"] = job_specs["gsm"]
+
 		gsm = cint(
 			(_spr_row_get(job_row, "gsm") if job_row else 0)
 			or specs.get("gsm")
 			or (getattr(item_row, "gsm", 0) if item_row is not None else 0)
 			or 0
 		)
+		if gsm <= 0 and item_row is not None:
+			ic = _cstr(getattr(item_row, "item_code", "") or "")
+			if ic:
+				gsm = cint(_spr_resolve_roll_line_specs_from_item_code(ic).get("gsm") or 0)
+
 		meter = 0.0
 		if job_row:
-			for key in _spr_patty_row_keys(job_row):
-				kl = _cstr(key).lower()
-				if "meter" in kl or kl in ("meter_roll", "meter__roll", "meter_per_roll"):
-					meter = flt(_spr_row_get(job_row, key) or 0)
-					if meter > 0:
-						break
-		if meter <= 0 and item_row is not None:
-			meter = flt(
-				getattr(item_row, "meter_roll", 0)
-				or getattr(item_row, "produced_length_mtrs", 0)
-				or getattr(item_row, "length", 0)
-				or getattr(item_row, "custom_meter_roll", 0)
-				or 0
+			meter = _spr_row_first_positive(
+				job_row,
+				(
+					"meter__roll",
+					"meter_per_roll",
+					"meter_roll",
+					"meter",
+					"custom_meter_roll",
+					"custom_meter_per_roll",
+					"produced_length_mtrs",
+				),
 			)
+		if meter <= 0 and rolls:
+			# Prefer ordered/produced length on any roll of this job
+			for r in rolls:
+				meter = _spr_row_first_positive(
+					r,
+					(
+						"meter_roll",
+						"meter__roll",
+						"meter_per_roll",
+						"produced_length_mtrs",
+						"custom_produced_length_mtrs",
+						"length",
+						"custom_meter_roll",
+						"ordered_length_mtrs",
+					),
+				)
+				if meter > 0:
+					break
+
 		shafts = 0
 		if job_row:
-			for key in _spr_patty_row_keys(job_row):
-				if "shaft" in _cstr(key).lower():
-					shafts = cint(_spr_row_get(job_row, key) or 0)
-					if shafts > 0:
-						break
+			shafts = cint(
+				_spr_row_first_positive(
+					job_row, ("no_of_shafts", "no_of_shaft", "shafts", "custom_no_of_shafts")
+				)
+				or 0
+			)
 		if shafts <= 0 and rolls:
 			shafts = max(
 				cint(getattr(r, "custom_no_of_shaft", 0) or getattr(r, "no_of_shaft", 0) or 0)
@@ -12775,12 +12832,18 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			shafts = 1
 
 		width = _spr_patty_trim_width_inch(spr, job_row, gsm, item_row)
+		if width <= 0:
+			# Unit base alone (10/12/14/15) — desk still uses this when combo missing
+			width = _spr_patty_unit_base_width_inch(spr, gsm)
 		if width <= 0 and item_row is not None:
 			ic = _cstr(getattr(item_row, "item_code", "") or "")
-			if len(ic) == 16:
+			if len(ic) >= 16:
 				mm = flt(ic[12:16])
 				if mm > 0:
 					width = mm / 25.4
+			if width <= 0:
+				width = flt(getattr(item_row, "width_inch", 0) or getattr(item_row, "width", 0) or 0)
+
 		tail = _spr_patty_tail_weight_kg(gsm, width, meter)
 		if tail <= 0:
 			continue
@@ -12790,23 +12853,12 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			or (getattr(job_row, "party_code", None) if job_row else None)
 			or ""
 		)
-		# Desk formula: wastage_qty = shafts × one-tail; recycled = (shafts-1)×tail; net = one tail
 		wastage_qty = flt(shafts * tail, 3)
 		recycled_qty = flt(((shafts - 1) * tail) if shafts > 1 else 0.0, 3)
 		out[jid] = {
 			"job_id": jid,
-			"quality": _cstr(
-				specs.get("quality")
-				or (_spr_row_get(job_row, "quality") if job_row else None)
-				or (getattr(job_row, "quality", None) if job_row else "")
-				or ""
-			),
-			"color": _cstr(
-				specs.get("color")
-				or (_spr_row_get(job_row, "color") if job_row else None)
-				or (getattr(job_row, "color", None) if job_row else "")
-				or ""
-			),
+			"quality": _cstr(specs.get("quality") or ""),
+			"color": _cstr(specs.get("color") or ""),
 			"gsm": gsm,
 			"width_inch": width,
 			"width": width,
@@ -13202,45 +13254,142 @@ def persist_spr_patty_and_core(
 			computed = _spr_compute_patty_wastage_by_job(spr) or {}
 			if not computed:
 				result["skipped"].append("patty_no_computed")
+				result["compute_debug"] = {
+					"unit": _cstr(spr.get("custom_unit") or spr.get("unit") or ""),
+					"jobs": len(spr.shaft_jobs or []),
+					"items": len([it for it in (spr.items or []) if _spr_is_real_roll_item_row(it)]),
+				}
 			else:
-				if (not only_if_empty or zero_broken) and existing_patty > 0:
-					if submitted:
-						# Submitted: replace broken zero rows via delete + db_insert
-						for old in list(spr.get(patty_field) or []):
-							try:
-								frappe.delete_doc(
-									old.doctype, old.name, force=1, ignore_permissions=True, delete_permanently=True
-								)
-							except Exception:
-								frappe.db.sql(
-									f"DELETE FROM `tab{old.doctype}` WHERE name=%s",
-									(old.name,),
-								)
-						spr.set(patty_field, [])
-						existing_patty = 0
-					else:
-						spr.set(patty_field, [])
-						existing_patty = 0
-				idx = existing_patty
-				for logical in computed.values():
+				existing_rows = list(spr.get(patty_field) or [])
+				# Match computed → existing by job_id, then leftover by position
+				matched_existing = set()
+				computed_list = list(computed.values())
+				assignments = []  # (logical, existing_row|None)
+				for logical in computed_list:
+					jid = _cstr(logical.get("job_id") or "")
+					found = None
+					if jid:
+						for row in existing_rows:
+							rn = _cstr(getattr(row, "name", None) or "")
+							if rn in matched_existing:
+								continue
+							row_job = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+							if row_job and _spr_job_keys_match(row_job, jid):
+								found = row
+								matched_existing.add(rn)
+								break
+					assignments.append((logical, found))
+				# Position-match remaining existing zero rows to unmatched computed
+				unmatched_idx = 0
+				for i, (logical, found) in enumerate(assignments):
+					if found is not None:
+						continue
+					while unmatched_idx < len(existing_rows):
+						row = existing_rows[unmatched_idx]
+						unmatched_idx += 1
+						rn = _cstr(getattr(row, "name", None) or "")
+						if rn in matched_existing:
+							continue
+						assignments[i] = (logical, row)
+						matched_existing.add(rn)
+						break
+
+				idx = 0
+				for logical, existing in assignments:
 					if flt(logical.get("wastage") or logical.get("wastage_qty") or 0) <= 0:
 						continue
 					jid = _cstr(logical.get("job_id") or "")
 					flag = saved_flags.get(jid, cint(logical.get("recycle_to_next") or 0))
+					if existing is not None and not flag:
+						flag = cint(
+							getattr(existing, "recycle_to_next", None)
+							or getattr(existing, "custom_recycle_to_next", None)
+							or 0
+						)
 					logical = _spr_apply_patty_recycle_net(logical, flag)
 					values = _spr_write_patty_child_row(logical)
 					if not values:
 						continue
 					idx += 1
 					values["idx"] = idx
-					if submitted:
+					if existing is not None and submitted:
+						for k, v in values.items():
+							if k in ("name", "parent", "parenttype", "parentfield", "doctype"):
+								continue
+							try:
+								existing.set(k, v)
+								existing.db_set(k, v, update_modified=False)
+							except Exception:
+								try:
+									frappe.db.set_value(
+										existing.doctype, existing.name, k, v, update_modified=False
+									)
+								except Exception:
+									pass
+						result["patty_added"] += 1
+					elif existing is not None and not submitted:
+						for k, v in values.items():
+							if k in ("name", "parent", "parenttype", "parentfield", "doctype"):
+								continue
+							try:
+								existing.set(k, v)
+							except Exception:
+								setattr(existing, k, v)
+						result["patty_added"] += 1
+					elif submitted:
 						child = spr.append(patty_field, values)
 						child.db_insert()
+						result["patty_added"] += 1
 					else:
 						spr.append(patty_field, values)
-					result["patty_added"] += 1
+						result["patty_added"] += 1
+
+				# Drop leftover existing rows that are still zero after repair (submitted)
+				if submitted and zero_broken:
+					for row in existing_rows:
+						rn = _cstr(getattr(row, "name", None) or "")
+						if rn in matched_existing:
+							continue
+						row_dict = row.as_dict() if hasattr(row, "as_dict") else {}
+						if _spr_patty_row_wastage_kg(row_dict) > 0:
+							continue
+						try:
+							frappe.delete_doc(
+								row.doctype, row.name, force=1, ignore_permissions=True, delete_permanently=True
+							)
+						except Exception:
+							try:
+								frappe.db.sql(f"DELETE FROM `tab{row.doctype}` WHERE name=%s", (row.name,))
+							except Exception:
+								pass
+				elif (not only_if_empty or zero_broken) and not submitted and not any(
+					a[1] is not None for a in assignments
+				):
+					# Draft with no matchable rows — clear and rewrite fresh
+					spr.set(patty_field, [])
+					idx = 0
+					for logical in computed_list:
+						if flt(logical.get("wastage") or logical.get("wastage_qty") or 0) <= 0:
+							continue
+						jid = _cstr(logical.get("job_id") or "")
+						flag = saved_flags.get(jid, 0)
+						logical = _spr_apply_patty_recycle_net(logical, flag)
+						values = _spr_write_patty_child_row(logical)
+						if not values:
+							continue
+						idx += 1
+						values["idx"] = idx
+						spr.append(patty_field, values)
+						result["patty_added"] += 1
 	else:
 		result["skipped"].append("patty_field_missing")
+
+	# Reload submitted doc so recycled sync sees in-place db_set values
+	if submitted and result.get("patty_added") and spr.name:
+		try:
+			spr = frappe.get_doc("Shaft Production Run", spr.name)
+		except Exception:
+			pass
 
 	# --- Recycled wastage details (auto from patty) ---
 	try:
@@ -13483,8 +13632,26 @@ def backfill_spr_patty_and_core(
 @frappe.whitelist()
 def repair_submitted_spr_wastage_and_recycle(spr_names=None, run_date=None, unit=None, limit=100):
 	"""One-shot: restore wastage qty + Recycled Wastage Details on submitted SPRs that are broken/empty."""
+	import json
+
+	names = spr_names
+	if isinstance(names, str):
+		try:
+			names = json.loads(names)
+		except Exception:
+			names = [n.strip() for n in names.split(",") if n.strip()]
+	names = [_cstr(n).strip() for n in (names or []) if _cstr(n).strip()]
+	# Always include known broken docs from the floor
+	for known in (
+		"SPR-2026-00809",
+		"SPR-2026-00802",
+		"SPR-2026-00803",
+		"SPR-2026-00799",
+	):
+		if known not in names and frappe.db.exists("Shaft Production Run", known):
+			names.append(known)
 	return backfill_spr_patty_and_core(
-		spr_names=spr_names,
+		spr_names=names or None,
 		run_date=run_date,
 		unit=unit,
 		only_empty=0,

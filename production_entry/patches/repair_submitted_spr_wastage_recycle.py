@@ -24,7 +24,12 @@ def execute():
 	) or []
 
 	# Always include known broken docs from the GSM wastage-zero incident
-	for known in ("SPR-2026-00802", "SPR-2026-00803", "SPR-2026-00799"):
+	for known in (
+		"SPR-2026-00809",
+		"SPR-2026-00802",
+		"SPR-2026-00803",
+		"SPR-2026-00799",
+	):
 		if frappe.db.exists("Shaft Production Run", known):
 			names.append(known)
 
