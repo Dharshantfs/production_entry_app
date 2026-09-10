@@ -805,4 +805,11 @@ function calculate_aggregate_totals(frm) {
 
     // Re-force visibility after refresh (Frappe can re-hide during refresh_field)
     force_unhide_core_table(frm);
+    if (changed && cint(frm.doc.docstatus) === 0) {
+        if (typeof spr_auto_save_draft_if_dirty === 'function') {
+            spr_auto_save_draft_if_dirty(frm, { delay: 1600, quiet: true, silentFail: true });
+        } else if (window.production_entry && typeof window.production_entry.spr_auto_save_draft_if_dirty === 'function') {
+            window.production_entry.spr_auto_save_draft_if_dirty(frm, { delay: 1600, quiet: true, silentFail: true });
+        }
+    }
 }

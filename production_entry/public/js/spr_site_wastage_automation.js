@@ -1,6 +1,18 @@
 // Wastage Automation for Shaft Production Run
 // DocType: Shaft Production Run
 
+/** Ask desk SPR JS to auto-save so roll/wastage edits do not leave Not Saved. */
+function spr_request_draft_autosave_after_wastage(frm) {
+    if (!frm || cint(frm.doc.docstatus) > 0) return;
+    if (typeof spr_auto_save_draft_if_dirty === 'function') {
+        spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true });
+        return;
+    }
+    if (window.production_entry && typeof window.production_entry.spr_auto_save_draft_if_dirty === 'function') {
+        window.production_entry.spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true });
+    }
+}
+
 /** Resolve Running Patty child fieldnames safely (site field names vary). */
 function resolve_patty_wastage_fields(wast_fields) {
     wast_fields = wast_fields || [];
@@ -739,6 +751,7 @@ function add_incremental_wastage(frm, item_row) {
     update_wastage_label_actions(frm, wastage_field);
     frm.refresh_field(wastage_field);
     update_recycled_table(frm);
+    spr_request_draft_autosave_after_wastage(frm);
 }
 
 function patty_wastage_rows_are_zero(rows) {
@@ -862,6 +875,7 @@ function recalculate_all_wastage(frm) {
     update_wastage_label_actions(frm, wastage_field);
     frm.refresh_field(wastage_field);
     update_recycled_table(frm);
+    spr_request_draft_autosave_after_wastage(frm);
 }
 
 function update_recycled_table(frm) {

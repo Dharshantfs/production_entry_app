@@ -423,9 +423,9 @@ function spr_finish_create_entry(frm, opts) {
 		}
 	}
 	spr_enforce_roll_line_grid_policy(frm);
-	if (!opts.serverSaved) {
-		sprAutoSaveAfterCreateEntry(frm, { heavy: heavyGrid });
-	}
+	// Server Create Entry already saved rolls; wastage/core client scripts still dirty the form —
+	// always auto-save so the indicator does not stay Not Saved after every roll.
+	sprAutoSaveAfterCreateEntry(frm, { heavy: heavyGrid, quiet: true });
 	if (opts.alertMsg) {
 		frappe.show_alert({ message: opts.alertMsg, indicator: 'green' });
 	}
@@ -3024,6 +3024,145 @@ function spr_mark_just_saved(frm) {
 	frm._spr_just_saved = Date.now();
 }
 
+/**
+ * After every roll entry / Save Row / wastage-core client sync, keep draft SPR Saved.
+ * Debounced so rapid Create Entry / GSM updates do not stack saves.
+ */
+function spr_auto_save_draft_if_dirty(frm, opts) {
+	opts = opts || {};
+	if (!frm || !frm.doc || frm.is_new() || cint(frm.doc.docstatus) !== 0) {
+		return;
+	}
+	// Avoid save↔refresh loops when client scripts re-touch grids right after a successful save
+	if (opts.skipIfJustSaved && spr_should_skip_desk_auto_sync(frm)) {
+		return;
+	}
+	if (frm._spr_create_entry_in_progress || frm.__spr_wastage_repairing) {
+		const retryDelay = Math.max(cint(opts.delay) || 1200, 1500);
+		if (frm.__spr_auto_save_timer) {
+			clearTimeout(frm.__spr_auto_save_timer);
+		}
+		frm.__spr_auto_save_timer = setTimeout(function () {
+			frm.__spr_auto_save_timer = null;
+			spr_auto_save_draft_if_dirty(frm, opts);
+		}, retryDelay);
+		return;
+	}
+	const delay = opts.delay != null ? cint(opts.delay) : 1200;
+	if (frm.__spr_auto_save_timer) {
+		clearTimeout(frm.__spr_auto_save_timer);
+	}
+	frm.__spr_auto_save_timer = setTimeout(function () {
+		frm.__spr_auto_save_timer = null;
+		if (!frm || !frm.doc || frm.is_new() || cint(frm.doc.docstatus) !== 0) {
+			return;
+		}
+		if (frm.__spr_auto_save_in_progress || frm._spr_create_entry_in_progress) {
+			return;
+		}
+		if (typeof frm.is_dirty !== 'function' || !frm.is_dirty()) {
+			return;
+		}
+		if (!opts.force && typeof spr_items_grid_is_editing === 'function' && spr_items_grid_is_editing(frm)) {
+			spr_auto_save_draft_if_dirty(frm, $.extend({}, opts, { delay: 900 }));
+			return;
+		}
+		frm.__spr_auto_save_in_progress = true;
+		const quiet = !!opts.quiet;
+		const p = frm.save();
+		const doneOk = function () {
+			frm.__spr_auto_save_in_progress = false;
+			spr_mark_just_saved(frm);
+			if (!quiet) {
+				frappe.show_alert({ message: __('Shaft Production Run saved'), indicator: 'green' }, 2);
+			}
+			try {
+				spr_schedule_grid_ui_debounced(frm, { delay: 400 });
+			} catch (e) {
+				/* ignore */
+			}
+		};
+		const doneErr = function (err) {
+			frm.__spr_auto_save_in_progress = false;
+			if (opts.silentFail) {
+				return;
+			}
+			frappe.msgprint({
+				title: __('Save failed'),
+				indicator: 'red',
+				message: (err && err.message) || __('Could not auto-save Shaft Production Run after roll entry.'),
+			});
+		};
+		if (p && typeof p.then === 'function') {
+			p.then(doneOk).catch(doneErr);
+		} else {
+			frm.__spr_auto_save_in_progress = false;
+		}
+	}, delay);
+}
+
+if (typeof window !== 'undefined') {
+	window.production_entry = window.production_entry || {};
+	window.production_entry.spr_auto_save_draft_if_dirty = spr_auto_save_draft_if_dirty;
+}
+
+function sprAutoSaveAfterCreateEntry(frm, opts) {
+	opts = opts || {};
+	// Always try — even large grids; roll entry must not leave Not Saved.
+	spr_auto_save_draft_if_dirty(
+		frm,
+		$.extend(
+			{
+				delay: opts.heavy ? 2000 : 1000,
+				quiet: true,
+				silentFail: false,
+			},
+			opts
+		)
+	);
+}
+
+/** Keep open SPR form in sync when GSM / API saves rolls on the server. */
+function spr_bind_external_roll_save_realtime(frm) {
+	if (typeof window !== 'undefined' && window._spr_realtime_roll_listener_bound) {
+		return;
+	}
+	if (typeof window !== 'undefined') {
+		window._spr_realtime_roll_listener_bound = true;
+	}
+	frappe.realtime.on('shaft_production_run_updated', function (data) {
+		const cur = cur_frm;
+		if (!cur || cur.doctype !== 'Shaft Production Run' || !cur.doc || !cur.doc.name) {
+			return;
+		}
+		if (!data || data.name !== cur.doc.name) {
+			return;
+		}
+		if (cint(cur.doc.docstatus) !== 0) {
+			return;
+		}
+		if (cur.__spr_auto_save_in_progress || cur._spr_create_entry_in_progress) {
+			return;
+		}
+		// External save already persisted — reload so the desk indicator stays Saved.
+		if (typeof cur.is_dirty === 'function' && cur.is_dirty()) {
+			spr_auto_save_draft_if_dirty(cur, { delay: 400, force: true, quiet: true });
+			return;
+		}
+		cur._spr_light_reload = true;
+		const reload = cur.reload_doc();
+		const mark = function () {
+			cur._spr_light_reload = false;
+			spr_mark_just_saved(cur);
+		};
+		if (reload && typeof reload.then === 'function') {
+			reload.then(mark).catch(mark);
+		} else {
+			mark();
+		}
+	});
+}
+
 function sprLaminationGsmFromItemCode(itemCode) {
 	const code = ((itemCode || '') + '').trim().toUpperCase();
 	if (!code || code.indexOf('-') === -1) {
@@ -3303,42 +3442,6 @@ function invokeAppendRollLinesViaServer(
 			frm._spr_create_entry_in_progress = false;
 		},
 	});
-}
-
-function sprAutoSaveAfterCreateEntry(frm, opts) {
-	opts = opts || {};
-	if (!frm || frm.is_new() || frm.doc.docstatus !== 0) return;
-	if (!frm.is_dirty || !frm.is_dirty()) return;
-	// Large grids: skip autosave — full validate() on 50+ rows is the main lag source.
-	if (opts.heavy) {
-		return;
-	}
-	// Debounce auto-save bursts when Create Entry appends many rows.
-	if (frm.__spr_auto_save_timer) {
-		clearTimeout(frm.__spr_auto_save_timer);
-	}
-	frm.__spr_auto_save_timer = setTimeout(function () {
-		if (frm.__spr_auto_save_in_progress) return;
-		if (!frm.is_dirty || !frm.is_dirty()) return;
-		frm.__spr_auto_save_in_progress = true;
-		const p = frm.save();
-		if (p && typeof p.then === 'function') {
-			p.then(function () {
-				frm.__spr_auto_save_in_progress = false;
-				spr_schedule_grid_ui_debounced(frm, { delay: 400 });
-			}).catch(function (err) {
-				frm.__spr_auto_save_in_progress = false;
-				frappe.msgprint({
-					title: __('Save failed'),
-					indicator: 'red',
-					message: err && err.message ? err.message : __('Could not save Shaft Production Run.'),
-				});
-			});
-		} else {
-			frm.__spr_auto_save_in_progress = false;
-		}
-		frm.__spr_auto_save_timer = null;
-	}, 4000); // 4-second debounce to reduce lag when adding multiple rows
 }
 
 /** Sum job-level planned weights into header when shaft rows have explicit totals; keep PP/WO value when jobs are blank. */
@@ -4041,6 +4144,16 @@ frappe.ui.form.on('Shaft Production Run', {
 
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 		spr_persist_or_clear_submitted_client_dirty(frm);
+		spr_bind_external_roll_save_realtime(frm);
+		// Draft: wastage/core client scripts often rewrite child tables after refresh → Not Saved.
+		if (spr_is_draft_spr(frm) && !frm.is_new()) {
+			spr_auto_save_draft_if_dirty(frm, {
+				delay: 2800,
+				quiet: true,
+				silentFail: true,
+				skipIfJustSaved: true,
+			});
+		}
 	},
 
 	onload_post_render: function (frm) {
@@ -6915,7 +7028,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 						frm.doc.modified = r.message.modified;
 					}
 				}
-				frappe.show_alert({ message: __('Row state updated.'), indicator: 'green' }, 2);
+				frappe.show_alert({ message: __('Row saved.'), indicator: 'green' }, 2);
+				// Persist wastage/core + clear Not Saved after every Save Row
+				spr_auto_save_draft_if_dirty(frm, { delay: 500, force: true, quiet: true });
 			},
 		});
 	},
