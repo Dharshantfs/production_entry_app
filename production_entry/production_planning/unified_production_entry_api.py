@@ -4922,32 +4922,15 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 		"meter__roll",
 	),
 	"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
-	"wastage": (
-		"wastage",
-		"wastage_qty",
-		"wastage_qt",
-		"net_wastage",
-		"net_wastage_kg",
-		"net_weight",
-		"available_kg",
-		"available",
-		"available_qty",
-	),
-	"wastage_qty": ("wastage_qty", "wastage_qt", "wastage", "net_wastage", "net_wastage_kg"),
-	"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage"),
+	# NEVER cross-map wastage ↔ net_wastage: Recycle to Next sets net=0 and must not wipe qty.
+	"wastage": ("wastage", "wastage_qty", "wastage_qt"),
+	"wastage_qty": ("wastage_qty", "wastage_qt", "wastage"),
+	"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs"),
 	"recycled": ("recycled", "recycled_qty", "recycled_kg"),
 	"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
-	"available": ("available", "available_qty", "available_kg", "wastage", "net_wastage"),
+	"available": ("available", "available_qty", "available_kg"),
 	"available_qty": ("available_qty", "available", "available_kg"),
-	"available_kg": (
-		"available_kg",
-		"available",
-		"available_qty",
-		"wastage",
-		"wastage_qty",
-		"recycled",
-		"recycled_qty",
-	),
+	"available_kg": ("available_kg", "available", "available_qty"),
 	"batch_no": ("batch_no", "batch", "source_roll"),
 	"source_roll": ("source_roll", "batch_no", "batch"),
 	"source_roll_waste_row": ("source_roll_waste_row", "roll_waste_row", "spr_item_name"),
@@ -5048,6 +5031,7 @@ def _gsm_width_fieldnames(row_or_doctype) -> list[str]:
 def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
 	"""Write child row values using whichever fieldnames exist on the live child DocType."""
 	existing = _gsm_child_writable_fields(child_doctype)
+	wastage_fields = {fn for fn in ("wastage", "wastage_qty", "wastage_qt") if fn in existing}
 	out: dict = {}
 	for logical_key, val in (logical or {}).items():
 		if val is None:
@@ -5059,11 +5043,18 @@ def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
 		aliases = _GSM_CHILD_FIELD_ALIASES.get(logical_key, (logical_key,))
 		wrote = False
 		for fn in aliases:
-			if fn in existing:
-				out[fn] = val
-				wrote = True
+			if fn not in existing:
+				continue
+			# Recycle to Next sets net_wastage=0 — never write that onto wastage qty columns
+			if logical_key in ("net_wastage",) and fn in wastage_fields:
+				continue
+			out[fn] = val
+			wrote = True
 		if not wrote and logical_key in existing:
-			out[logical_key] = val
+			if logical_key in ("net_wastage",) and logical_key in wastage_fields:
+				pass
+			else:
+				out[logical_key] = val
 	width_out = flt((logical or {}).get("width_inch") or (logical or {}).get("width") or out.get("width_inch") or 0)
 	if width_out > 0:
 		for fn in _gsm_width_fieldnames(child_doctype):
@@ -5839,6 +5830,7 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 		_spr_patty_wastage_fieldname,
 		_spr_sync_recycled_wastage_from_patty,
 		_spr_write_patty_child_row,
+		persist_spr_patty_and_core,
 	)
 
 	spr_name = _cstr(spr_name).strip()
@@ -5939,6 +5931,14 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 				spr.append(field, other_vals)
 
 		_spr_sync_recycled_wastage_from_patty(spr)
+
+		# Full rewrite so SPR tables match GSM compute (repairs prior zeroed width/meter/qty)
+		try:
+			persist_spr_patty_and_core(
+				spr, only_if_empty=False, save_if_draft=False, refresh_zero_rows=True
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"GSM recycle persist patty:{spr_name}")
 
 		spr.flags._spr_incremental_roll_save = True
 		spr.save(ignore_permissions=True)

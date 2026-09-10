@@ -2849,9 +2849,20 @@ class ShaftProductionRun(Document):
 			self.flags.ignore_permissions = True
 			return super().submit()
 
-	def _spr_sync_patty_on_gsm_roll_save(self, submitting: bool, incremental: bool) -> None:
-		"""Disabled — GSM uses read-only patty preview; desk SPR owns saved patty rows."""
-		return
+	def _spr_sync_patty_on_gsm_roll_save(self, submitting: bool = False, incremental: bool = True) -> None:
+		"""Rewrite Running Patty + Recycled from rolls so SPR matches GSM wastage preview."""
+		if cint(self.docstatus) != 0 and not submitting:
+			return
+		try:
+			persist_spr_patty_and_core(
+				self,
+				only_if_empty=False,
+				save_if_draft=False,
+				refresh_zero_rows=True,
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR sync patty on GSM roll save:{self.name}")
+
 
 	def _validate_production_submit_readiness(self):
 		"""Hard gates before manufacture posting — batch numbers, WO mapping, no cross-SPR batch reuse."""
@@ -3135,7 +3146,7 @@ class ShaftProductionRun(Document):
 		# Zero-qty rows (shafts set / recycle checked but qty=0) are auto-repaired.
 		try:
 			persist_spr_patty_and_core(
-				self, only_if_empty=True, save_if_draft=False, refresh_zero_rows=False
+				self, only_if_empty=False, save_if_draft=False, refresh_zero_rows=True
 			)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR persist patty/core before_submit:{self.name}")
@@ -12561,8 +12572,31 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 	out: dict = {}
 	wastage_fn = live.get("wastage_qty")
 	net_fn = live.get("net_wastage")
-	# If discovery collapsed net_wastage onto the same field as wastage_qty, never write
-	# net (which becomes 0 on Recycle to Next) through that shared field.
+	# Fields that must never receive net_wastage (especially 0 on Recycle to Next)
+	wastage_blocklist = {
+		fn
+		for fn in (
+			wastage_fn,
+			"wastage",
+			"wastage_qty",
+			"wastage_qt",
+		)
+		if fn
+	}
+	# Synonym groups: write every live field that exists so grid columns never stay 0
+	# while a sibling alias was updated.
+	synonym_groups = {
+		"width_inch": ("width_inch", "width", "w", "custom_width_inch", "custom_width", "patty_width"),
+		"width": ("width", "width_inch", "w", "custom_width_inch", "custom_width", "patty_width"),
+		"meter_per_roll": ("meter_per_roll", "meter__roll", "meter_roll", "meter"),
+		"wastage": ("wastage_qty", "wastage_qt", "wastage"),
+		"wastage_qty": ("wastage_qty", "wastage_qt", "wastage"),
+		"recycled": ("recycled_qty", "recycled", "recycled_kg"),
+		"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
+		"one_shaft_gross": ("one_shaft_gross", "one_shaft_wastage", "one_shaft", "one_shaft_weight"),
+		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
+		"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs"),
+	}
 	net_collides = bool(net_fn and wastage_fn and net_fn == wastage_fn)
 	for key in ordered_keys:
 		val = (logical or {}).get(key)
@@ -12570,29 +12604,29 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 			continue
 		if isinstance(val, str) and not val.strip():
 			continue
-		# Prefer single discovered live field to avoid alias collisions
-		live_fn = live_for_logical.get(key)
 		if key in ("net_wastage",) and net_collides:
-			# Keep wastage_qty intact; skip writing net when fields collide
 			continue
+
+		targets: list[str] = []
+		live_fn = live_for_logical.get(key)
 		if live_fn and live_fn in existing:
-			# Never let net_wastage overwrite wastage_qty field
-			if key in ("net_wastage",) and wastage_fn and live_fn == wastage_fn:
+			targets.append(live_fn)
+		for fn in synonym_groups.get(key, ()) + static_aliases.get(key, (key,)):
+			if not fn or fn not in existing:
 				continue
-			out[live_fn] = val
-			continue
-		wrote = False
-		for fn in static_aliases.get(key, (key,)):
-			if fn in existing:
-				if key in ("net_wastage",) and wastage_fn and fn == wastage_fn:
+			if fn not in targets:
+				targets.append(fn)
+		if key in existing and key not in targets:
+			targets.append(key)
+
+		for fn in targets:
+			if key in ("net_wastage",) and fn in wastage_blocklist:
+				continue
+			if key in ("wastage", "wastage_qty") and net_fn and fn == net_fn and fn not in wastage_blocklist:
+				# Don't write wastage qty onto the net field when they differ
+				if fn == net_fn and wastage_fn and fn != wastage_fn:
 					continue
-				out[fn] = val
-				wrote = True
-				break  # one field only — avoid net/wastage collision via multi-write
-		if not wrote and key in existing:
-			if key in ("net_wastage",) and wastage_fn and key == wastage_fn:
-				continue
-			out[key] = val
+			out[fn] = val
 	return out
 
 
@@ -14059,6 +14093,11 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 			roll_payload.pop("work_order", None)
 		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
 		spr._validate_no_duplicate_roll_batches()
+		# Keep Running Patty / Recycled in sync with GSM compute (not zero desk leftovers)
+		try:
+			spr._spr_sync_patty_on_gsm_roll_save(submitting=False, incremental=True)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"GSM roll save patty sync:{spr_name}")
 		spr.flags._spr_incremental_roll_save = True
 		spr.save(ignore_permissions=True)
 		# Additive: push bay to Batch immediately on Save Row (Batch.custom_bay already exists)

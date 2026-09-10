@@ -231,11 +231,18 @@ frappe.ui.form.on('Shaft Production Run', {
             var unit_val = String(unit).trim().toUpperCase();
             var is_valid_unit = ["UNIT 1", "UNIT 2", "UNIT 3", "UNIT 4"].some(u => unit_val.includes(u));
 
-            if (wastage_field && frm.doc.items && frm.doc.items.length > 0) {
-                if (!frm.doc[wastage_field] || frm.doc[wastage_field].length === 0) {
-                    if (is_valid_unit) {
+            if (wastage_field && frm.doc.items && frm.doc.items.length > 0 && is_valid_unit) {
+                var rows = frm.doc[wastage_field] || [];
+                if (!rows.length) {
+                    // Prefer server compute (same as GSM) so Width/Meter/Qty match the dialog
+                    if (frm.doc.name && !frm.is_new()) {
+                        repair_spr_wastage_from_server(frm);
+                    } else {
                         calculate_wastage_automation(frm, true);
                     }
+                } else if (patty_wastage_rows_are_zero(rows)) {
+                    // Recycle / GSM left shafts populated but qty/width/meter at 0 — restore
+                    repair_spr_wastage_from_server(frm);
                 }
             }
         }, 1500);
@@ -524,9 +531,31 @@ function add_incremental_wastage(frm, item_row) {
     }
 
     // Calculate One Tail Weight (Always exactly one cycle)
-    var row_gsm = flt(job_row ? (job_row[find_jt('gsm')] || 0) : (item_row.gsm || 0));
-    var row_m_roll = flt(job_row ? (job_row[find_jt('meter')] || job_row[find_jt('roll')] || 0) : (item_row.meter_roll || item_row.length || 0));
-    var row_shafts = flt(job_row ? (job_row[find_jt('shaft')] || 1) : (item_row.no_of_shafts || item_row.shafts || 1));
+    var row_gsm = flt(job_row ? (job_row[find_jt('gsm')] || job_row.gsm || 0) : (item_row.gsm || 0));
+    var pick_meter = function (src) {
+        if (!src) return 0;
+        return flt(
+            src.meter__roll || src.meter_per_roll || src.meter_roll || src.custom_meter_roll ||
+            src.produced_length_mtrs || src.custom_produced_length_mtrs || src.meter || src.length || 0
+        );
+    };
+    var row_m_roll = 0;
+    if (job_row) {
+        var m_f = job_fields.find(f => {
+            var fl = String(f).toLowerCase();
+            return fl === 'meter__roll' || fl === 'meter_per_roll' || fl === 'meter_roll' ||
+                (fl.includes('meter') && !fl.includes('wastage') && !fl.includes('shaft'));
+        });
+        row_m_roll = flt((m_f && job_row[m_f]) || pick_meter(job_row) || 0);
+    }
+    if (!row_m_roll) {
+        row_m_roll = pick_meter(item_row);
+    }
+    var row_shafts = flt(
+        job_row
+            ? (job_row.no_of_shafts || job_row.no_of_shaft || job_row[find_jt('shaft')] || 1)
+            : (item_row.custom_no_of_shaft || item_row.no_of_shaft || item_row.no_of_shafts || item_row.shafts || 1)
+    );
 
     var width = 0;
     var unit_val = String(unit).trim().toUpperCase();
@@ -712,6 +741,42 @@ function add_incremental_wastage(frm, item_row) {
     update_recycled_table(frm);
 }
 
+function patty_wastage_rows_are_zero(rows) {
+    if (!rows || !rows.length) return true;
+    return rows.every(function (row) {
+        var qty = flt(row.wastage_qty || row.wastage || row.wastage_qt || 0);
+        var width = flt(row.width_inch || row.width || 0);
+        var meter = flt(row.meter_per_roll || row.meter__roll || row.meter_roll || row.meter || 0);
+        var one = flt(row.one_shaft_gross || row.one_shaft_wastage || row.one_shaft || 0);
+        return qty <= 0 && width <= 0 && meter <= 0 && one <= 0;
+    });
+}
+
+function repair_spr_wastage_from_server(frm) {
+    if (!frm || !frm.doc || !frm.doc.name || frm.is_new() || cint(frm.doc.docstatus) > 0) return;
+    if (frm.__spr_wastage_repairing) return;
+    frm.__spr_wastage_repairing = true;
+    frappe.call({
+        method:
+            'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.force_recalculate_spr_wastage_and_recycle',
+        args: { spr_name: frm.doc.name },
+        freeze: false,
+        callback: function (r) {
+            frm.__spr_wastage_repairing = false;
+            var msg = (r && r.message) || {};
+            if (msg.status === 'no_computed') {
+                calculate_wastage_automation(frm, true);
+                return;
+            }
+            frm.reload_doc();
+        },
+        error: function () {
+            frm.__spr_wastage_repairing = false;
+            calculate_wastage_automation(frm, true);
+        },
+    });
+}
+
 function recalculate_all_wastage(frm) {
     if (cint(frm.doc.docstatus) > 0) return;
     var unit = frm.doc.unit || frm.doc.custom_unit || "";
@@ -724,6 +789,13 @@ function recalculate_all_wastage(frm) {
     var wastage_field = ['running_patty_wastage', 'wastage_details', 'custom_wastage_details', 'custom_running_patty_wastage'].find(f => frm.fields_dict[f]);
     if (!wastage_field) return;
 
+    var rows = frm.doc[wastage_field] || [];
+    // If qty/width/meter already wiped to 0, local math cannot restore — use server (GSM formula)
+    if (patty_wastage_rows_are_zero(rows) && frm.doc.name && !frm.is_new()) {
+        repair_spr_wastage_from_server(frm);
+        return;
+    }
+
     var wast_fields = frm.fields_dict[wastage_field].grid.docfields.map(df => df.fieldname);
     var fmap = resolve_patty_wastage_fields(wast_fields);
     var w_qty_f = fmap.qty;
@@ -732,9 +804,13 @@ function recalculate_all_wastage(frm) {
     var w_chk_f = fmap.recycle;
     var w_shf_f = fmap.shafts;
     var w_osg_f = fmap.one_shaft;
+    // Never let net field resolve to the same column as wastage qty
+    if (w_net_f && w_qty_f && w_net_f === w_qty_f) {
+        w_net_f = wast_fields.includes('net_wastage') ? 'net_wastage' : null;
+    }
 
-    var rows = frm.doc[wastage_field] || [];
     var prev_row = null;
+    var any_tail = false;
 
     rows.forEach((row, i) => {
         var recycled_from_prev = 0;
@@ -758,17 +834,29 @@ function recalculate_all_wastage(frm) {
             prev_row = row;
             return;
         }
+        any_tail = true;
         row[w_osg_f] = tail_weight;
         var is_rec_next = row[w_chk_f] || row.recycle_to_next || row.custom_recycle_to_next;
 
         row[w_qty_f] = flt(shafts * tail_weight, 3);
+        // Also write synonym qty fields so grid columns stay in sync
+        if (wast_fields.includes('wastage_qty') && w_qty_f !== 'wastage_qty') row.wastage_qty = row[w_qty_f];
+        if (wast_fields.includes('wastage') && w_qty_f !== 'wastage') row.wastage = row[w_qty_f];
         row[w_rec_f] = flt((shafts > 1 ? shafts - 1 : 0) * tail_weight, 3);
+        if (wast_fields.includes('recycled_qty') && w_rec_f !== 'recycled_qty') row.recycled_qty = row[w_rec_f];
 
-        // THE BINARY TOGGLE: 0 if checked, else 1 tail weight — never touch width/meter
-        row[w_net_f] = is_rec_next ? 0 : tail_weight;
+        // THE BINARY TOGGLE: 0 if checked, else 1 tail weight — never touch width/meter/qty
+        if (w_net_f && w_net_f !== w_qty_f) {
+            row[w_net_f] = is_rec_next ? 0 : tail_weight;
+        }
 
         prev_row = row;
     });
+
+    if (!any_tail && frm.doc.name && !frm.is_new()) {
+        repair_spr_wastage_from_server(frm);
+        return;
+    }
 
     append_wastage_running_series(frm, wastage_field);
     update_wastage_label_actions(frm, wastage_field);
