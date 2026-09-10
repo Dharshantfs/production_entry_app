@@ -2672,6 +2672,80 @@ def sync_spr_attribute_summaries_to_doc(spr_doc) -> None:
 class ShaftProductionRun(Document):
 	def before_save(self):
 		self._spr_prune_recycled_when_waste_removed()
+		self._spr_backfill_zero_patty_rows()
+
+	def _spr_backfill_zero_patty_rows(self) -> None:
+		"""Server owns Running Patty values — refill rows posted with zeros.
+
+		Desk Client Scripts can send width / meter / wastage as 0 when the browser
+		cannot resolve job meter. Refill from the same compute the GSM wastage
+		dialog uses so the SPR never stores an empty wastage row.
+		"""
+		if cint(self.docstatus) not in (0, 1):
+			return
+		field = _spr_patty_wastage_fieldname()
+		if not field:
+			return
+		rows = list(self.get(field) or [])
+		if not rows:
+			return
+
+		def _row_is_complete(row) -> bool:
+			rd = _spr_patty_row_dict(row)
+			if _spr_patty_row_wastage_kg(rd) <= 0:
+				return False
+			if flt(rd.get("width_inch") or rd.get("width") or 0) <= 0:
+				return False
+			meter = flt(
+				rd.get("meter_per_roll")
+				or rd.get("meter__roll")
+				or rd.get("meter_roll")
+				or rd.get("meter")
+				or 0
+			)
+			return meter > 0
+
+		pending = [row for row in rows if not _row_is_complete(row)]
+		if not pending:
+			return
+
+		try:
+			computed = _spr_compute_patty_wastage_by_job(self, include_unproduced_jobs=True) or {}
+		except Exception:
+			return
+		if not computed:
+			return
+
+		live = _spr_patty_live_field_map()
+		flag_field = live.get("recycle_to_next") or "recycle_to_next"
+		skip_keys = {"name", "parent", "parenttype", "parentfield", "doctype", "idx", flag_field}
+		computed_values = list(computed.values())
+		for row in pending:
+			jid = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+			logical = None
+			if jid:
+				for cj, cval in computed.items():
+					if _spr_job_keys_match(_cstr(cj), jid):
+						logical = cval
+						break
+			if logical is None and len(computed_values) == 1 and len(rows) == 1:
+				logical = computed_values[0]
+			if not logical:
+				continue
+			flag = cint(
+				getattr(row, flag_field, None)
+				or getattr(row, "recycle_to_next", None)
+				or getattr(row, "custom_recycle_to_next", None)
+				or 0
+			)
+			values = _spr_write_patty_child_row(_spr_apply_patty_recycle_net(dict(logical), flag))
+			for key, val in (values or {}).items():
+				if key in skip_keys:
+					continue
+				try:
+					row.set(key, val)
+				except Exception:
+					setattr(row, key, val)
 
 	def _spr_prune_recycled_when_waste_removed(self):
 		"""When roll-waste / patty-waste child rows are deleted on desk, drop linked recycled rows.

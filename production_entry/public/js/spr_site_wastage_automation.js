@@ -1,20 +1,13 @@
 // Wastage Automation for Shaft Production Run
 // DocType: Shaft Production Run
 
-/** Ask desk SPR JS to auto-save so roll/wastage edits do not leave Not Saved. */
+/**
+ * Wastage rows are written by the server (Shaft Production Run.before_save and the
+ * GSM Save Row sync). This script must never dirty the form for wastage, otherwise
+ * autosave races the GSM save and the document flips Not Saved / TimestampMismatch.
+ */
 function spr_request_draft_autosave_after_wastage(frm) {
-    if (!frm || cint(frm.doc.docstatus) > 0) return;
-    if (frm._spr_light_reload || frm.__spr_wastage_repairing) return;
-    if (typeof spr_should_skip_desk_auto_sync === 'function' && spr_should_skip_desk_auto_sync(frm)) {
-        return;
-    }
-    if (typeof spr_auto_save_draft_if_dirty === 'function') {
-        spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true, skipIfJustSaved: true });
-        return;
-    }
-    if (window.production_entry && typeof window.production_entry.spr_auto_save_draft_if_dirty === 'function') {
-        window.production_entry.spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true, skipIfJustSaved: true });
-    }
+    return;
 }
 
 /** Resolve Running Patty child fieldnames safely (site field names vary). */
@@ -138,8 +131,8 @@ frappe.ui.form.on('Shaft Production Run', {
             let child_dt = frm.fields_dict[wastage_field].grid.doctype;
             if (child_dt && !frm.__wastage_bound) {
                 frappe.ui.form.on(child_dt, {
-                    recycle_to_next: function (frm, cdt, cdn) { recalculate_all_wastage(frm); },
-                    custom_recycle_to_next: function (frm, cdt, cdn) { recalculate_all_wastage(frm); },
+                    recycle_to_next: function (frm, cdt, cdn) { apply_recycle_to_next_on_server(frm, locals[cdt][cdn]); },
+                    custom_recycle_to_next: function (frm, cdt, cdn) { apply_recycle_to_next_on_server(frm, locals[cdt][cdn]); },
                     print_label: function (frm, cdt, cdn) { guard_wastage_label_print(frm, locals[cdt][cdn]); },
                     custom_print_label: function (frm, cdt, cdn) { guard_wastage_label_print(frm, locals[cdt][cdn]); }
                 });
@@ -496,6 +489,13 @@ function bind_wastage_label_click_guard(frm) {
 }
 
 function add_incremental_wastage(frm, item_row) {
+    // Server computes Running Patty Wastage (unit trim width × GSM × meters) on save.
+    // Browser-side generation wrote rows with width/meter/qty = 0 whenever job meter
+    // was not loaded in the grid, so it is disabled here.
+    return;
+}
+
+function add_incremental_wastage_legacy(frm, item_row) {
     if (cint(frm.doc.docstatus) > 0) return;
     var unit = frm.doc.unit || frm.doc.custom_unit || "";
     var unit_val = String(unit).trim().toUpperCase();
@@ -775,9 +775,13 @@ function patty_wastage_rows_are_zero(rows) {
     });
 }
 
-function repair_spr_wastage_from_server(frm) {
+function repair_spr_wastage_from_server(frm, force) {
     if (!frm || !frm.doc || !frm.doc.name || frm.is_new() || cint(frm.doc.docstatus) > 0) return;
     if (frm.__spr_wastage_repairing) return;
+    // Repair reloads the form, which re-runs refresh — allow it once per document
+    // load so a still-zero table cannot loop repair → reload → repair.
+    if (!force && frm.__spr_wastage_repaired_for === frm.doc.name) return;
+    frm.__spr_wastage_repaired_for = frm.doc.name;
     frm.__spr_wastage_repairing = true;
     frappe.call({
         method:
@@ -796,6 +800,30 @@ function repair_spr_wastage_from_server(frm) {
         error: function () {
             frm.__spr_wastage_repairing = false;
             calculate_wastage_automation(frm, true);
+        },
+    });
+}
+
+/** Recycle to Next toggle — server recomputes flag + qty, then the form reloads. */
+function apply_recycle_to_next_on_server(frm, row) {
+    if (!frm || !frm.doc || !frm.doc.name || frm.is_new() || cint(frm.doc.docstatus) > 0) return;
+    if (!row || frm.__spr_recycle_toggle_busy) return;
+    frm.__spr_recycle_toggle_busy = true;
+    frappe.call({
+        method:
+            'production_entry.production_planning.unified_production_entry_api.set_gsm_patty_recycle_to_next',
+        args: {
+            spr_name: frm.doc.name,
+            row_name: row.name || '',
+            job_id: row.job_id || row.job || '',
+            recycle_to_next: (row.recycle_to_next || row.custom_recycle_to_next) ? 1 : 0,
+        },
+        freeze: false,
+        always: function () {
+            frm.__spr_recycle_toggle_busy = false;
+        },
+        callback: function () {
+            frm.reload_doc();
         },
     });
 }
@@ -891,6 +919,12 @@ function recalculate_all_wastage(frm) {
 }
 
 function update_recycled_table(frm) {
+    // Recycled Wastage Details are rebuilt server-side from Running Patty rows
+    // (only for jobs where Recycle to Next is ticked).
+    return;
+}
+
+function update_recycled_table_legacy(frm) {
     if (cint(frm.doc.docstatus) > 0) return;
     // Automated recycle only — never touch GSM Manual Recycle Details.
     var rec_table_field = null;
@@ -1450,13 +1484,13 @@ function calculate_wastage_automation(frm, force_all) {
         if (frm.doc[wastage_field] && frm.doc[wastage_field].length > 0) {
             frm.clear_table(wastage_field);
             frm.refresh_field(wastage_field);
-            update_recycled_table(frm);
         }
         return;
     }
 
-    frm.clear_table(wastage_field);
-    (frm.doc.items || []).forEach(item => add_incremental_wastage(frm, item));
+    // Valid unit: the server rebuilds patty + recycled rows with the real
+    // job meter, so ask it instead of clearing the table in the browser.
+    repair_spr_wastage_from_server(frm, true);
 }
 
 // --- POLYBAG AUTOMATION ---
