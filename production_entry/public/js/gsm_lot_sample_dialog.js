@@ -88,6 +88,7 @@ function _tableHtml(rows, options) {
 				<td class="ls-gsm">${gsmCell}</td>
 				<td class="ls-qty"><input class="form-control input-sm" type="number" min="1" step="1" value="${_esc(row.no_of_lot_sample || "")}"></td>
 				<td class="ls-print"><button type="button" class="btn btn-xs btn-default ls-print-btn">${__("Print Label")}</button></td>
+				<td class="ls-remove"><button type="button" class="btn btn-xs btn-danger ls-remove-btn" title="${__("Remove Row")}">×</button></td>
 			</tr>`;
 		})
 		.join("");
@@ -97,7 +98,7 @@ function _tableHtml(rows, options) {
 		.ls-table th, .ls-table td { vertical-align:middle; }
 		.ls-table select, .ls-table input { min-width: 90px; }
 		.ls-empty { padding:8px; color:#64748b; }
-		.ls-toolbar { display:flex; justify-content:flex-start; }
+		.ls-toolbar { display:flex; justify-content:flex-start; gap:8px; }
 	</style>
 	<div class="ls-wrap">
 		${orders.length ? "" : `<div class="ls-empty">${__("No production orders are selected for this shift yet.")}</div>`}
@@ -109,11 +110,13 @@ function _tableHtml(rows, options) {
 				<th>${__("GSM")}</th>
 				<th>${__("No of Samples")}</th>
 				<th></th>
+				<th></th>
 			</tr></thead>
 			<tbody>${body}</tbody>
 		</table>
 		<div class="ls-toolbar">
 			<button type="button" class="btn btn-xs btn-primary" id="ls-add-row">${__("Add Row")}</button>
+			<button type="button" class="btn btn-xs btn-danger" id="ls-remove-row">${__("Remove Row")}</button>
 		</div>
 	</div>`;
 }
@@ -220,6 +223,59 @@ export async function openGsmLotSampleDialog(opts = {}) {
 			});
 			render();
 		});
+		$body.find("#ls-remove-row").on("click", () => {
+			rows = _readRows($body, options);
+			if (rows.length <= 1) {
+				rows = [
+					{
+						order_code: "",
+						quality: "",
+						colour: "",
+						gsm: "",
+						fabric_type: "",
+						no_of_lot_sample: 1,
+					},
+				];
+				render();
+				return;
+			}
+			const choices = rows
+				.map((r, i) => {
+					const detail = [r.order_code, r.quality, r.colour, r.gsm].filter(Boolean).join(" · ") || __("empty");
+					return { value: String(i), label: `${i + 1}. ${detail}` };
+				});
+			frappe.prompt(
+				[
+					{
+						fieldtype: "Select",
+						fieldname: "row_choice",
+						label: __("Row to remove"),
+						options: choices.map((c) => c.label).join("\n"),
+						reqd: 1,
+						default: choices[choices.length - 1].label,
+					},
+				],
+				(values) => {
+					const choice = choices.find((c) => c.label === values.row_choice);
+					const idx = choice ? parseInt(choice.value, 10) : -1;
+					if (Number.isNaN(idx) || idx < 0 || idx >= rows.length) return;
+					rows.splice(idx, 1);
+					if (!rows.length) {
+						rows.push({
+							order_code: "",
+							quality: "",
+							colour: "",
+							gsm: "",
+							fabric_type: "",
+							no_of_lot_sample: 1,
+						});
+					}
+					render();
+				},
+				__("Remove Row"),
+				__("Remove")
+			);
+		});
 		$body.find("tbody tr").each(function () {
 			const $tr = $(this);
 			const idx = Number($tr.attr("data-idx"));
@@ -248,6 +304,24 @@ export async function openGsmLotSampleDialog(opts = {}) {
 				const gsms = _gsms(_orderOpt(options, row.order_code), row.quality, row.colour);
 				row.gsm = gsms.length === 1 ? gsms[0] : row.gsm && gsms.includes(Number(row.gsm)) ? row.gsm : "";
 				rows[idx] = row;
+				render();
+			});
+			$tr.find(".ls-remove-btn").on("click", () => {
+				rows = _readRows($body, options);
+				if (rows.length <= 1) {
+					rows = [
+						{
+							order_code: "",
+							quality: "",
+							colour: "",
+							gsm: "",
+							fabric_type: "",
+							no_of_lot_sample: 1,
+						},
+					];
+				} else {
+					rows.splice(idx, 1);
+				}
 				render();
 			});
 			$tr.find(".ls-print-btn").on("click", async () => {

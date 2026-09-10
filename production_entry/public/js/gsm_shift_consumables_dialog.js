@@ -27,6 +27,7 @@ function _tableHtml(rows) {
 			<td class="sc-name"><input class="form-control input-sm" type="text" readonly value="${_esc(row.item_name || "")}"></td>
 			<td class="sc-qty"><input class="form-control input-sm" type="number" min="0" step="0.001" value="${_esc(row.quantity || "")}"></td>
 			<td class="sc-uom"><input class="form-control input-sm" type="text" readonly value="${_esc(row.uom || "")}"></td>
+			<td class="sc-remove"><button type="button" class="btn btn-xs btn-danger sc-remove-btn" title="${__("Remove Row")}">×</button></td>
 		</tr>`
 		)
 		.join("");
@@ -36,6 +37,7 @@ function _tableHtml(rows) {
 		.sc-table th, .sc-table td { vertical-align:middle; }
 		.sc-link .frappe-control { margin:0; }
 		.sc-link .form-control { min-width: 160px; }
+		.sc-toolbar { display:flex; gap:8px; }
 	</style>
 	<div class="sc-wrap">
 		<table class="table table-bordered table-sm sc-table">
@@ -44,11 +46,13 @@ function _tableHtml(rows) {
 				<th>${__("Item Name")}</th>
 				<th>${__("Quantity")}</th>
 				<th>${__("UOM")}</th>
+				<th></th>
 			</tr></thead>
 			<tbody>${body}</tbody>
 		</table>
-		<div>
+		<div class="sc-toolbar">
 			<button type="button" class="btn btn-xs btn-primary" id="sc-add-row">${__("Add Row")}</button>
+			<button type="button" class="btn btn-xs btn-danger" id="sc-remove-row">${__("Remove Row")}</button>
 		</div>
 	</div>`;
 }
@@ -140,10 +144,16 @@ export async function openGsmShiftConsumablesDialog(opts = {}) {
 					fieldname: "item_code",
 					placeholder: __("Item Code"),
 					only_select: 1,
+					get_query: () => ({
+						query: "production_entry.production_planning.shift_consumables_api.raw_material_item_query",
+					}),
 				},
 				parent: $tr.find(".sc-link").get(0),
 				render_input: true,
 				only_input: true,
+			});
+			ctrl.get_query = () => ({
+				query: "production_entry.production_planning.shift_consumables_api.raw_material_item_query",
 			});
 			ctrl.set_value(rows[idx]?.item_code || "");
 			ctrl.$input.on("awesomplete-selectcomplete change", async () => {
@@ -155,6 +165,52 @@ export async function openGsmShiftConsumablesDialog(opts = {}) {
 		$body.find("#sc-add-row").on("click", () => {
 			readRows();
 			rows.push({ item_code: "", item_name: "", quantity: "", uom: "" });
+			render();
+		});
+		$body.find("#sc-remove-row").on("click", () => {
+			readRows();
+			if (rows.length <= 1) {
+				rows = [{ item_code: "", item_name: "", quantity: "", uom: "" }];
+				render();
+				return;
+			}
+			const choices = rows.map((r, i) => {
+				const detail = [r.item_code, r.item_name].filter(Boolean).join(" — ") || __("empty");
+				return { value: String(i), label: `${i + 1}. ${detail}` };
+			});
+			frappe.prompt(
+				[
+					{
+						fieldtype: "Select",
+						fieldname: "row_choice",
+						label: __("Row to remove"),
+						options: choices.map((c) => c.label).join("\n"),
+						reqd: 1,
+						default: choices[choices.length - 1].label,
+					},
+				],
+				(values) => {
+					const choice = choices.find((c) => c.label === values.row_choice);
+					const idx = choice ? parseInt(choice.value, 10) : -1;
+					if (Number.isNaN(idx) || idx < 0 || idx >= rows.length) return;
+					rows.splice(idx, 1);
+					if (!rows.length) {
+						rows.push({ item_code: "", item_name: "", quantity: "", uom: "" });
+					}
+					render();
+				},
+				__("Remove Row"),
+				__("Remove")
+			);
+		});
+		$body.find(".sc-remove-btn").on("click", function () {
+			const idx = Number($(this).closest("tr").attr("data-idx"));
+			readRows();
+			if (rows.length <= 1) {
+				rows = [{ item_code: "", item_name: "", quantity: "", uom: "" }];
+			} else {
+				rows.splice(idx, 1);
+			}
 			render();
 		});
 	};

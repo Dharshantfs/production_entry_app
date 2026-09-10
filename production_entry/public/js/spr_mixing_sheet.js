@@ -575,7 +575,18 @@ function show_dialog(ctx, existing, frm) {
 			return;
 		}
 		frappe.prompt(
-			[{ label: __("Select Item"), fieldname: "item_code", fieldtype: "Link", options: "Item", reqd: 1 }],
+			[
+				{
+					label: __("Select Item"),
+					fieldname: "item_code",
+					fieldtype: "Link",
+					options: "Item",
+					reqd: 1,
+					get_query: () => ({
+						query: "production_entry.production_planning.shift_consumables_api.raw_material_item_query",
+					}),
+				},
+			],
 			(v) => add_extra_item(v.item_code),
 			__("Add Dana / Special Additive")
 		);
@@ -819,13 +830,68 @@ function render_all(d, ctx, state, frm) {
 	$wrap.find(".btn-del-row").on("click", function () {
 		const si = parseInt($(this).data("set"), 10);
 		const rows = state.sets[si].rows;
-		if (rows.length > 1) {
-			collect_row_qtys(d, state);
-			rows.pop();
-			render_all(d, ctx, state, frm);
-		} else {
-			frappe.show_alert({ message: __("At least one row required."), indicator: "orange" });
+		if (!rows.length) return;
+		collect_row_qtys(d, state);
+		const removable = rows
+			.map((row, ri) => ({ row, ri }))
+			.filter(({ row }) => !row.consumed);
+		if (!removable.length) {
+			frappe.show_alert({ message: __("No unconsumed rows to remove."), indicator: "orange" });
+			return;
 		}
+		if (removable.length === 1 && rows.length === 1) {
+			frappe.show_alert({ message: __("At least one row required."), indicator: "orange" });
+			return;
+		}
+		const choices = removable.map(({ ri }) => ({
+			value: String(ri),
+			label: __("Row {0}", [ri + 1]),
+		}));
+		frappe.prompt(
+			[
+				{
+					fieldtype: "Select",
+					fieldname: "row_choice",
+					label: __("Row to remove"),
+					options: choices.map((c) => c.label).join("\n"),
+					reqd: 1,
+					default: choices[choices.length - 1].label,
+				},
+			],
+			(values) => {
+				const choice = choices.find((c) => c.label === values.row_choice);
+				const ri = choice ? parseInt(choice.value, 10) : -1;
+				if (Number.isNaN(ri) || ri < 0 || ri >= rows.length) return;
+				if (rows[ri]?.consumed) {
+					frappe.show_alert({ message: __("Consumed rows cannot be removed."), indicator: "orange" });
+					return;
+				}
+				if (rows.length <= 1) {
+					frappe.show_alert({ message: __("At least one row required."), indicator: "orange" });
+					return;
+				}
+				collect_row_qtys(d, state);
+				rows.splice(ri, 1);
+				render_all(d, ctx, state, frm);
+				if (typeof d._mixPersist === "function") d._mixPersist();
+			},
+			__("Remove Row"),
+			__("Remove")
+		);
+	});
+	$wrap.find(".btn-del-row-one").on("click", function () {
+		const si = parseInt($(this).data("set"), 10);
+		const ri = parseInt($(this).data("row"), 10);
+		const rows = state.sets[si].rows;
+		if (!rows[ri] || rows[ri].consumed) return;
+		if (rows.length <= 1) {
+			frappe.show_alert({ message: __("At least one row required."), indicator: "orange" });
+			return;
+		}
+		collect_row_qtys(d, state);
+		rows.splice(ri, 1);
+		render_all(d, ctx, state, frm);
+		if (typeof d._mixPersist === "function") d._mixPersist();
 	});
 	$wrap.find(".btn-del-set").on("click", function () {
 		delete_mixing_set(d, ctx, state, frm, parseInt($(this).data("set"), 10));
@@ -846,7 +912,8 @@ function render_set_html(set, si, ctx, state, readOnly) {
 			? `<span style="color:green;font-size:11px">✅ ${frappe.utils.escape_html(row.status || `${(row.consumed_by || "").split("@")[0]} @ ${(row.consumed_at || "").slice(11, 16)}`)}</span>`
 			: readOnly
 				? ""
-				: `<button class="btn btn-xs btn-primary btn-consume" data-set="${si}" data-row="${ri}">${__("Consume")}</button>`;
+				: `<button class="btn btn-xs btn-primary btn-consume" data-set="${si}" data-row="${ri}">${__("Consume")}</button>
+				   <button class="btn btn-xs btn-default btn-del-row-one" data-set="${si}" data-row="${ri}" title="${__("Remove Row")}">×</button>`;
 
 		const extras_cols = (set.extras || [])
 			.map((ex) => {
@@ -963,7 +1030,7 @@ function render_set_html(set, si, ctx, state, readOnly) {
 	const rowBtns = readOnly
 		? ""
 		: `<button class="btn btn-xs btn-default btn-add-row" data-set="${si}">➕ ${__("Add Row")}</button>
-		   <button class="btn btn-xs btn-danger btn-del-row" data-set="${si}">🗑 ${__("Remove Last Row")}</button>`;
+		   <button class="btn btn-xs btn-danger btn-del-row" data-set="${si}">🗑 ${__("Remove Row")}</button>`;
 	const delSetBtn = readOnly
 		? ""
 		: `<button class="btn btn-xs btn-danger btn-del-set" data-set="${si}" style="margin-left:auto">🗑 ${__("Delete Set")}</button>`;

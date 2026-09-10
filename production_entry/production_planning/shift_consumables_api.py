@@ -41,13 +41,76 @@ def _parse_rows(rows) -> list:
 def _item_details(item_code: str) -> dict:
 	item_code = _cstr(item_code)
 	if not item_code or not frappe.db.exists("Item", item_code):
-		return {"item_code": item_code, "item_name": "", "uom": ""}
-	item_name, stock_uom = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom"]) or ("", "")
+		return {"item_code": item_code, "item_name": "", "uom": "", "item_group": ""}
+	row = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "item_group"], as_dict=True) or {}
 	return {
 		"item_code": item_code,
-		"item_name": _cstr(item_name),
-		"uom": _cstr(stock_uom),
+		"item_name": _cstr(row.get("item_name")),
+		"uom": _cstr(row.get("stock_uom")),
+		"item_group": _cstr(row.get("item_group")),
 	}
+
+
+def _raw_material_item_groups() -> list:
+	"""Raw Material group and all descendant groups (inclusive)."""
+	roots = []
+	for name in ("Raw Material", "Raw Materials"):
+		if frappe.db.exists("Item Group", name):
+			roots.append(name)
+	if not roots:
+		return ["Raw Material", "Raw Materials"]
+	groups = set(roots)
+	try:
+		from frappe.utils.nestedset import get_descendants_of
+
+		for root in roots:
+			for child in get_descendants_of("Item Group", root, ignore_permissions=True) or []:
+				if child:
+					groups.add(child)
+	except Exception:
+		pass
+	return sorted(groups)
+
+
+def _is_raw_material_item(item_code: str) -> bool:
+	item_code = _cstr(item_code)
+	if not item_code:
+		return False
+	group = _cstr(frappe.db.get_value("Item", item_code, "item_group"))
+	return group in set(_raw_material_item_groups())
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def raw_material_item_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Link search: only Raw Material item group (and child groups)."""
+	groups = _raw_material_item_groups()
+	if not groups:
+		return []
+	txt = _cstr(txt)
+	return frappe.db.sql(
+		"""
+		SELECT name, item_name, item_group
+		FROM `tabItem`
+		WHERE disabled = 0
+		  AND item_group IN %(groups)s
+		  AND (
+			name LIKE %(txt)s
+			OR item_name LIKE %(txt)s
+		  )
+		ORDER BY
+			CASE WHEN name LIKE %(exact)s THEN 0 ELSE 1 END,
+			name
+		LIMIT %(start)s, %(page_len)s
+		""",
+		{
+			"groups": groups,
+			"txt": f"%{txt}%",
+			"exact": f"{txt}%",
+			"start": start,
+			"page_len": page_len,
+		},
+	)
 
 
 def _row_payload(row) -> dict:
@@ -193,6 +256,12 @@ def save_shift_consumables(
 		item_code = _cstr(raw.get("item_code"))
 		if not item_code:
 			continue
+		if not _is_raw_material_item(item_code):
+			frappe.throw(
+				_("Item {0} is not in Raw Material item group. Only raw materials are allowed.").format(
+					item_code
+				)
+			)
 		details = _item_details(item_code)
 		doc.append(
 			"items",

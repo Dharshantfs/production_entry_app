@@ -495,7 +495,7 @@
             <button v-else type="button" class="gpe-btn primary" :title="addRollDisabledHint" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_add_row')" @click="guardedAddRollRow">
               {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
             </button>
-            <button type="button" class="gpe-btn" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_remove_row')" @click="guardedRemoveTopRow">Remove Top Row</button>
+            <button type="button" class="gpe-btn" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_remove_row')" @click="guardedRemoveRow">Remove Row</button>
             <button
               type="button"
               class="gpe-btn gpe-btn-warn"
@@ -8879,11 +8879,11 @@ function guardedMixingSheet() {
   if (freezeGsmMixingSheet.value) { frappe.msgprint(__("Mixing Sheet is disabled for your access.")); return; }
   openMixingDialog();
 }
-function guardedRemoveTopRow() {
-  if (freezeGsmRemoveRow.value) { frappe.msgprint(__("Remove Top Row is disabled for your access.")); return; }
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Remove Top Row"); return; }
+function guardedRemoveRow() {
+  if (freezeGsmRemoveRow.value) { frappe.msgprint(__("Remove Row is disabled for your access.")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Remove Row"); return; }
   if (!rollLines.value.length) return;
-  removeTopRow();
+  promptRemoveRowByBatch();
 }
 function guardedClearEntries() {
   if (freezeGsmClearEntries.value) { frappe.msgprint(__("Clear Entries is disabled for your access.")); return; }
@@ -9153,11 +9153,58 @@ async function previewNextBatch(ppId) {
   return row || { batch_no: "", roll_no: "" };
 }
 
-async function removeTopRow() {
-  if (!rollLines.value.length) {
+function _removeRowBatchOptions() {
+  const opts = [];
+  const seen = new Set();
+  for (const row of rollLines.value) {
+    const bn = _cstr(row?.batch_no).trim();
+    if (!bn || seen.has(bn)) continue;
+    seen.add(bn);
+    const order = _cstr(row.order_code || row.pp_id || "").trim();
+    const label = order ? `${bn} (${order})` : bn;
+    opts.push({ value: bn, label });
+  }
+  return opts;
+}
+
+function promptRemoveRowByBatch() {
+  const options = _removeRowBatchOptions();
+  if (!options.length) {
+    frappe.msgprint(__("No batch numbers on the grid to remove."));
     return;
   }
-  const row = rollLines.value[0];
+  frappe.prompt(
+    [
+      {
+        fieldtype: "Select",
+        fieldname: "batch_choice",
+        label: __("Batch No to delete"),
+        options: options.map((o) => o.label).join("\n"),
+        reqd: 1,
+        default: options[0].label,
+        description: __("Select the batch number of the row to remove (including middle rows)."),
+      },
+    ],
+    (values) => {
+      const byLabel = options.find((o) => o.label === values.batch_choice);
+      const batchNo = _cstr(byLabel?.value || values?.batch_choice).trim();
+      if (!batchNo) return;
+      removeRowByBatchNo(batchNo);
+    },
+    __("Remove Row"),
+    __("Delete")
+  );
+}
+
+async function removeRowByBatchNo(batchNo) {
+  const bn = _cstr(batchNo).trim();
+  if (!bn) return;
+  const idx = rollLines.value.findIndex((r) => _cstr(r?.batch_no).trim() === bn);
+  if (idx < 0) {
+    frappe.msgprint(__("Batch No {0} was not found on the grid.", [bn]));
+    return;
+  }
+  const row = rollLines.value[idx];
   if (row.is_mix_roll_row) {
     await removeMixRollRow(row);
     return;
@@ -9202,7 +9249,10 @@ async function removeTopRow() {
       }
     }
     releaseBatchNo(row.batch_no);
-    rollLines.value.shift();
+    const stillIdx = rollLines.value.findIndex((r) => _cstr(r?.batch_no).trim() === bn);
+    if (stillIdx >= 0) {
+      rollLines.value.splice(stillIdx, 1);
+    }
     syncBatchCounterFromGrid();
     scheduleAutosave();
     saveStatus.value = wasSaved ? "Removed from SPR" : "Row removed";
@@ -9211,7 +9261,7 @@ async function removeTopRow() {
 
   if ((wasSaved && sprName) || (row.is_bundle_row && row.child_roll_batches?.length)) {
     frappe.confirm(
-      __("Remove this row from the grid and delete it from {0}?", [sprName]),
+      __("Remove batch {0} from the grid and delete it from {1}?", [bn, sprName]),
       () => {
         doRemove();
       }

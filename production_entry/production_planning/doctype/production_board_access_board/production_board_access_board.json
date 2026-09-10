@@ -311,7 +311,7 @@
    "default": "0",
    "fieldname": "freeze_gsm_remove_row",
    "fieldtype": "Check",
-   "label": "Remove Top Row - GSM"
+   "label": "Remove Row - GSM"
   },
   {
    "fieldname": "column_break_gsm_2",

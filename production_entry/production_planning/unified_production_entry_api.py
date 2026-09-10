@@ -6731,7 +6731,7 @@ def _related_mix_store_keys(date_key: str) -> list:
 
 
 def _copy_mix_row_to_related_stores(entry: dict, primary_date_key: str, planned_date=None):
-	"""Append a GSM-created mix onto existing Color Chart week/month/plan stores."""
+	"""Append a GSM-created mix onto same-plan week/month stores only (never other plans)."""
 	if not isinstance(entry, dict):
 		return
 	mix_id = _cstr(entry.get("mix_id")).strip()
@@ -6741,11 +6741,14 @@ def _copy_mix_row_to_related_stores(entry: dict, primary_date_key: str, planned_
 	if planned_date:
 		try:
 			d = getdate(planned_date)
-			anchor = f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+			_base, plan = _mix_date_key_base_and_plan(anchor)
+			day_key = f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+			anchor = f"{day_key}-{plan}" if plan else day_key
 		except Exception:
 			pass
 	weeks = _mix_date_key_iso_weeks(anchor)
 	day_stamp = _mix_date_key_day_stamp(anchor)
+	_primary_base, primary_plan = _mix_date_key_base_and_plan(primary_date_key)
 	existing = set(_list_mix_store_date_keys())
 	for date_key in existing:
 		if date_key == primary_date_key:
@@ -6755,11 +6758,155 @@ def _copy_mix_row_to_related_stores(entry: dict, primary_date_key: str, planned_
 		kind = _mix_date_key_kind(date_key)
 		if kind == "day" and _mix_date_key_day_stamp(date_key) != day_stamp:
 			continue
+		_k_base, k_plan = _mix_date_key_base_and_plan(date_key)
+		if (k_plan or "") != (primary_plan or ""):
+			continue
 		entries = _load_mix_store_entries(date_key)
 		if any(_cstr(e.get("mix_id")).strip() == mix_id for e in entries if isinstance(e, dict)):
 			continue
 		entries.append(dict(entry))
 		save_mix_roll_data(date_key, entries)
+
+
+def _purge_mix_id_from_other_plan_stores(mix_id: str, keep_date_key: str):
+	"""Remove a mix_id from stores belonging to other Color Chart plans."""
+	mix_id = _cstr(mix_id).strip()
+	keep_date_key = _cstr(keep_date_key).strip()
+	if not mix_id or not keep_date_key:
+		return
+	_keep_base, keep_plan = _mix_date_key_base_and_plan(keep_date_key)
+	for date_key in _list_mix_store_date_keys():
+		if date_key == keep_date_key:
+			continue
+		_k_base, k_plan = _mix_date_key_base_and_plan(date_key)
+		if (k_plan or "") == (keep_plan or ""):
+			continue
+		entries = _load_mix_store_entries(date_key)
+		next_entries = [
+			e
+			for e in entries
+			if not (isinstance(e, dict) and _cstr(e.get("mix_id")).strip() == mix_id)
+		]
+		if len(next_entries) != len(entries):
+			save_mix_roll_data(date_key, next_entries)
+
+
+def _locked_color_chart_plan_names() -> list:
+	from production_entry.production_planning.scheduler_api import get_persisted_plans
+
+	plans = get_persisted_plans("color_chart") or []
+	out = []
+	for p in plans:
+		if not isinstance(p, dict):
+			continue
+		name = _cstr(p.get("name")).strip() or "Default"
+		if cint(p.get("locked")):
+			out.append(name)
+	return out
+
+
+def _plan_unit_colours_near_date(plan_name: str, unit: str, ref_date) -> set:
+	"""Distinct colours on Planning sheets for plan + unit around ref_date."""
+	plan_name = _cstr(plan_name).strip() or "Default"
+	unit = _normalize_mix_unit(unit)
+	if not unit or not frappe.db.table_exists("Planning Table"):
+		return set()
+	try:
+		d = getdate(ref_date)
+	except Exception:
+		d = getdate()
+	start = frappe.utils.add_days(d, -14)
+	end = frappe.utils.add_days(d, 14)
+	has_ps_cpd = frappe.db.has_column("Planning sheet", "custom_planned_date")
+	date_expr = (
+		"COALESCE(NULLIF(i.planned_date,''), NULLIF(p.custom_planned_date,''), p.ordered_date)"
+		if has_ps_cpd and frappe.db.has_column("Planning Table", "planned_date")
+		else (
+			"COALESCE(p.custom_planned_date, p.ordered_date)"
+			if has_ps_cpd
+			else "p.ordered_date"
+		)
+	)
+	if plan_name == "Default":
+		plan_sql = "(p.custom_plan_name IS NULL OR p.custom_plan_name = '' OR p.custom_plan_name = 'Default')"
+		params = (unit, start, end)
+	else:
+		plan_sql = "p.custom_plan_name = %s"
+		params = (unit, plan_name, start, end)
+	try:
+		rows = frappe.db.sql(
+			f"""
+			SELECT DISTINCT UPPER(TRIM(i.color))
+			FROM `tabPlanning Table` i
+			JOIN `tabPlanning sheet` p ON i.parent = p.name
+			WHERE i.unit = %s
+			  AND {plan_sql}
+			  AND i.color IS NOT NULL AND TRIM(i.color) != ''
+			  AND {date_expr} BETWEEN %s AND %s
+			""",
+			params,
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "plan_unit_colours_near_date")
+		return set()
+	return {(_cstr(r[0]).strip().upper()) for r in (rows or []) if r and r[0]}
+
+
+def _resolve_mix_target_plan(unit, color1, color2, planned_date=None, run_date=None) -> str:
+	"""Pick the locked Color Chart plan where from→to colours belong.
+
+	Does not fan out across Default/open plans. Prefers locked plans that already
+	hold this transition or have both colours on the unit's color chart.
+	"""
+	unit_n = _normalize_mix_unit(unit)
+	c1 = _cstr(color1).strip().upper()
+	c2 = _cstr(color2).strip().upper()
+	locked = _locked_color_chart_plan_names()
+	ref = planned_date or run_date
+	try:
+		ref_date = getdate(ref) if ref else getdate()
+	except Exception:
+		ref_date = getdate()
+
+	# 1) Locked plan store already has this unit + color1→color2
+	match_key = _mix_roll_match_key(unit_n, c1, c2)
+	for date_key, entry in _iter_mix_roll_store_rows():
+		if not isinstance(entry, dict) or entry.get("isRecycle"):
+			continue
+		if _normalize_mix_unit(entry.get("unit")) != unit_n:
+			continue
+		if _mix_roll_match_key(entry.get("unit"), entry.get("color1"), entry.get("color2")) != match_key:
+			continue
+		_base, plan = _mix_date_key_base_and_plan(date_key)
+		plan = _cstr(entry.get("_plan_name") or plan).strip() or "Default"
+		if locked and plan in locked:
+			return plan
+		if not locked and plan and plan != "Default":
+			return plan
+
+	# 2) Score locked plans by colours present on Planning sheets
+	if locked:
+		best = ""
+		best_score = -1
+		for plan in locked:
+			colors = _plan_unit_colours_near_date(plan, unit_n, ref_date)
+			score = 0
+			if c1 in colors and c2 in colors:
+				score = 3
+			elif c1 in colors or c2 in colors:
+				score = 1
+			if score > best_score:
+				best_score = score
+				best = plan
+		if best and best_score > 0:
+			return best
+		# Locked plans exist but colours not found — still pin to first non-Default locked
+		for plan in locked:
+			if plan != "Default":
+				return plan
+		return locked[0]
+
+	return "Default"
 
 
 def _gsm_browse_scope_months(
@@ -6798,8 +6945,9 @@ def _gsm_mix_store_date_key(
 	filter_week=None,
 	filter_month=None,
 	run_date=None,
+	plan_name=None,
 ) -> str:
-	"""Color Chart mix_roll_store_data key matching the GSM browse filters."""
+	"""Color Chart mix_roll_store_data key matching the GSM browse filters (+ optional plan)."""
 	import re as _re
 
 	scope = _cstr(view_scope or "daily").strip().lower()
@@ -6807,17 +6955,27 @@ def _gsm_mix_store_date_key(
 		fm = _cstr(filter_month).strip()
 		m = _re.match(r"^(\d{4})-(\d{1,2})", fm) if fm else None
 		if m:
-			return f"month-{int(m.group(1)):04d}-{int(m.group(2)):02d}"
-		d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
-		return f"month-{d.year:04d}-{d.month:02d}"
-	if scope == "weekly":
+			base = f"month-{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+		else:
+			d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
+			base = f"month-{d.year:04d}-{d.month:02d}"
+	elif scope == "weekly":
 		fw = _cstr(filter_week).strip()
 		if fw:
 			if fw.lower().startswith("week-"):
-				return fw
-			return f"week-{fw}"
-	d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
-	return f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+				base = fw
+			else:
+				base = f"week-{fw}"
+		else:
+			d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
+			base = f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+	else:
+		d = getdate(planned_date or run_date) if (planned_date or run_date) else getdate()
+		base = f"day-{d.year:04d}-{d.month:02d}-{d.day:02d}"
+	plan = _cstr(plan_name).strip()
+	if plan and plan != "Default":
+		return f"{base}-{plan}"
+	return base
 
 
 def _load_mix_store_entries(date_key: str) -> list:
@@ -6842,7 +7000,9 @@ def _mix_roll_match_key(unit, color1, color2) -> str:
 	)
 
 
-def _find_gsm_operator_mix_match(target_unit: str, mix_match_key: str, scope_months: set):
+def _find_gsm_operator_mix_match(
+	target_unit: str, mix_match_key: str, scope_months: set, preferred_plan: str | None = None
+):
 	"""Locate a Color Chart mix row for this unit + from/to colour in the browse month.
 
 	Returns (date_key, mix_id, action):
@@ -6850,6 +7010,8 @@ def _find_gsm_operator_mix_match(target_unit: str, mix_match_key: str, scope_mon
 	- new_on_key: row exists and already has items (UPDATE ITEMS) — caller appends a new row
 	- (None, None, None): not on the plan
 	"""
+	preferred_plan = _cstr(preferred_plan).strip()
+	preferred_hit = None
 	created_hit = None
 	for date_key, entry in _iter_mix_roll_store_rows():
 		if not isinstance(entry, dict) or entry.get("isRecycle"):
@@ -6861,13 +7023,29 @@ def _find_gsm_operator_mix_match(target_unit: str, mix_match_key: str, scope_mon
 		key_months = _mix_date_key_months(date_key)
 		if not key_months or not (key_months & scope_months):
 			continue
+		_base, key_plan = _mix_date_key_base_and_plan(date_key)
+		entry_plan = _cstr(entry.get("_plan_name") or key_plan).strip() or "Default"
 		has_item = bool(_cstr(entry.get("item_code")).strip())
 		submitted = bool(entry.get("_submitted"))
 		mix_id = _cstr(entry.get("mix_id")).strip()
+		hit = (date_key, mix_id, "update" if (not has_item and not submitted) else "new_on_key")
+		if preferred_plan and entry_plan == preferred_plan:
+			if hit[2] == "update":
+				return date_key, mix_id, "update"
+			if preferred_hit is None:
+				preferred_hit = (date_key, mix_id, "new_on_key")
+			continue
 		if not has_item and not submitted:
-			return date_key, mix_id, "update"
-		if created_hit is None:
+			if preferred_plan:
+				# Keep searching for preferred plan; fall back later
+				if created_hit is None:
+					created_hit = (date_key, mix_id, "update")
+			else:
+				return date_key, mix_id, "update"
+		elif created_hit is None:
 			created_hit = (date_key, mix_id, "new_on_key")
+	if preferred_hit:
+		return preferred_hit
 	if created_hit:
 		return created_hit
 	return None, None, None
@@ -6891,6 +7069,7 @@ def _new_gsm_mix_store_row(payload: dict) -> dict:
 		"_prevMixName": "",
 		"_isManual": True,
 		"_fromGsmEntry": True,
+		"_plan_name": _cstr(payload.get("plan_name")).strip() or "Default",
 		"mix_id": f"mix-{frappe.generate_hash(length=8)}",
 	}
 
@@ -6908,6 +7087,8 @@ def _apply_gsm_mix_fields(entry: dict, payload: dict):
 	entry["kg"] = payload["kg"]
 	entry["_isManual"] = True
 	entry["_fromGsmEntry"] = True
+	if payload.get("plan_name"):
+		entry["_plan_name"] = _cstr(payload.get("plan_name")).strip() or "Default"
 
 
 def _create_mix_items_for_store_row(entry: dict):
@@ -7049,9 +7230,28 @@ def upsert_gsm_mix_roll_from_entry(
 	if payload["gsm"] == int(payload["gsm"]):
 		payload["gsm"] = int(payload["gsm"])
 
+	target_plan = _resolve_mix_target_plan(
+		target_unit,
+		color1,
+		color2,
+		planned_date=planned_date,
+		run_date=run_date,
+	)
+	payload["plan_name"] = target_plan
+
 	mix_match_key = _mix_roll_match_key(target_unit, color1, color2)
 	found_key, found_id, action = _find_gsm_operator_mix_match(
-		target_unit, mix_match_key, scope_months
+		target_unit, mix_match_key, scope_months, preferred_plan=target_plan
+	)
+
+	# Prefer writing onto the resolved plan key (unless updating an existing CREATE ITEMS row)
+	preferred_key = _gsm_mix_store_date_key(
+		planned_date=planned_date,
+		view_scope=view_scope,
+		filter_week=filter_week,
+		filter_month=filter_month,
+		run_date=run_date,
+		plan_name=target_plan,
 	)
 
 	if action == "update" and found_key:
@@ -7076,6 +7276,8 @@ def upsert_gsm_mix_roll_from_entry(
 				entry = row
 				break
 		if entry is None:
+			date_key = preferred_key
+			entries = _load_mix_store_entries(date_key)
 			entry = _new_gsm_mix_store_row(payload)
 			entries.append(entry)
 			action = "created"
@@ -7083,29 +7285,28 @@ def upsert_gsm_mix_roll_from_entry(
 			_apply_gsm_mix_fields(entry, payload)
 			action = "updated"
 	else:
-		date_key = found_key or _gsm_mix_store_date_key(
-			planned_date=planned_date,
-			view_scope=view_scope,
-			filter_week=filter_week,
-			filter_month=filter_month,
-			run_date=run_date,
-		)
+		date_key = preferred_key
+		# If a same-plan unfinished row was found under another scope key, still create on preferred
 		entries = _load_mix_store_entries(date_key)
 		entry = _new_gsm_mix_store_row(payload)
 		entries.append(entry)
 		action = "created"
 
 	_create_mix_items_for_store_row(entry)
+	entry["_plan_name"] = target_plan
 	save_mix_roll_data(date_key, entries)
 	_copy_mix_row_to_related_stores(entry, date_key, planned_date=planned_date or run_date)
+	_purge_mix_id_from_other_plan_stores(_cstr(entry.get("mix_id")), date_key)
 
 	candidate = _serialize_mix_roll_candidate(date_key, entry)
 	overlap = sorted(_mix_date_key_months(date_key) & scope_months)
 	candidate["planning_month"] = overlap[0] if overlap else (sorted(scope_months)[0] if scope_months else "")
+	candidate["plan_name"] = target_plan
 	return {
 		"status": "ok",
 		"action": action,
 		"date_key": date_key,
+		"plan_name": target_plan,
 		"mix": candidate,
 	}
 
