@@ -4793,6 +4793,50 @@ function spr_register_spr_page_buttons(frm) {
 		}
 	});
 	addInner(function () {
+		if (!frm.doc || !frm.doc.name || frm.is_new()) {
+			return;
+		}
+		frm.page.add_inner_button(
+			__('Force Recalculate Wastage'),
+			function () {
+				frappe.confirm(
+					__(
+						'Rebuild Running Patty Wastage and Recycled Wastage Details from Available Jobs / rolls? This overwrites current wastage rows.'
+					),
+					function () {
+						frappe.call({
+							method:
+								'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.force_recalculate_spr_wastage_and_recycle',
+							args: { spr_name: frm.doc.name },
+							freeze: true,
+							freeze_message: __('Force calculating wastage & recycle…'),
+							callback: function (r) {
+								const msg = r.message || {};
+								if (msg.status === 'no_computed') {
+									frappe.msgprint({
+										title: __('Could not calculate'),
+										message: msg.message || __('No wastage could be computed from jobs/rolls.'),
+										indicator: 'orange',
+									});
+									return;
+								}
+								frappe.show_alert({
+									message: __(
+										'Wastage rows: {0}, Recycle rows: {1}',
+										[msg.patty_rows || 0, msg.recycled_rows || 0]
+									),
+									indicator: 'green',
+								});
+								frm.reload_doc();
+							},
+						});
+					}
+				);
+			},
+			tg
+		);
+	});
+	addInner(function () {
 		if (cint(frm.doc.docstatus) === 1 && frm.doc.name) {
 			frm.add_custom_button(__('Transfer'), function () {
 				try {

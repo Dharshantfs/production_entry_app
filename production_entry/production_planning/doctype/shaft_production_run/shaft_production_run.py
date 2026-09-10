@@ -12420,19 +12420,62 @@ def _spr_patty_wastage_fieldname() -> str | None:
 	return None
 
 
+def _spr_meta_find_field(meta, include_any, exclude_any=None):
+	"""Find first child field whose fieldname/label contains any include token."""
+	exclude_any = [e.lower() for e in (exclude_any or [])]
+	includes = [i.lower() for i in (include_any or []) if i]
+	for df in meta.fields or []:
+		blob = f"{df.fieldname} {df.label or ''}".lower()
+		if any(ex in blob for ex in exclude_any):
+			continue
+		if any(inc in blob for inc in includes):
+			return df.fieldname
+	return None
+
+
+def _spr_patty_live_field_map() -> dict:
+	"""Discover live Running Patty Wastage Row fieldnames (site-specific naming)."""
+	child_dt = "Running Patty Wastage Row"
+	if not frappe.db.exists("DocType", child_dt):
+		return {}
+	meta = frappe.get_meta(child_dt)
+	existing = {df.fieldname for df in meta.fields}
+	mapping = {
+		"job_id": _spr_meta_find_field(meta, ["job_id", "job"], ["recycle"]) or ("job_id" if "job_id" in existing else None),
+		"quality": _spr_meta_find_field(meta, ["quality"]),
+		"color": _spr_meta_find_field(meta, ["color", "colour"]),
+		"gsm": _spr_meta_find_field(meta, ["gsm"]),
+		"width": _spr_meta_find_field(meta, ["width"], ["core", "machine"]),
+		"meter": _spr_meta_find_field(meta, ["meter"], ["wastage", "shaft", "recycle"])
+		or _spr_meta_find_field(meta, ["roll"], ["shaft", "wastage", "no_of", "recycle"]),
+		"shafts": _spr_meta_find_field(meta, ["shaft"], ["one_shaft", "wastage"]),
+		"wastage_qty": _spr_meta_find_field(meta, ["wastage_qty", "wastage_qt"])
+		or _spr_meta_find_field(meta, ["wastage"], ["net", "recycle", "one_shaft", "process"]),
+		"recycled_qty": _spr_meta_find_field(meta, ["recycled_qty", "recycled"], ["recycle_to", "next", "detail"]),
+		"net_wastage": _spr_meta_find_field(meta, ["net_wastage", "net wastage"]),
+		"one_shaft": _spr_meta_find_field(meta, ["one_shaft", "one shaft"]),
+		"recycle_to_next": _spr_meta_find_field(meta, ["recycle_to_next", "recycle to next"]),
+		"batch_no": _spr_meta_find_field(meta, ["batch"]),
+	}
+	return {k: v for k, v in mapping.items() if v}
+
+
 def _spr_write_patty_child_row(logical: dict) -> dict:
-	"""Map logical patty keys to whichever fieldnames exist on the live child DocType.
+	"""Map logical patty keys onto live child fieldnames (dynamic discovery + aliases).
 
 	IMPORTANT: do not cross-map net_wastage ↔ wastage_qty. Desk sets net_wastage=0 when
-	Recycle to Next is checked; if that value is also written onto wastage_qty, submit
-	persists zeros for every qty column (the bug users see after GSM submit).
+	Recycle to Next is checked; writing that 0 onto wastage_qty zeroes every qty column.
 	"""
 	child_dt = "Running Patty Wastage Row"
 	if not frappe.db.exists("DocType", child_dt):
 		return {k: v for k, v in (logical or {}).items() if not _cstr(k).startswith("_")}
+
+	live = _spr_patty_live_field_map()
 	meta = frappe.get_meta(child_dt)
 	existing = {df.fieldname for df in meta.fields}
-	aliases = {
+
+	# logical key -> preferred live field (discovered) then static aliases
+	static_aliases = {
 		"job_id": ("job_id", "job"),
 		"quality": ("quality", "custom_quality"),
 		"color": ("color", "fabric_colour", "custom_color"),
@@ -12448,16 +12491,9 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 			"produced_length_mtr",
 		),
 		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
-		# Wastage qty (shafts × one-tail) — never write net_wastage here
 		"wastage": ("wastage_qty", "wastage_qt", "wastage"),
 		"wastage_qty": ("wastage_qty", "wastage_qt", "wastage"),
-		# One-shaft / net — separate from wastage_qty
-		"one_shaft_gross": (
-			"one_shaft_gross",
-			"one_shaft_wastage",
-			"one_shaft",
-			"one_shaft_weight",
-		),
+		"one_shaft_gross": ("one_shaft_gross", "one_shaft_wastage", "one_shaft", "one_shaft_weight"),
 		"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs"),
 		"recycled": ("recycled_qty", "recycled", "recycled_kg"),
 		"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
@@ -12469,7 +12505,25 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		"party_code": ("party_code", "order_code"),
 		"order_code": ("order_code", "party_code"),
 	}
-	# Prefer wastage_qty over wastage when both keys present so totals win.
+	live_for_logical = {
+		"job_id": live.get("job_id"),
+		"quality": live.get("quality"),
+		"color": live.get("color"),
+		"gsm": live.get("gsm"),
+		"width_inch": live.get("width"),
+		"width": live.get("width"),
+		"meter_per_roll": live.get("meter"),
+		"no_of_shafts": live.get("shafts"),
+		"wastage": live.get("wastage_qty"),
+		"wastage_qty": live.get("wastage_qty"),
+		"one_shaft_gross": live.get("one_shaft"),
+		"net_wastage": live.get("net_wastage"),
+		"recycled": live.get("recycled_qty"),
+		"recycled_qty": live.get("recycled_qty"),
+		"recycle_to_next": live.get("recycle_to_next"),
+		"batch_no": live.get("batch_no"),
+	}
+
 	ordered_keys = []
 	seen = set()
 	for key in (
@@ -12511,11 +12565,17 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 			continue
 		if isinstance(val, str) and not val.strip():
 			continue
+		# Prefer single discovered live field to avoid alias collisions
+		live_fn = live_for_logical.get(key)
+		if live_fn and live_fn in existing:
+			out[live_fn] = val
+			continue
 		wrote = False
-		for fn in aliases.get(key, (key,)):
+		for fn in static_aliases.get(key, (key,)):
 			if fn in existing:
 				out[fn] = val
 				wrote = True
+				break  # one field only — avoid net/wastage collision via multi-write
 		if not wrote and key in existing:
 			out[key] = val
 	return out
@@ -12948,19 +13008,39 @@ def _spr_write_recycled_child_row(logical: dict) -> dict:
 		return {k: v for k, v in (logical or {}).items() if not _cstr(k).startswith("_")}
 	meta = frappe.get_meta(child_dt)
 	existing = {df.fieldname for df in meta.fields}
+	# Prefer label/name discovery for Available / Recycled columns
+	avail_f = _spr_meta_find_field(meta, ["available"])
+	recy_f = _spr_meta_find_field(meta, ["recycled"], ["recycle_to", "detail", "wastage"])
+	meter_f = _spr_meta_find_field(meta, ["meter"], ["wastage", "shaft"]) or _spr_meta_find_field(
+		meta, ["roll"], ["shaft", "no_of", "wastage"]
+	)
+	width_f = _spr_meta_find_field(meta, ["width"], ["core"])
+	shaft_f = _spr_meta_find_field(meta, ["shaft"], ["one_shaft", "wastage"])
 	aliases = {
 		"job_id": ("job_id", "job"),
 		"quality": ("quality", "custom_quality"),
 		"color": ("color", "fabric_colour", "custom_color", "colour"),
 		"gsm": ("gsm",),
-		"width_inch": ("width_inch", "width", "w", "patty_width"),
-		"width": ("width", "width_inch", "w"),
-		"meter_per_roll": ("meter__roll", "meter_per_roll", "meter_roll", "meter"),
-		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
-		"available": ("available_qty_kgs", "available_qty", "available", "available_kg"),
-		"available_qty": ("available_qty_kgs", "available_qty", "available", "available_kg"),
-		"recycled": ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
-		"recycled_qty": ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
+		"width_inch": (width_f, "width_inch", "width", "w", "patty_width") if width_f else ("width_inch", "width", "w", "patty_width"),
+		"width": (width_f, "width", "width_inch", "w") if width_f else ("width", "width_inch", "w"),
+		"meter_per_roll": (meter_f, "meter__roll", "meter_per_roll", "meter_roll", "meter")
+		if meter_f
+		else ("meter__roll", "meter_per_roll", "meter_roll", "meter"),
+		"no_of_shafts": (shaft_f, "no_of_shafts", "shafts", "no_of_shaft")
+		if shaft_f
+		else ("no_of_shafts", "shafts", "no_of_shaft"),
+		"available": (avail_f, "available_qty_kgs", "available_qty", "available", "available_kg")
+		if avail_f
+		else ("available_qty_kgs", "available_qty", "available", "available_kg"),
+		"available_qty": (avail_f, "available_qty_kgs", "available_qty", "available", "available_kg")
+		if avail_f
+		else ("available_qty_kgs", "available_qty", "available", "available_kg"),
+		"recycled": (recy_f, "recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg")
+		if recy_f
+		else ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
+		"recycled_qty": (recy_f, "recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg")
+		if recy_f
+		else ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
 		"wastage": ("wastage", "wastage_qty"),
 		"wastage_qty": ("wastage_qty", "wastage"),
 		"calculation_details": ("calculation_details",),
@@ -12973,9 +13053,12 @@ def _spr_write_recycled_child_row(logical: dict) -> dict:
 			continue
 		wrote = False
 		for fn in aliases.get(key, (key,)):
+			if not fn:
+				continue
 			if fn in existing:
 				out[fn] = val
 				wrote = True
+				break
 		if not wrote and key in existing:
 			out[key] = val
 	return out
@@ -13650,14 +13733,155 @@ def repair_submitted_spr_wastage_and_recycle(spr_names=None, run_date=None, unit
 	):
 		if known not in names and frappe.db.exists("Shaft Production Run", known):
 			names.append(known)
-	return backfill_spr_patty_and_core(
-		spr_names=names or None,
-		run_date=run_date,
-		unit=unit,
-		only_empty=0,
-		refresh_zero_rows=1,
-		limit=limit,
-	)
+	if not names:
+		return backfill_spr_patty_and_core(
+			spr_names=None,
+			run_date=run_date,
+			unit=unit,
+			only_empty=0,
+			refresh_zero_rows=1,
+			limit=limit,
+		)
+	results = []
+	fixed = 0
+	for name in names:
+		try:
+			res = force_recalculate_spr_wastage_and_recycle(name)
+			if res.get("patty_rows") or res.get("recycled_rows"):
+				fixed += 1
+			results.append(res)
+		except Exception as e:
+			results.append({"spr_name": name, "status": "error", "error": _cstr(e)})
+	return {"status": "ok", "count": len(results), "fixed": fixed, "results": results}
+
+
+@frappe.whitelist()
+def force_recalculate_spr_wastage_and_recycle(spr_name):
+	"""Hard rebuild Running Patty Wastage + Recycled Wastage Details for one SPR (draft or submitted).
+
+	Deletes existing auto patty/recycle child rows and rewrites from jobs/rolls using live
+	field discovery so Width / Meter / Wastage Qty / Recycled Qty actually land for reports.
+	"""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=180):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		patty_field = _spr_patty_wastage_fieldname()
+		rec_field = _spr_recycled_wastage_fieldname()
+		if not patty_field:
+			frappe.throw(_("Running Patty Wastage table is not configured on Shaft Production Run"))
+
+		# Preserve recycle_to_next by job
+		saved_flags = {}
+		for row in spr.get(patty_field) or []:
+			jid = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+			if jid:
+				saved_flags[jid] = cint(
+					getattr(row, "recycle_to_next", None) or getattr(row, "custom_recycle_to_next", None) or 0
+				)
+
+		computed = _spr_compute_patty_wastage_by_job(spr) or {}
+		live_map = _spr_patty_live_field_map()
+		if not computed:
+			return {
+				"status": "no_computed",
+				"spr_name": spr_name,
+				"live_fields": live_map,
+				"unit": _cstr(spr.get("custom_unit") or spr.get("unit") or ""),
+				"jobs": len(spr.shaft_jobs or []),
+				"items": len([it for it in (spr.items or []) if _spr_is_real_roll_item_row(it)]),
+				"message": _(
+					"Could not compute wastage — check Unit is Unit 1–4 and Available Jobs have GSM, meter/roll, and shafts."
+				),
+			}
+
+		submitted = cint(spr.docstatus) == 1
+		child_dt = "Running Patty Wastage Row"
+
+		# Wipe existing patty rows (keep none — full force rewrite)
+		for old in list(spr.get(patty_field) or []):
+			try:
+				frappe.delete_doc(old.doctype, old.name, force=1, ignore_permissions=True, delete_permanently=True)
+			except Exception:
+				frappe.db.sql(f"DELETE FROM `tab{old.doctype}` WHERE name=%s", (old.name,))
+		spr.set(patty_field, [])
+
+		written = []
+		idx = 0
+		for jid, logical in computed.items():
+			flag = saved_flags.get(_cstr(jid), cint(logical.get("recycle_to_next") or 0))
+			logical = _spr_apply_patty_recycle_net(dict(logical), flag)
+			values = _spr_write_patty_child_row(logical)
+			if not values:
+				continue
+			idx += 1
+			values["idx"] = idx
+			child = spr.append(patty_field, values)
+			if submitted:
+				child.db_insert()
+			written.append(
+				{
+					"job_id": jid,
+					"meter": flt(logical.get("meter_per_roll") or 0),
+					"width": flt(logical.get("width_inch") or 0),
+					"shafts": cint(logical.get("no_of_shafts") or 0),
+					"wastage_qty": flt(logical.get("wastage_qty") or 0),
+					"recycled_qty": flt(logical.get("recycled_qty") or 0),
+					"net_wastage": flt(logical.get("net_wastage") or 0),
+					"one_shaft": flt(logical.get("one_shaft_gross") or 0),
+					"recycle_to_next": flag,
+					"db_fields": values,
+				}
+			)
+
+		# Recycled table
+		recycled_count = 0
+		if rec_field:
+			for old in list(spr.get(rec_field) or []):
+				jid = _cstr(getattr(old, "job_id", None) or "").lower()
+				if jid == "patty":
+					continue
+				try:
+					frappe.delete_doc(old.doctype, old.name, force=1, ignore_permissions=True, delete_permanently=True)
+				except Exception:
+					frappe.db.sql(f"DELETE FROM `tab{old.doctype}` WHERE name=%s", (old.name,))
+			# keep only Patty stock rows
+			keep = [
+				r
+				for r in (spr.get(rec_field) or [])
+				if _cstr(getattr(r, "job_id", None) or "").lower() == "patty"
+			]
+			spr.set(rec_field, keep)
+			# Reload patty into memory for sync after db_insert
+			if submitted:
+				spr = frappe.get_doc("Shaft Production Run", spr_name)
+			recycled_count = _spr_sync_recycled_wastage_from_patty(spr)
+			if submitted:
+				for row in spr.get(rec_field) or []:
+					if getattr(row, "name", None) and frappe.db.exists(row.doctype, row.name):
+						continue
+					if hasattr(row, "db_insert"):
+						row.db_insert()
+			elif not submitted:
+				spr.flags._spr_incremental_roll_save = True
+				spr.flags.ignore_version = True
+				spr.save(ignore_permissions=True)
+		elif not submitted:
+			spr.flags._spr_incremental_roll_save = True
+			spr.flags.ignore_version = True
+			spr.save(ignore_permissions=True)
+
+		frappe.db.commit()
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"patty_rows": len(written),
+			"recycled_rows": recycled_count,
+			"live_fields": live_map,
+			"rows": written,
+		}
 
 
 @frappe.whitelist()
