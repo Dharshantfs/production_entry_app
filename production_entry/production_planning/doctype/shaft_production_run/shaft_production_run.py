@@ -13281,8 +13281,29 @@ def _spr_selected_core_inch_from_row(row, width_inch: float) -> float:
 	return _fabric_width_to_stock_core_inch(width_inch) if width_inch > 0 else 0.0
 
 
+def _spr_cores_per_shaft(unit_text: str, core_inch: float) -> int:
+	"""Unit 1/4 → 1. Unit 2/3 → 2 if core ≤63", else 1."""
+	u = _cstr(unit_text).upper()
+	if "UNIT 1" in u or "UNIT 4" in u:
+		return 1
+	if "UNIT 2" in u or "UNIT 3" in u:
+		return 2 if flt(core_inch) <= 63 else 1
+	return 1
+
+
+def _spr_roll_shaft_key(row) -> str:
+	for key in ("custom_no_of_shaft", "no_of_shaft", "custom_shaft_no", "shaft_no"):
+		val = getattr(row, key, None)
+		if val is not None and _cstr(val) != "":
+			return _cstr(val)
+	return f"row:{_cstr(getattr(row, 'name', None) or getattr(row, 'idx', None) or '')}"
+
+
 def _spr_compute_core_details_from_items(spr) -> list[dict]:
-	"""Aggregate custom_core_details like desk calculate_aggregate_totals (fabric units)."""
+	"""Aggregate custom_core_details like desk calculate_aggregate_totals (fabric units).
+
+	Quantity Nos = unique shafts × cores_per_shaft (not one core per roll row).
+	"""
 	unit = _spr_patty_unit_text(spr)
 	unit_u = unit.upper()
 	if any(x in unit_u for x in ("JVE", "SHEET CUTTING", "BAG")):
@@ -13315,16 +13336,27 @@ def _spr_compute_core_details_from_items(spr) -> list[dict]:
 		if explicit.startswith("PC"):
 			ic = explicit
 			name = _cstr(getattr(row, "core_item_name", None) or name)
-		bucket = totals.setdefault(ic, {"core_item": ic, "item_name": name, "core_nos": 0, "quantity_kgs": 0.0, "wastage_quantity_kgs": 0.0})
-		bucket["core_nos"] += 1
+		bucket = totals.setdefault(
+			ic,
+			{
+				"core_item": ic,
+				"item_name": name,
+				"core_nos": 0,
+				"quantity_kgs": 0.0,
+				"wastage_quantity_kgs": 0.0,
+				"_shafts": set(),
+			},
+		)
+		sk = _spr_roll_shaft_key(row)
+		if sk not in bucket["_shafts"]:
+			bucket["_shafts"].add(sk)
+			bucket["core_nos"] += _spr_cores_per_shaft(unit, selected_inch or map_inch)
 		shaft_core_kgs = flt(getattr(row, "gross_weight", None) or 0) - flt(getattr(row, "net_weight", None) or 0)
 		if shaft_core_kgs < 0:
 			shaft_core_kgs = 0.0
 		# Proportional used/wastage when fabric width < selected core inch (desk parity)
 		base_weight = shaft_core_kgs
 		if selected_inch > 0 and width > 0 and width < selected_inch and shaft_core_kgs > 0:
-			# Infer selected base from shaft_core when width ratio applied: used = (w/sel)*base ⇒ base = shaft? 
-			# Desk uses master base weight; without it use shaft_core as used kg and skip wastage.
 			bucket["quantity_kgs"] += shaft_core_kgs
 		else:
 			bucket["quantity_kgs"] += shaft_core_kgs if shaft_core_kgs > 0 else base_weight

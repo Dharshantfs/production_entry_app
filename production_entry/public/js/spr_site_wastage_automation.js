@@ -1,6 +1,119 @@
 // Wastage Automation for Shaft Production Run
 // DocType: Shaft Production Run
 
+/** Resolve Running Patty child fieldnames safely (site field names vary). */
+function resolve_patty_wastage_fields(wast_fields) {
+    wast_fields = wast_fields || [];
+    const pick = (candidates, excludes) => {
+        excludes = (excludes || []).map((e) => String(e).toLowerCase());
+        for (const cand of candidates) {
+            const hit = wast_fields.find((f) => {
+                const fl = String(f).toLowerCase();
+                if (excludes.some((ex) => fl.includes(ex))) return false;
+                if (cand.exact) return fl === cand.exact;
+                if (cand.includes) return fl.includes(cand.includes);
+                return false;
+            });
+            if (hit) return hit;
+        }
+        return candidates[0] && candidates[0].fallback ? candidates[0].fallback : null;
+    };
+    return {
+        qty: pick(
+            [
+                { exact: "wastage_qty" },
+                { exact: "wastage_qt" },
+                { exact: "wastage" },
+                { includes: "wastage_qty", fallback: "wastage_qty" },
+            ],
+            ["net", "one_shaft", "recycle", "process"]
+        ) || "wastage_qty",
+        recycled: pick(
+            [
+                { exact: "recycled_qty" },
+                { exact: "recycled" },
+                { includes: "recycled_qty", fallback: "recycled_qty" },
+                { includes: "recycled", fallback: "recycled_qty" },
+            ],
+            ["recycle_to", "next", "detail"]
+        ) || "recycled_qty",
+        net: pick(
+            [
+                { exact: "net_wastage" },
+                { includes: "net_wastage", fallback: "net_wastage" },
+            ],
+            []
+        ) || "net_wastage",
+        shafts: pick(
+            [
+                { exact: "no_of_shafts" },
+                { exact: "no_of_shaft" },
+                { exact: "shafts" },
+                { includes: "no_of_shaft", fallback: "no_of_shafts" },
+            ],
+            ["one_shaft", "wastage"]
+        ) || "no_of_shafts",
+        one_shaft: pick(
+            [
+                { exact: "one_shaft_gross" },
+                { exact: "one_shaft_wastage" },
+                { exact: "one_shaft" },
+                { includes: "one_shaft_gross", fallback: "one_shaft_gross" },
+                { includes: "one_shaft", fallback: "one_shaft_wastage" },
+            ],
+            ["no_of"]
+        ) || "one_shaft_wastage",
+        recycle: pick(
+            [
+                { exact: "recycle_to_next" },
+                { exact: "custom_recycle_to_next" },
+                { includes: "recycle_to_next", fallback: "recycle_to_next" },
+            ],
+            []
+        ) || "recycle_to_next",
+        width: pick(
+            [
+                { exact: "width_inch" },
+                { exact: "width" },
+                { includes: "width", fallback: "width_inch" },
+            ],
+            ["core", "machine"]
+        ) || "width_inch",
+        meter: pick(
+            [
+                { exact: "meter_per_roll" },
+                { exact: "meter__roll" },
+                { exact: "meter_roll" },
+                { exact: "meter" },
+                { includes: "meter", fallback: "meter_per_roll" },
+            ],
+            ["wastage", "shaft", "recycle"]
+        ) || "meter_per_roll",
+        gsm: pick([{ exact: "gsm" }, { includes: "gsm", fallback: "gsm" }], []) || "gsm",
+        job: pick(
+            [{ exact: "job_id" }, { exact: "job" }, { includes: "job_id", fallback: "job_id" }],
+            ["recycle"]
+        ) || "job_id",
+    };
+}
+
+function read_patty_tail_weight(row, fmap) {
+    var shafts = Math.max(flt(row[fmap.shafts] || row.no_of_shafts || 1), 1);
+    var tail = flt(
+        row[fmap.one_shaft] ||
+            row.one_shaft_gross ||
+            row.one_shaft_wastage ||
+            row.one_shaft ||
+            0
+    );
+    if (tail > 0) return tail;
+    var qty = flt(row[fmap.qty] || row.wastage_qty || row.wastage || 0);
+    if (qty > 0) return shafts > 1 ? qty / shafts : qty;
+    var net = flt(row[fmap.net] || row.net_wastage || 0);
+    if (net > 0) return net;
+    return 0;
+}
+
 frappe.ui.form.on('Shaft Production Run', {
     onload: function(frm) {
         // Safe initialization of child table triggers
@@ -396,11 +509,12 @@ function add_incremental_wastage(frm, item_row) {
     var find_jt = (kw) => job_fields.find(f => f.toLowerCase().includes(kw));
 
     var wast_fields = frm.fields_dict[wastage_field].grid.docfields.map(df => df.fieldname);
-    var w_qty_f = wast_fields.find(f => f.includes('wastage_qty') || f === 'qty' || f === 'wastage') || 'wastage_qty';
-    var w_rec_f = wast_fields.find(f => f.includes('recycled')) || 'recycled_qty';
-    var w_net_f = wast_fields.find(f => f.includes('net_wastage')) || 'net_wastage';
-    var w_osg_f = wast_fields.find(f => f.includes('one_shaft_gross')) || 'one_shaft_gross';
-    var w_chk_f = wast_fields.find(f => f.includes('recycle_to_next')) || 'recycle_to_next';
+    var fmap = resolve_patty_wastage_fields(wast_fields);
+    var w_qty_f = fmap.qty;
+    var w_rec_f = fmap.recycled;
+    var w_net_f = fmap.net;
+    var w_osg_f = fmap.one_shaft;
+    var w_chk_f = fmap.recycle;
 
     // Find the corresponding Job details row
     var job_row = (frm.doc.shaft_jobs || []).find(j => (j.job_id == job_id || j.job == job_id || j.idx == job_id || j.name == job_id || j.target_job_id == job_id || j.work_order == job_id));
@@ -540,15 +654,15 @@ function add_incremental_wastage(frm, item_row) {
     // Row already found or created in dedup check block above
     // (w_row was identified/created at line 170 approx)
 
-    var w_job_field = wast_fields.find(f => f.includes('job_id') || f === 'job') || 'job_id';
+    var w_job_field = fmap.job;
     w_row[w_job_field] = job_id;
     w_row.quality = item_row.quality || item_row.custom_quality;
     w_row.color = item_row.color || item_row.colour || item_row.custom_color;
 
-    var w_gsm_f = wast_fields.find(f => f.includes('gsm')) || 'gsm'; w_row[w_gsm_f] = row_gsm;
-    var w_wid_f = wast_fields.find(f => f.includes('width')) || 'width'; w_row[w_wid_f] = width;
-    var w_mtr_f = wast_fields.find(f => f.includes('meter') || f.includes('roll')) || 'meter_roll'; w_row[w_mtr_f] = row_m_roll;
-    var w_shf_f = wast_fields.find(f => f.includes('shaft')) || 'no_of_shafts'; w_row[w_shf_f] = row_shafts;
+    var w_gsm_f = fmap.gsm; w_row[w_gsm_f] = row_gsm;
+    var w_wid_f = fmap.width; w_row[w_wid_f] = width;
+    var w_mtr_f = fmap.meter; w_row[w_mtr_f] = row_m_roll;
+    var w_shf_f = fmap.shafts; w_row[w_shf_f] = row_shafts;
 
     w_row[w_qty_f] = row_shafts * tail_weight;
     w_row[w_rec_f] = (row_shafts > 1 ? row_shafts - 1 : 0) * tail_weight;
@@ -611,12 +725,13 @@ function recalculate_all_wastage(frm) {
     if (!wastage_field) return;
 
     var wast_fields = frm.fields_dict[wastage_field].grid.docfields.map(df => df.fieldname);
-    var w_qty_f = wast_fields.find(f => f.includes('wastage_qty') || f === 'qty' || f === 'wastage') || 'wastage_qty';
-    var w_rec_f = wast_fields.find(f => f.includes('recycled')) || 'recycled_qty';
-    var w_net_f = wast_fields.find(f => f.includes('net_wastage')) || 'net_wastage';
-    var w_chk_f = wast_fields.find(f => f.includes('recycle_to_next')) || 'recycle_to_next';
-    var w_shf_f = wast_fields.find(f => f.includes('shaft')) || 'no_of_shafts';
-    var w_osg_f = wast_fields.find(f => f.includes('one_shaft_gross')) || 'one_shaft_gross';
+    var fmap = resolve_patty_wastage_fields(wast_fields);
+    var w_qty_f = fmap.qty;
+    var w_rec_f = fmap.recycled;
+    var w_net_f = fmap.net;
+    var w_chk_f = fmap.recycle;
+    var w_shf_f = fmap.shafts;
+    var w_osg_f = fmap.one_shaft;
 
     var rows = frm.doc[wastage_field] || [];
     var prev_row = null;
@@ -632,23 +747,24 @@ function recalculate_all_wastage(frm) {
             var prev_color = (prev_row.color || prev_row.colour || prev_row.custom_color || "").toString().trim().toUpperCase();
 
             if (prev_recycle && prev_quality === current_quality && prev_color === current_color) {
-                recycled_from_prev = flt(prev_row[w_qty_f] || prev_row.wastage_qty || 0);
+                recycled_from_prev = flt(prev_row[w_qty_f] || prev_row.wastage_qty || prev_row.wastage || 0);
             }
         }
 
-        var shafts = flt(row[w_shf_f] || row.no_of_shafts || 1);
-        var tail_weight = flt(row[w_osg_f] || row.one_shaft_gross || 0);
-        if (!tail_weight) {
-            var qty = flt(row[w_qty_f] || row.wastage_qty || 0);
-            tail_weight = shafts > 1 ? (qty / shafts) : qty;
-            row[w_osg_f] = tail_weight;
+        var shafts = Math.max(flt(row[w_shf_f] || row.no_of_shafts || row.shafts || 1), 1);
+        var tail_weight = read_patty_tail_weight(row, fmap);
+        // Never wipe existing positive qty/width/meter when tail cannot be resolved
+        if (tail_weight <= 0) {
+            prev_row = row;
+            return;
         }
+        row[w_osg_f] = tail_weight;
         var is_rec_next = row[w_chk_f] || row.recycle_to_next || row.custom_recycle_to_next;
 
-        row[w_qty_f] = shafts * tail_weight;
-        row[w_rec_f] = (shafts > 1 ? shafts - 1 : 0) * tail_weight;
+        row[w_qty_f] = flt(shafts * tail_weight, 3);
+        row[w_rec_f] = flt((shafts > 1 ? shafts - 1 : 0) * tail_weight, 3);
 
-        // THE BINARY TOGGLE: 0 if checked, else 1 tail weight
+        // THE BINARY TOGGLE: 0 if checked, else 1 tail weight — never touch width/meter
         row[w_net_f] = is_rec_next ? 0 : tail_weight;
 
         prev_row = row;
@@ -687,9 +803,11 @@ function update_recycled_table(frm) {
 
     var w_rows = frm.doc[wastage_field] || [];
     var wast_fields = frm.fields_dict[wastage_field].grid.docfields.map(df => df.fieldname);
-    var w_qty_f = wast_fields.find(f => f.includes('wastage_qty') || f === 'qty' || f === 'wastage') || 'wastage_qty';
-    var w_chk_f = wast_fields.find(f => f.includes('recycle_to_next')) || 'recycle_to_next';
-    var w_shf_f = wast_fields.find(f => f.includes('shaft')) || 'no_of_shafts';
+    var fmap = resolve_patty_wastage_fields(wast_fields);
+    var w_qty_f = fmap.qty;
+    var w_chk_f = fmap.recycle;
+    var w_shf_f = fmap.shafts;
+    var w_osg_f = fmap.one_shaft;
 
     var rec_fields = frm.fields_dict[rec_table_field].grid.docfields.map(df => df.fieldname);
     
@@ -697,51 +815,47 @@ function update_recycled_table(frm) {
     var r_avail_f = 'available_qty_kgs';
     var r_recy_f = 'recycled_qty_kgs';
     var r_calc_f = 'calculation_details';
-
-    var w_osg_f = wast_fields.find(f => f.includes('one_shaft_gross')) || 'one_shaft_gross';
+    if (!rec_fields.includes(r_avail_f)) {
+        r_avail_f = rec_fields.find(f => f.includes('available')) || r_avail_f;
+    }
+    if (!rec_fields.includes(r_recy_f)) {
+        r_recy_f = rec_fields.find(f => f.includes('recycled') && !f.includes('recycle_to')) || r_recy_f;
+    }
 
     w_rows.forEach((w_row, idx) => {
-        var shafts = flt(w_row[w_shf_f] || w_row.no_of_shafts || w_row.shafts || 1);
-        var tail_weight = flt(w_row[w_osg_f] || w_row.one_shaft_gross || 0);
-        if (!tail_weight) {
-            var qty = flt(w_row[w_qty_f] || w_row.wastage_qty || 0);
-            tail_weight = shafts > 1 ? (qty / shafts) : qty;
-        }
-        var is_rec_next = (w_row[w_chk_f] || w_row.recycle_to_next || w_row.custom_recycle_to_next) ? 1 : 0;
+        var shafts = Math.max(flt(w_row[w_shf_f] || w_row.no_of_shafts || w_row.shafts || 1), 1);
+        var tail_weight = read_patty_tail_weight(w_row, fmap);
+        if (tail_weight <= 0) return;
 
         // Available Qty = Only (shafts - 1) tails are recycled as Patty Stock
         var recycled_shafts = shafts > 1 ? shafts - 1 : 0;
-        var total_available_qty = recycled_shafts * tail_weight;
-
-        // Recycled Qty = Same as available qty (all wastage tails are recycled as patty)
+        var total_available_qty = flt(recycled_shafts * tail_weight, 3);
         var total_recycled_qty = total_available_qty;
 
         if (total_available_qty > 0) {
             var r_row = frm.add_child(rec_table_field);
 
-            // Dynamic lookup for source fields (w_row)
-            var get_w_val = (keywords) => {
-                var w_f = wast_fields.find(f => keywords.some(kw => f.toLowerCase().includes(kw)));
-                return w_f ? w_row[w_f] : undefined;
-            };
-
-            // Explicitly map exactly to the provided Recycled Wastage Details fields
-            r_row.job_id = get_w_val(['job_id', 'job', 'work_order']) || '';
-            r_row.quality = get_w_val(['quality']) || '';
-            r_row.color = get_w_val(['color', 'colour']) || '';
-            r_row.gsm = get_w_val(['gsm']) || 0;
-            r_row.width = get_w_val(['width']) || 0;
-            r_row.meter__roll = get_w_val(['meter', 'roll']) || 0; 
+            r_row.job_id = w_row[fmap.job] || w_row.job_id || w_row.job || '';
+            r_row.quality = w_row.quality || w_row.custom_quality || '';
+            r_row.color = w_row.color || w_row.colour || w_row.custom_color || '';
+            r_row.gsm = w_row[fmap.gsm] || w_row.gsm || 0;
+            r_row.width = flt(w_row[fmap.width] || w_row.width_inch || w_row.width || 0);
+            r_row.width_inch = r_row.width;
+            if (rec_fields.includes('meter__roll')) {
+                r_row.meter__roll = flt(w_row[fmap.meter] || w_row.meter_per_roll || w_row.meter__roll || 0);
+            } else if (rec_fields.includes('meter_per_roll')) {
+                r_row.meter_per_roll = flt(w_row[fmap.meter] || w_row.meter_per_roll || 0);
+            } else if (rec_fields.includes('meter_roll')) {
+                r_row.meter_roll = flt(w_row[fmap.meter] || w_row.meter_roll || 0);
+            }
             r_row.no_of_shafts = shafts;
 
-            // Set Recycled & Available Qtys Explicitly
             r_row[r_avail_f] = total_available_qty;
             r_row[r_recy_f] = total_recycled_qty;
-            
-            // Set calculation details string
-            r_row[r_calc_f] = recycled_shafts + " shaft(s) × " + tail_weight.toFixed(3) + " Kg = " + total_available_qty.toFixed(3) + " Kg recycled";
-            
-            // Force values through frappe model (to guarantee UI refresh updates them)
+            if (rec_fields.includes(r_calc_f)) {
+                r_row[r_calc_f] = recycled_shafts + " shaft(s) × " + tail_weight.toFixed(3) + " Kg = " + total_available_qty.toFixed(3) + " Kg recycled";
+            }
+
             frappe.model.set_value(r_row.doctype, r_row.name, r_avail_f, total_available_qty);
             frappe.model.set_value(r_row.doctype, r_row.name, r_recy_f, total_recycled_qty);
         }

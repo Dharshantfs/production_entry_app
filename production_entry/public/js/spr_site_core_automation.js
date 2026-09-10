@@ -653,6 +653,22 @@ function calculate_aggregate_totals(frm) {
     // Force-unhide the core details table (meta + DOM level)
     force_unhide_core_table(frm);
 
+    var unit_txt = String(frm.doc.custom_unit || frm.doc.unit || "").toUpperCase();
+    function cores_per_shaft_for(core_inch) {
+        // Unit 1: 1 core. Unit 2/3: ≤63" → 2 cores/shaft, >63" → 1. Unit 4: 1.
+        if (unit_txt.includes("UNIT 1") || unit_txt.includes("UNIT 4")) return 1;
+        if (unit_txt.includes("UNIT 2") || unit_txt.includes("UNIT 3")) {
+            return flt(core_inch) <= 63 ? 2 : 1;
+        }
+        return 1;
+    }
+    function roll_shaft_key(row) {
+        var sn = row.custom_no_of_shaft || row.no_of_shaft || row.custom_shaft_no || row.shaft_no || "";
+        if (sn !== "" && sn !== null && sn !== undefined) return String(sn);
+        // Fallback: one shaft identity per roll if shaft no missing
+        return "row:" + (row.name || row.idx);
+    }
+
     var totals = {};
     frm.doc.items.forEach(function(row) {
         var width = flt(row.width_inch);
@@ -694,12 +710,18 @@ function calculate_aggregate_totals(frm) {
         }
         
         if (ic) {
-            if (!totals[ic]) totals[ic] = { code: ic, name: name, nos: 0, kgs: 0, wastage: 0 };
+            if (!totals[ic]) totals[ic] = { code: ic, name: name, nos: 0, kgs: 0, wastage: 0, _shafts: {} };
 
-            // One core per shaft row (2 shafts → nos 2). Do not use width/core ratio + floor
-            // which turned 112/118 + 112/118 = 1.90 into 1.
-            totals[ic].nos += 1;
-            console.log("CORE DEBUG: Added core for row", row.idx, "ic=", ic, "nos=", totals[ic].nos);
+            // Count unique shafts (not roll rows). 2 shafts with 3 rolls → nos 2 for 118" core.
+            var sk = roll_shaft_key(row);
+            if (!totals[ic]._shafts[sk]) {
+                totals[ic]._shafts[sk] = true;
+                var cps = cores_per_shaft_for(selected_inch || base_inch || width);
+                totals[ic].nos += cps;
+                console.log("CORE DEBUG: Added core for shaft", sk, "row", row.idx, "ic=", ic, "cps=", cps, "nos=", totals[ic].nos);
+            } else {
+                console.log("CORE DEBUG: Skip duplicate shaft", sk, "row", row.idx);
+            }
 
             var selected_base_weight = get_selected_core_base_weight(row, item_name);
             var shaft_core_kgs = flt(row.gross_weight) - flt(row.net_weight);
