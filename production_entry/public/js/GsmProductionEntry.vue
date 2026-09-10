@@ -576,7 +576,7 @@
                 :key="row._id"
                 :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked, 'gpe-row-wasted': row.is_wasted, 'gpe-row-mix': row.is_mix_roll_row }]"
               >
-                <td class="gpe-sticky-col gpe-sticky-0">{{ rollDisplayIndex(row, idx) }}</td>
+                <td class="gpe-sticky-col gpe-sticky-0">{{ rollDisplayIndex(row, idx, fabricRollLines.length) }}</td>
                 <td class="gpe-sticky-col gpe-sticky-1">
                   {{ row.party_code }}
                   <span v-if="row.is_mix_roll_row" class="gpe-chip gpe-chip-mix">Mix</span>
@@ -2306,31 +2306,26 @@ function rollBatchSuffix(batchNo) {
 }
 
 function lifoSortKey(row) {
-  // Mix and fabric share one shift batch series. Keep stable order by batch
-  // suffix / creation_seq (FIFO: oldest first).
+  // Mix and fabric share one shift batch series. Newest row (highest batch
+  // suffix or creation_seq) stays at the top — last entry first.
   const batchSeq = rollBatchSuffix(row?.batch_no);
   const seq = cint(row?.creation_seq);
   return Math.max(batchSeq, seq);
 }
 
-/** FIFO: oldest roll first (matches production entry order / batch /1,/2,…). */
-function sortRollLinesFifo(rows) {
+/** LIFO: newest roll first (last entry on top). */
+function sortRollLinesLifo(rows) {
   return [...rows].sort((a, b) => {
     const keyA = lifoSortKey(a);
     const keyB = lifoSortKey(b);
     if (keyA !== keyB) {
-      return keyA - keyB;
+      return keyB - keyA;
     }
-    return cint(a?.creation_seq) - cint(b?.creation_seq);
+    return cint(b?.creation_seq) - cint(a?.creation_seq);
   });
 }
 
-/** @deprecated name kept for call sites — now FIFO */
-function sortRollLinesLifo(rows) {
-  return sortRollLinesFifo(rows);
-}
-
-function rollDisplayIndex(row, idx) {
+function rollDisplayIndex(row, idx, total) {
   const batchSeq = rollBatchSuffix(row?.batch_no);
   if (batchSeq > 0) {
     return batchSeq;
@@ -2339,7 +2334,7 @@ function rollDisplayIndex(row, idx) {
   if (seq > 0) {
     return seq;
   }
-  return idx + 1;
+  return Math.max(1, (total || 0) - idx);
 }
 
 function syncCreationSeqFromGrid() {
@@ -4930,7 +4925,7 @@ function attachMixRowsToMainGrid(rows) {
       }
       attached.push(existing);
     } else {
-      rollLines.value = sortRollLinesFifo([...rollLines.value, incoming]);
+      rollLines.value = sortRollLinesLifo([incoming, ...rollLines.value]);
       attached.push(incoming);
     }
   }
@@ -5137,8 +5132,8 @@ async function addMixRollRow() {
         console.warn("add_gsm_mix_roll_line", apiErr);
       }
     }
-    mixRollLines.value = [...mixRollLines.value, line];
-    rollLines.value = sortRollLinesFifo([...rollLines.value, line]);
+    mixRollLines.value = [line, ...mixRollLines.value];
+    rollLines.value = sortRollLinesLifo([line, ...rollLines.value]);
     reserveBatchNo(batch.batch_no, batch.roll_no);
     scheduleAutosave();
   } catch (e) {
@@ -6261,7 +6256,7 @@ async function handleBundleApplyResult(m, ppId) {
   bundleRow.net_weight = bundleRecalc.net_weight;
   bundleRow.produced_gsm = bundleRecalc.produced_gsm;
   bundleRow.planned_qty = bundleRecalc.planned_qty;
-  rollLines.value = sortRollLinesFifo([...rollLines.value, bundleRow]);
+  rollLines.value = sortRollLinesLifo([bundleRow, ...rollLines.value]);
   if (m.child_roll_batches?.length) {
     syncBatchCounterFromGrid();
   }
@@ -7911,7 +7906,10 @@ function applyResumePayload(msg, options = {}) {
       (r) => !r.is_mix_roll_row || !dismissedMixSprs.value.includes(_cstr(r.spr_name))
     );
   }
-  rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
+  rebuildSelectedEntriesFromResume(msg.job_selections || [], {
+    // When selection is locked, always trust server locked_jobs (even if empty after Clear).
+    replaceAll: !merge || !!cint(msg.selection_locked),
+  });
   if (shiftOpened.value) {
     if (msg.selection_locked != null) {
       selectionLocked.value = !!cint(msg.selection_locked);
@@ -9107,7 +9105,7 @@ async function addRollRow() {
   newRow.net_weight = newRecalc.net_weight;
   newRow.produced_gsm = newRecalc.produced_gsm;
   newRow.planned_qty = newRecalc.planned_qty;
-  rollLines.value = sortRollLinesFifo([...rollLines.value, newRow]);
+  rollLines.value = sortRollLinesLifo([newRow, ...rollLines.value]);
   scheduleAutosave();
   } finally {
     addRollInProgress.value = false;
@@ -9546,12 +9544,15 @@ function restoreDraft(options = {}) {
 }
 
 function scheduleAutosave() {
-  saveStatus.value = "Saving…";
   if (autosaveTimer) {
     clearTimeout(autosaveTimer);
   }
   autosaveTimer = setTimeout(() => {
+    saveStatus.value = "Saving…";
     persistDraft();
+    if (saveStatus.value === "Saving…") {
+      saveStatus.value = "Draft saved";
+    }
   }, 5000);
 }
 

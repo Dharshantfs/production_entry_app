@@ -4,12 +4,16 @@
 /** Ask desk SPR JS to auto-save so roll/wastage edits do not leave Not Saved. */
 function spr_request_draft_autosave_after_wastage(frm) {
     if (!frm || cint(frm.doc.docstatus) > 0) return;
+    if (frm._spr_light_reload || frm.__spr_wastage_repairing) return;
+    if (typeof spr_should_skip_desk_auto_sync === 'function' && spr_should_skip_desk_auto_sync(frm)) {
+        return;
+    }
     if (typeof spr_auto_save_draft_if_dirty === 'function') {
-        spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true });
+        spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true, skipIfJustSaved: true });
         return;
     }
     if (window.production_entry && typeof window.production_entry.spr_auto_save_draft_if_dirty === 'function') {
-        window.production_entry.spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true });
+        window.production_entry.spr_auto_save_draft_if_dirty(frm, { delay: 1400, quiet: true, silentFail: true, skipIfJustSaved: true });
     }
 }
 
@@ -861,8 +865,10 @@ function recalculate_all_wastage(frm) {
         // Also write synonym qty fields so grid columns stay in sync
         if (wast_fields.includes('wastage_qty') && w_qty_f !== 'wastage_qty') row.wastage_qty = row[w_qty_f];
         if (wast_fields.includes('wastage') && w_qty_f !== 'wastage') row.wastage = row[w_qty_f];
-        row[w_rec_f] = flt((shafts > 1 ? shafts - 1 : 0) * tail_weight, 3);
+        // Recycled qty only when Recycle to Next is ticked
+        row[w_rec_f] = is_rec_next ? flt((shafts > 1 ? shafts - 1 : 0) * tail_weight, 3) : 0;
         if (wast_fields.includes('recycled_qty') && w_rec_f !== 'recycled_qty') row.recycled_qty = row[w_rec_f];
+        if (wast_fields.includes('recycled') && w_rec_f !== 'recycled') row.recycled = row[w_rec_f];
 
         // THE BINARY TOGGLE: 0 if checked, else 1 tail weight — never touch width/meter/qty
         if (w_net_f && w_net_f !== w_qty_f) {
@@ -931,6 +937,10 @@ function update_recycled_table(frm) {
     }
 
     w_rows.forEach((w_row, idx) => {
+        // Recycled Wastage Details only when Recycle to Next is ticked
+        var is_rec_next = w_row[w_chk_f] || w_row.recycle_to_next || w_row.custom_recycle_to_next;
+        if (!is_rec_next) return;
+
         var shafts = Math.max(flt(w_row[w_shf_f] || w_row.no_of_shafts || w_row.shafts || 1), 1);
         var tail_weight = read_patty_tail_weight(w_row, fmap);
         if (tail_weight <= 0) return;

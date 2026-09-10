@@ -12653,6 +12653,38 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 				if fn == net_fn and wastage_fn and fn != wastage_fn:
 					continue
 			out[fn] = val
+
+	# Always force canonical JSON fields so Width / Meter / Wastage never stay 0
+	# when live discovery mapped to a different (empty) column name.
+	canonical_forced = {
+		"width_inch": flt((logical or {}).get("width_inch") or (logical or {}).get("width") or 0),
+		"meter_per_roll": flt((logical or {}).get("meter_per_roll") or 0),
+		"wastage": flt((logical or {}).get("wastage") or (logical or {}).get("wastage_qty") or 0),
+		"no_of_shafts": cint((logical or {}).get("no_of_shafts") or 0),
+		"gsm": cint((logical or {}).get("gsm") or 0),
+		"quality": _cstr((logical or {}).get("quality") or ""),
+		"color": _cstr((logical or {}).get("color") or ""),
+		"job_id": _cstr((logical or {}).get("job_id") or ""),
+		"recycle_to_next": cint((logical or {}).get("recycle_to_next") or 0),
+	}
+	for fn, val in canonical_forced.items():
+		if fn not in existing:
+			continue
+		if isinstance(val, str):
+			if val.strip():
+				out[fn] = val
+		elif flt(val) != 0 or fn in ("recycle_to_next", "wastage", "meter_per_roll", "width_inch"):
+			# Always write wastage/width/meter even when 0 so stale values clear;
+			# prefer non-zero overwrites when available.
+			if flt(val) > 0 or fn == "recycle_to_next" or out.get(fn) in (None, "", 0, 0.0):
+				out[fn] = val
+	# Mirror wastage onto wastage_qty when both exist
+	if "wastage_qty" in existing and "wastage" in out and flt(out.get("wastage") or 0) > 0:
+		out["wastage_qty"] = out["wastage"]
+	if "meter__roll" in existing and flt(out.get("meter_per_roll") or 0) > 0:
+		out["meter__roll"] = out["meter_per_roll"]
+	if "width" in existing and flt(out.get("width_inch") or 0) > 0:
+		out["width"] = out["width_inch"]
 	return out
 
 
@@ -13057,7 +13089,8 @@ def _spr_compute_patty_wastage_by_job(spr, *, include_unproduced_jobs: bool | No
 			or ""
 		)
 		wastage_qty = flt(shafts * tail, 3)
-		recycled_qty = flt(((shafts - 1) * tail) if shafts > 1 else 0.0, 3)
+		# Default unchecked — recycled only after Recycle to Next is applied
+		recycled_qty = 0.0
 		out[jid] = {
 			"job_id": jid,
 			"quality": _cstr(specs.get("quality") or ""),
@@ -13086,10 +13119,11 @@ def _spr_compute_patty_wastage_by_job(spr, *, include_unproduced_jobs: bool | No
 
 
 def _spr_apply_patty_recycle_net(logical: dict, recycle_to_next: int = 0) -> dict:
-	"""Apply Recycle to Next: net_wastage = 0 when checked (desk recalculate_all_wastage).
+	"""Apply Recycle to Next.
 
-	Always keeps wastage_qty / recycled_qty / width / meter / one_shaft_gross populated from
-	the computed logical row so toggling the checkbox cannot blank the table.
+	- Checked: net_wastage = 0 and recycled_qty = (shafts-1) × tail (stock recycle active).
+	- Unchecked: net_wastage = one tail; recycled_qty = 0 (no recycle until ticked).
+	Always keeps wastage_qty / width / meter / one_shaft_gross populated.
 	"""
 	out = dict(logical or {})
 	flag = 1 if cint(recycle_to_next) else 0
@@ -13108,11 +13142,15 @@ def _spr_apply_patty_recycle_net(logical: dict, recycle_to_next: int = 0) -> dic
 	if tail > 0:
 		out["one_shaft_gross"] = tail
 		wastage_qty = flt(shafts * tail, 3)
-		recycled_qty = flt(((shafts - 1) * tail) if shafts > 1 else 0.0, 3)
 		out["wastage"] = wastage_qty
 		out["wastage_qty"] = wastage_qty
+		# Recycled qty only when operator ticks Recycle to Next
+		recycled_qty = flt(((shafts - 1) * tail) if flag and shafts > 1 else 0.0, 3)
 		out["recycled"] = recycled_qty
 		out["recycled_qty"] = recycled_qty
+	else:
+		out["recycled"] = 0.0
+		out["recycled_qty"] = 0.0
 	# Never put 0 into wastage_qty — only net_wastage goes to 0 when recycling.
 	out["net_wastage"] = 0.0 if flag else flt(tail or 0)
 	return out
@@ -13247,6 +13285,9 @@ def _spr_sync_recycled_wastage_from_patty(spr) -> int:
 	added = 0
 	for w_row in spr.get(patty_field) or []:
 		w = w_row.as_dict() if hasattr(w_row, "as_dict") else dict(w_row or {})
+		# Only create Recycled Wastage Details when Recycle to Next is ticked
+		if not cint(w.get("recycle_to_next") or w.get("custom_recycle_to_next") or 0):
+			continue
 		jid = _cstr(w.get("job_id") or w.get("job") or "")
 		comp = computed.get(jid) or {}
 		shafts = cint(w.get("no_of_shafts") or w.get("shafts") or w.get("no_of_shaft") or comp.get("no_of_shafts") or 1)

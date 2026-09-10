@@ -409,8 +409,8 @@ function _normalizePattyRow(row) {
 		wastage: _valQty(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg", "net_weight", "gross_weight"),
 		wastage_qty: _valQty(row, "wastage_qty", "wastage_qt", "wastage", "net_wastage", "net_weight"),
 		net_wastage: _valQty(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage", "available", "available_qty", "net_weight"),
-		recycled: _valQty(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available", "available_kg", "wastage", "net_weight"),
-		recycled_qty: _valQty(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available", "available_kg", "wastage", "net_weight"),
+		recycled: _valQty(row, "recycled_qty", "recycled", "recycled_kg"),
+		recycled_qty: _valQty(row, "recycled_qty", "recycled", "recycled_kg"),
 		available: _valQty(row, "available", "available_qty", "available_kg", "wastage", "net_wastage"),
 		available_kg: _valQty(row, "available_kg", "available", "available_qty", "wastage", "net_wastage"),
 		spr_item_name: _val(row, "spr_item_name", "source_roll_waste_row"),
@@ -528,7 +528,11 @@ function _dataCardsHtml(rows, opts = {}) {
 					<div class="gwm-kv"><span>${__("Wastage Qty")}</span><strong>${_esc(_fmtNum(row.wastage))}</strong></div>
 					<div class="gwm-kv"><span>${__("Net Wastage")}</span><strong>${_esc(_fmtNum(row.net_wastage || row.wastage))} Kg</strong></div>
 					<div class="gwm-kv gwm-kv-wide">${_recycleNextCheckboxHtml(row)}</div>
-					${row.recycled ? `<div class="gwm-kv"><span>${__("Recycled")}</span><strong>${_esc(_fmtNum(row.recycled))} Kg</strong></div>` : ""}
+					${
+						_cint(row.recycle_to_next) && Number(row.recycled) > 0
+							? `<div class="gwm-kv"><span>${__("Recycled")}</span><strong>${_esc(_fmtNum(row.recycled))} Kg</strong></div>`
+							: ""
+					}
 				</div>
 				${
 					opts.showPrint && printKey

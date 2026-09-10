@@ -1540,21 +1540,26 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
 
-	staged.sort(key=lambda t: (t[0], t[1]), reverse=False)
+	staged.sort(key=lambda t: (t[0], t[1]), reverse=True)
+	total = len(staged)
 	for idx, (_suffix, _child_idx, spr_name, pp_id, line, is_waste) in enumerate(staged):
-		seq = idx + 1
+		seq = _suffix if _suffix > 0 else (total - idx)
 		prefix = "resume-waste" if is_waste else "resume"
 		line["_id"] = f"{prefix}-{spr_name}-{seq}"
-		# Prefer real batch suffix as creation_seq so FIFO # matches batch /N
-		line["creation_seq"] = _suffix if _suffix > 0 else seq
+		# Batch suffix is the durable creation order — LIFO display uses this.
+		line["creation_seq"] = seq
 		line["spr_name"] = spr_name
 		roll_lines.append(line)
 
-	for locked in _gsm_locked_jobs_from_session(session_doc):
-		job_keys.add((locked["pp_id"], locked["job_id"]))
-	job_selections = [{"pp_id": pp, "job_id": jid} for pp, jid in sorted(job_keys)]
+	# Job strip must reflect what the operator locked/selected — NOT every job
+	# that happens to have rolls on session SPRs (that inflated "10 job(s)").
+	locked = _gsm_locked_jobs_from_session(session_doc)
+	if locked:
+		job_selections = [{"pp_id": j["pp_id"], "job_id": j["job_id"]} for j in locked]
+	else:
+		job_selections = []
 
-	# roll_lines are oldest-first (FIFO) via batch suffix ascending.
+	# roll_lines are newest-first (LIFO) via batch suffix descending.
 
 	server_revision = _gsm_session_roll_revision(session_doc, list(session_sprs) + list(mix_sprs))
 
