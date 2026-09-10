@@ -11564,13 +11564,25 @@ def _gsm_find_item_row_by_batch(spr, batch_no: str):
 
 
 def _gsm_find_reusable_item_row(spr, job_id, width_inch, batch_no: str = ""):
-	"""Reuse an unproduced planned slot for this job instead of appending past quota."""
+	"""Reuse an unproduced planned slot for this job instead of appending past quota.
+
+	Prefer a planned row whose roll_no matches the new batch suffix so FIFO batch
+	order stays aligned with SPR idx / display #.
+	"""
 	job_key = _cstr(job_id).strip()
 	if not job_key:
 		return None
 	target_w = flt(width_inch)
+	want_suffix = 0
+	bn = _cstr(batch_no).strip()
+	if "/" in bn:
+		try:
+			want_suffix = cint(bn.rsplit("/", 1)[-1])
+		except Exception:
+			want_suffix = 0
 	width_matches = []
 	any_matches = []
+	suffix_match = None
 	for row in spr.get("items") or []:
 		if not _spr_job_keys_match(_cstr(getattr(row, "job", None)), job_key):
 			continue
@@ -11580,8 +11592,22 @@ def _gsm_find_reusable_item_row(spr, job_id, width_inch, batch_no: str = ""):
 			continue
 		any_matches.append(row)
 		w = flt(getattr(row, "width_inch", None) or 0)
-		if target_w <= 0 or w <= 0 or abs(w - target_w) < 0.05:
+		width_ok = target_w <= 0 or w <= 0 or abs(w - target_w) < 0.05
+		if width_ok:
 			width_matches.append(row)
+		if want_suffix > 0 and suffix_match is None:
+			rn = cint(getattr(row, "roll_no", None) or 0)
+			row_suffix = 0
+			existing_bn = _cstr(getattr(row, "batch_no", "") or "")
+			if "/" in existing_bn:
+				try:
+					row_suffix = cint(existing_bn.rsplit("/", 1)[-1])
+				except Exception:
+					row_suffix = 0
+			if rn == want_suffix or row_suffix == want_suffix:
+				suffix_match = row
+	if suffix_match is not None:
+		return suffix_match
 	if width_matches:
 		return width_matches[0]
 	return any_matches[0] if any_matches else None
@@ -12881,11 +12907,13 @@ def _spr_row_first_positive(row, keys) -> float:
 	return 0.0
 
 
-def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
+def _spr_compute_patty_wastage_by_job(spr, *, include_unproduced_jobs: bool | None = None) -> dict[str, dict]:
 	"""Running patty wastage — same concept as desk wastage_automation.js.
 
-	Always unions shaft_jobs with roll-line jobs. Resolves meter/GSM/shafts from job + rolls
-	aggressively so submitted repairs do not leave shafts>0 with meter/qty=0.
+	By default, once any produced rolls exist, only jobs that have produced rolls get a
+	wastage row (2 rolls on 1 job → 1 row, not one row per Available Job).
+	When there are no produced rolls yet, Available Jobs are included for GSM preview.
+	Pass include_unproduced_jobs=True to force all Available Jobs (desk repair / tools).
 	"""
 	if not _spr_patty_is_valid_unit(spr):
 		return {}
@@ -12893,6 +12921,10 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 	job_rolls: dict[str, list] = {}
 	for it in spr.items or []:
 		if not _spr_is_real_roll_item_row(it):
+			continue
+		# Only count rolls the operator actually produced (gross / produced length),
+		# not empty planned Create Entry slots that already have a batch_no.
+		if not _spr_roll_has_production(it):
 			continue
 		jid = _cstr(
 			getattr(it, "job", None)
@@ -12904,12 +12936,17 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			continue
 		job_rolls.setdefault(jid, []).append(it)
 
-	# Always include Available Jobs (even when some rolls exist) so multi-job SPRs repair fully.
-	for sj in spr.shaft_jobs or []:
-		jid = _cstr(_spr_job_id(sj) or getattr(sj, "job", None) or getattr(sj, "idx", None) or "")
-		if not jid:
-			continue
-		job_rolls.setdefault(jid, job_rolls.get(jid) or [])
+	has_produced_rolls = bool(job_rolls)
+	# Default: preview-from-jobs only when SPR has no produced rolls yet.
+	if include_unproduced_jobs is None:
+		include_unproduced_jobs = not has_produced_rolls
+
+	if include_unproduced_jobs:
+		for sj in spr.shaft_jobs or []:
+			jid = _cstr(_spr_job_id(sj) or getattr(sj, "job", None) or "")
+			if not jid:
+				continue
+			job_rolls.setdefault(jid, job_rolls.get(jid) or [])
 
 	if not job_rolls:
 		return {}
@@ -13631,6 +13668,24 @@ def persist_spr_patty_and_core(
 						values["idx"] = idx
 						spr.append(patty_field, values)
 						result["patty_added"] += 1
+				elif not submitted and (not only_if_empty or zero_broken) and matched_existing:
+					# Drop leftover draft patty rows for jobs that no longer compute
+					# (e.g. old "all Available Jobs" rows after rolls exist for 1 job only).
+					keep_names = set(matched_existing)
+					kept = []
+					for row in existing_rows:
+						rn = _cstr(getattr(row, "name", None) or "")
+						if rn and rn in keep_names:
+							kept.append(row)
+							continue
+						row_job = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+						if row_job and any(
+							_spr_job_keys_match(row_job, _cstr(logical.get("job_id") or ""))
+							for logical, _ex in assignments
+						):
+							kept.append(row)
+					if len(kept) != len(existing_rows):
+						spr.set(patty_field, kept)
 	else:
 		result["skipped"].append("patty_field_missing")
 

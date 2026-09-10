@@ -234,8 +234,13 @@ frappe.ui.form.on('Shaft Production Run', {
 
         // Auto-calculate wastage if items are mapped/populated but wastage table is empty,
         // or if it's an invalid unit and we need to clear the table.
+        // Skip when a light reload just landed from GSM — avoid dirty↔autosave loops.
         setTimeout(() => {
             if (cint(frm.doc.docstatus) > 0) return;
+            if (frm._spr_light_reload || frm.__spr_auto_save_in_progress) return;
+            if (typeof spr_should_skip_desk_auto_sync === 'function' && spr_should_skip_desk_auto_sync(frm)) {
+                return;
+            }
             let wastage_field = ['running_patty_wastage', 'wastage_details', 'custom_wastage_details', 'custom_running_patty_wastage'].find(f => frm.fields_dict[f]);
             bind_wastage_label_click_guard(frm);
             
@@ -495,10 +500,11 @@ function add_incremental_wastage(frm, item_row) {
         return; // Bypass wastage calculation for other units
     }
 
-    // Robustly find Job ID from the roll row (fallback to idx or name if no formal Job ID)
-    var job_id = item_row.job || item_row.job_id || item_row.custom_job || item_row.custom_job_id || item_row.target_job_id || item_row.custom_target_job_id || item_row.work_order || item_row.idx || item_row.name;
+    // Robustly find Job ID from the roll row — never fall back to idx/name
+    // (that created one wastage row per roll instead of per job).
+    var job_id = item_row.job || item_row.job_id || item_row.custom_job || item_row.custom_job_id || item_row.target_job_id || item_row.custom_target_job_id || item_row.work_order;
     if (!job_id) {
-        console.warn("Wastage Skipped: No unique identifier (Job ID/idx/name) found on item row.", item_row);
+        console.warn("Wastage Skipped: No Job ID found on item row.", item_row);
         return;
     }
 

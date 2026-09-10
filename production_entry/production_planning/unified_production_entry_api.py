@@ -1540,13 +1540,13 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
 
-	staged.sort(key=lambda t: (t[0], t[1]), reverse=True)
-	total = len(staged)
+	staged.sort(key=lambda t: (t[0], t[1]), reverse=False)
 	for idx, (_suffix, _child_idx, spr_name, pp_id, line, is_waste) in enumerate(staged):
-		seq = total - idx
+		seq = idx + 1
 		prefix = "resume-waste" if is_waste else "resume"
 		line["_id"] = f"{prefix}-{spr_name}-{seq}"
-		line["creation_seq"] = seq
+		# Prefer real batch suffix as creation_seq so FIFO # matches batch /N
+		line["creation_seq"] = _suffix if _suffix > 0 else seq
 		line["spr_name"] = spr_name
 		roll_lines.append(line)
 
@@ -1554,7 +1554,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		job_keys.add((locked["pp_id"], locked["job_id"]))
 	job_selections = [{"pp_id": pp, "job_id": jid} for pp, jid in sorted(job_keys)]
 
-	# roll_lines already newest-first via creation_seq descending assignment above.
+	# roll_lines are oldest-first (FIFO) via batch suffix ascending.
 
 	server_revision = _gsm_session_roll_revision(session_doc, list(session_sprs) + list(mix_sprs))
 

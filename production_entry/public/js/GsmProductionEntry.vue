@@ -576,7 +576,7 @@
                 :key="row._id"
                 :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked, 'gpe-row-wasted': row.is_wasted, 'gpe-row-mix': row.is_mix_roll_row }]"
               >
-                <td class="gpe-sticky-col gpe-sticky-0">{{ fabricRollLines.length - idx }}</td>
+                <td class="gpe-sticky-col gpe-sticky-0">{{ rollDisplayIndex(row, idx) }}</td>
                 <td class="gpe-sticky-col gpe-sticky-1">
                   {{ row.party_code }}
                   <span v-if="row.is_mix_roll_row" class="gpe-chip gpe-chip-mix">Mix</span>
@@ -2306,22 +2306,40 @@ function rollBatchSuffix(batchNo) {
 }
 
 function lifoSortKey(row) {
-  // Mix and fabric share one shift batch series. Newest row (highest batch
-  // suffix or creation_seq) stays at the top of the grid.
+  // Mix and fabric share one shift batch series. Keep stable order by batch
+  // suffix / creation_seq (FIFO: oldest first).
   const batchSeq = rollBatchSuffix(row?.batch_no);
   const seq = cint(row?.creation_seq);
   return Math.max(batchSeq, seq);
 }
 
-function sortRollLinesLifo(rows) {
+/** FIFO: oldest roll first (matches production entry order / batch /1,/2,…). */
+function sortRollLinesFifo(rows) {
   return [...rows].sort((a, b) => {
     const keyA = lifoSortKey(a);
     const keyB = lifoSortKey(b);
     if (keyA !== keyB) {
-      return keyB - keyA;
+      return keyA - keyB;
     }
-    return cint(b?.creation_seq) - cint(a?.creation_seq);
+    return cint(a?.creation_seq) - cint(b?.creation_seq);
   });
+}
+
+/** @deprecated name kept for call sites — now FIFO */
+function sortRollLinesLifo(rows) {
+  return sortRollLinesFifo(rows);
+}
+
+function rollDisplayIndex(row, idx) {
+  const batchSeq = rollBatchSuffix(row?.batch_no);
+  if (batchSeq > 0) {
+    return batchSeq;
+  }
+  const seq = cint(row?.creation_seq);
+  if (seq > 0) {
+    return seq;
+  }
+  return idx + 1;
 }
 
 function syncCreationSeqFromGrid() {
@@ -4912,7 +4930,7 @@ function attachMixRowsToMainGrid(rows) {
       }
       attached.push(existing);
     } else {
-      rollLines.value = sortRollLinesLifo([incoming, ...rollLines.value]);
+      rollLines.value = sortRollLinesFifo([...rollLines.value, incoming]);
       attached.push(incoming);
     }
   }
@@ -5119,8 +5137,8 @@ async function addMixRollRow() {
         console.warn("add_gsm_mix_roll_line", apiErr);
       }
     }
-    mixRollLines.value = [line, ...mixRollLines.value];
-    rollLines.value = sortRollLinesLifo([line, ...rollLines.value]);
+    mixRollLines.value = [...mixRollLines.value, line];
+    rollLines.value = sortRollLinesFifo([...rollLines.value, line]);
     reserveBatchNo(batch.batch_no, batch.roll_no);
     scheduleAutosave();
   } catch (e) {
@@ -6243,7 +6261,7 @@ async function handleBundleApplyResult(m, ppId) {
   bundleRow.net_weight = bundleRecalc.net_weight;
   bundleRow.produced_gsm = bundleRecalc.produced_gsm;
   bundleRow.planned_qty = bundleRecalc.planned_qty;
-  rollLines.value = sortRollLinesLifo([bundleRow, ...rollLines.value]);
+  rollLines.value = sortRollLinesFifo([...rollLines.value, bundleRow]);
   if (m.child_roll_batches?.length) {
     syncBatchCounterFromGrid();
   }
@@ -7549,7 +7567,8 @@ async function tryResumeOpenSessionForUnit(options = {}) {
       }
     }
     runDate.value = sessDate;
-    filterDate.value = sessDate;
+    // Keep Planned Date (filterDate) independent — do not overwrite browse day
+    // with session run date (caused 09 vs 10 selection / unlock conflicts).
     shift.value = sessShift;
     shiftFilterDate.value = sessDate;
     shiftFilterShift.value = sessShift;
@@ -7815,7 +7834,7 @@ function applyResumePayload(msg, options = {}) {
       gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
       produced_length_mtrs: sprWholeMtrs(r.produced_length_mtrs),
       _id: r._id || `resume-${idx}-${Date.now()}`,
-      creation_seq: cint(r.creation_seq) || msg.roll_lines.length - idx,
+      creation_seq: cint(r.creation_seq) || rollBatchSuffix(r.batch_no) || idx + 1,
       is_bundle_row: !!cint(r.is_bundle_row),
       is_wasted: !!cint(r.is_wasted),
       is_mix_roll_row: isMix,
@@ -8089,7 +8108,7 @@ async function syncOpenShiftForUnit() {
         ]),
         () => {
           runDate.value = sessDate;
-          filterDate.value = sessDate;
+          // Keep Planned Date independent of session run date.
           shift.value = sessShift;
           shiftFilterDate.value = sessDate;
           shiftFilterShift.value = sessShift;
@@ -9088,7 +9107,7 @@ async function addRollRow() {
   newRow.net_weight = newRecalc.net_weight;
   newRow.produced_gsm = newRecalc.produced_gsm;
   newRow.planned_qty = newRecalc.planned_qty;
-  rollLines.value = sortRollLinesLifo([newRow, ...rollLines.value]);
+  rollLines.value = sortRollLinesFifo([...rollLines.value, newRow]);
   scheduleAutosave();
   } finally {
     addRollInProgress.value = false;

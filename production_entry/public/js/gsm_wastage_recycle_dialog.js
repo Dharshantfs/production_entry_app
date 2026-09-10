@@ -781,10 +781,14 @@ async function _renderPattyWastageView(sprName, opts = {}) {
 	const fromJobsOnly = !!table.from_jobs_only;
 	let hint = isPreview
 		? __("Same formula as desk Shaft Production Run (unit trim width × GSM × meters). Not saved on SPR yet.")
-		: __("Saved on Shaft Production Run.");
+		: __("Saved on Shaft Production Run — one wastage row per job that has produced rolls.");
 	if (fromJobsOnly || (isPreview && realRollCount <= 0)) {
 		hint = __(
-			"Preview from Available Jobs (no produced rolls on this SPR yet). Save Row on GSM so rolls and wastage stay in sync."
+			"Preview from Available Jobs (no produced rolls on this SPR yet). Save Row on GSM so rolls and wastage stay in sync — then only jobs with rolls appear."
+		);
+	} else if (isPreview && realRollCount > 0) {
+		hint = __(
+			"Preview for jobs that already have produced rolls on this SPR. Save Row keeps SPR wastage in sync."
 		);
 	}
 	const warnHtml = warnings.length
