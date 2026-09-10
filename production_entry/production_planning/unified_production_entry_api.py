@@ -5826,14 +5826,16 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_to_next=0):
 	"""Toggle Running Patty Wastage Row.recycle_to_next from the GSM wastage popup.
 
-	Also rewrites qty fields with the desk formula and syncs Recycled Wastage Details so
-	checking Recycle to Next actually lands recycled rows on the SPR (not just the flag).
+	Updates flag + net_wastage (and refreshes qty from compute) without blanking width /
+	meter / wastage qty. Syncs Recycled Wastage Details afterward.
 	"""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_gsm_publish_session_update,
 		_spr_apply_patty_recycle_net,
 		_spr_compute_patty_wastage_by_job,
 		_spr_operation_lock,
+		_spr_patch_patty_row_preserve,
+		_spr_patty_live_field_map,
 		_spr_patty_wastage_fieldname,
 		_spr_sync_recycled_wastage_from_patty,
 		_spr_write_patty_child_row,
@@ -5898,15 +5900,13 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 		payload = _spr_apply_patty_recycle_net(dict(logical), flag)
 		values = _spr_write_patty_child_row(payload)
 		values[flag_field] = flag
+		live = _spr_patty_live_field_map()
 
 		if not target:
+			# New row — write full mapped values (already positive from compute)
 			target = spr.append(field, values)
 		else:
-			for k, v in values.items():
-				try:
-					target.set(k, v)
-				except Exception:
-					setattr(target, k, v)
+			_spr_patch_patty_row_preserve(target, values, flag, flag_field, live=live)
 
 		# Ensure every computed job has a saved patty row (not only the toggled one)
 		existing_jobs = {
@@ -5915,6 +5915,22 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 		}
 		for jid, log in computed.items():
 			if jid in existing_jobs:
+				# Repair any sibling rows that were previously zeroed (width/meter/qty)
+				for row in spr.get(field) or []:
+					row_job = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
+					if row_job != jid:
+						continue
+					row_flag = cint(
+						getattr(row, flag_field, None)
+						or getattr(row, "recycle_to_next", None)
+						or getattr(row, "custom_recycle_to_next", None)
+						or 0
+					)
+					if row is target:
+						row_flag = flag
+					other = _spr_apply_patty_recycle_net(dict(log), row_flag)
+					other_vals = _spr_write_patty_child_row(other)
+					_spr_patch_patty_row_preserve(row, other_vals, row_flag, flag_field, live=live)
 				continue
 			other_flag = 0
 			other = _spr_apply_patty_recycle_net(dict(log), other_flag)

@@ -583,7 +583,7 @@ function show_dialog(ctx, existing, frm) {
 					options: "Item",
 					reqd: 1,
 					get_query: () => ({
-						query: "production_entry.production_planning.shift_consumables_api.raw_material_item_query",
+						query: "production_entry.production_planning.shift_consumables_api.consumable_item_query",
 					}),
 				},
 			],

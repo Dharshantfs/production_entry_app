@@ -12559,6 +12559,11 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		seen.add(key)
 
 	out: dict = {}
+	wastage_fn = live.get("wastage_qty")
+	net_fn = live.get("net_wastage")
+	# If discovery collapsed net_wastage onto the same field as wastage_qty, never write
+	# net (which becomes 0 on Recycle to Next) through that shared field.
+	net_collides = bool(net_fn and wastage_fn and net_fn == wastage_fn)
 	for key in ordered_keys:
 		val = (logical or {}).get(key)
 		if val is None:
@@ -12567,18 +12572,85 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 			continue
 		# Prefer single discovered live field to avoid alias collisions
 		live_fn = live_for_logical.get(key)
+		if key in ("net_wastage",) and net_collides:
+			# Keep wastage_qty intact; skip writing net when fields collide
+			continue
 		if live_fn and live_fn in existing:
+			# Never let net_wastage overwrite wastage_qty field
+			if key in ("net_wastage",) and wastage_fn and live_fn == wastage_fn:
+				continue
 			out[live_fn] = val
 			continue
 		wrote = False
 		for fn in static_aliases.get(key, (key,)):
 			if fn in existing:
+				if key in ("net_wastage",) and wastage_fn and fn == wastage_fn:
+					continue
 				out[fn] = val
 				wrote = True
 				break  # one field only — avoid net/wastage collision via multi-write
 		if not wrote and key in existing:
+			if key in ("net_wastage",) and wastage_fn and key == wastage_fn:
+				continue
 			out[key] = val
 	return out
+
+
+def _spr_patch_patty_row_preserve(target, values: dict, flag: int, flag_field: str, live: dict | None = None):
+	"""Apply mapped values onto an existing patty row without blanking dimensions / wastage qty."""
+	live = live or _spr_patty_live_field_map()
+	net_fn = live.get("net_wastage")
+	wastage_fn = live.get("wastage_qty")
+	protect = {
+		fn
+		for fn in (
+			live.get("width"),
+			live.get("meter"),
+			live.get("gsm"),
+			live.get("shafts"),
+			live.get("quality"),
+			live.get("color"),
+			live.get("one_shaft"),
+			live.get("job_id"),
+			wastage_fn,
+			live.get("recycled_qty"),
+		)
+		if fn
+	}
+	# Net may be set to 0 intentionally when recycle is checked
+	if net_fn:
+		protect.discard(net_fn)
+
+	for k, v in (values or {}).items():
+		if k == flag_field:
+			continue
+		# Never write net_wastage=0 onto wastage_qty
+		if wastage_fn and k == wastage_fn and net_fn != wastage_fn:
+			if flt(v) == 0 and cint(flag) == 1:
+				# Recycle path must not zero wastage qty
+				cur = getattr(target, k, None)
+				if flt(cur) > 0:
+					continue
+				# Prefer skipping zero write entirely for wastage on recycle
+				continue
+		if k in protect:
+			if isinstance(v, str):
+				if not v.strip():
+					cur = _cstr(getattr(target, k, None))
+					if cur:
+						continue
+			elif flt(v) == 0:
+				cur = getattr(target, k, None)
+				if flt(cur) > 0:
+					continue
+		try:
+			target.set(k, v)
+		except Exception:
+			setattr(target, k, v)
+	try:
+		target.set(flag_field, flag)
+	except Exception:
+		setattr(target, flag_field, flag)
 
 
 def _spr_patty_row_dict(row) -> dict:
@@ -12943,22 +13015,35 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 
 
 def _spr_apply_patty_recycle_net(logical: dict, recycle_to_next: int = 0) -> dict:
-	"""Apply Recycle to Next: net_wastage = 0 when checked (desk recalculate_all_wastage)."""
+	"""Apply Recycle to Next: net_wastage = 0 when checked (desk recalculate_all_wastage).
+
+	Always keeps wastage_qty / recycled_qty / width / meter / one_shaft_gross populated from
+	the computed logical row so toggling the checkbox cannot blank the table.
+	"""
 	out = dict(logical or {})
 	flag = 1 if cint(recycle_to_next) else 0
 	out["recycle_to_next"] = flag
+	shafts = max(cint(out.get("no_of_shafts") or 1), 1)
 	tail = flt(
 		out.get("one_shaft_gross")
-		or out.get("net_wastage")
 		or (
-			(flt(out.get("wastage_qty") or out.get("wastage") or 0) / max(cint(out.get("no_of_shafts") or 1), 1))
+			(flt(out.get("wastage_qty") or out.get("wastage") or 0) / shafts)
+			if flt(out.get("wastage_qty") or out.get("wastage") or 0) > 0
+			else 0
 		)
+		or (out.get("net_wastage") if flt(out.get("net_wastage") or 0) > 0 else 0)
 		or 0
 	)
 	if tail > 0:
 		out["one_shaft_gross"] = tail
+		wastage_qty = flt(shafts * tail, 3)
+		recycled_qty = flt(((shafts - 1) * tail) if shafts > 1 else 0.0, 3)
+		out["wastage"] = wastage_qty
+		out["wastage_qty"] = wastage_qty
+		out["recycled"] = recycled_qty
+		out["recycled_qty"] = recycled_qty
 	# Never put 0 into wastage_qty — only net_wastage goes to 0 when recycling.
-	out["net_wastage"] = 0.0 if flag else flt(tail or out.get("net_wastage") or 0)
+	out["net_wastage"] = 0.0 if flag else flt(tail or 0)
 	return out
 
 
@@ -13068,6 +13153,7 @@ def _spr_sync_recycled_wastage_from_patty(spr) -> int:
 	"""Rebuild auto Recycled Wastage Details from Running Patty (desk update_recycled_table).
 
 	Preserves manual / Patty-stock rows (job_id == 'Patty'). Does not touch GSM Manual Recycle.
+	Fills missing width/meter/qty from live compute when the patty row was previously zeroed.
 	"""
 	patty_field = _spr_patty_wastage_fieldname()
 	rec_field = _spr_recycled_wastage_fieldname()
@@ -13081,35 +13167,50 @@ def _spr_sync_recycled_wastage_from_patty(spr) -> int:
 		if jid == "patty":
 			keep.append(row)
 
+	computed = {}
+	try:
+		computed = _spr_compute_patty_wastage_by_job(spr) or {}
+	except Exception:
+		computed = {}
+
 	added = 0
 	for w_row in spr.get(patty_field) or []:
 		w = w_row.as_dict() if hasattr(w_row, "as_dict") else dict(w_row or {})
-		shafts = cint(w.get("no_of_shafts") or w.get("shafts") or w.get("no_of_shaft") or 1)
+		jid = _cstr(w.get("job_id") or w.get("job") or "")
+		comp = computed.get(jid) or {}
+		shafts = cint(w.get("no_of_shafts") or w.get("shafts") or w.get("no_of_shaft") or comp.get("no_of_shafts") or 1)
 		tail = flt(w.get("one_shaft_gross") or w.get("one_shaft_wastage") or w.get("one_shaft") or 0)
 		if tail <= 0:
-			qty = _spr_patty_row_wastage_kg(w)
+			tail = flt(comp.get("one_shaft_gross") or 0)
+		if tail <= 0:
+			qty = _spr_patty_row_wastage_kg(w) or flt(comp.get("wastage_qty") or comp.get("wastage") or 0)
 			tail = flt(qty / shafts, 3) if shafts > 0 and qty > 0 else 0.0
 		recycled_shafts = (shafts - 1) if shafts > 1 else 0
 		total_available = flt(recycled_shafts * tail, 3)
 		if total_available <= 0:
 			continue
+		width = flt(w.get("width_inch") or w.get("width") or 0) or flt(comp.get("width_inch") or comp.get("width") or 0)
+		meter = flt(
+			w.get("meter_per_roll") or w.get("meter__roll") or w.get("meter_roll") or w.get("meter") or 0
+		) or flt(comp.get("meter_per_roll") or 0)
+		wastage_qty = flt(w.get("wastage_qty") or w.get("wastage") or 0) or flt(
+			comp.get("wastage_qty") or comp.get("wastage") or (shafts * tail)
+		)
 		logical = {
-			"job_id": _cstr(w.get("job_id") or w.get("job") or ""),
-			"quality": _cstr(w.get("quality") or ""),
-			"color": _cstr(w.get("color") or w.get("colour") or ""),
-			"gsm": cint(w.get("gsm") or 0),
-			"width_inch": flt(w.get("width_inch") or w.get("width") or 0),
-			"width": flt(w.get("width") or w.get("width_inch") or 0),
-			"meter_per_roll": flt(
-				w.get("meter_per_roll") or w.get("meter__roll") or w.get("meter_roll") or w.get("meter") or 0
-			),
+			"job_id": jid,
+			"quality": _cstr(w.get("quality") or comp.get("quality") or ""),
+			"color": _cstr(w.get("color") or w.get("colour") or comp.get("color") or ""),
+			"gsm": cint(w.get("gsm") or comp.get("gsm") or 0),
+			"width_inch": width,
+			"width": width,
+			"meter_per_roll": meter,
 			"no_of_shafts": shafts,
 			"available": total_available,
 			"available_qty": total_available,
 			"recycled": total_available,
 			"recycled_qty": total_available,
-			"wastage": flt(w.get("wastage_qty") or w.get("wastage") or 0),
-			"wastage_qty": flt(w.get("wastage_qty") or w.get("wastage") or 0),
+			"wastage": wastage_qty,
+			"wastage_qty": wastage_qty,
 			"calculation_details": f"{recycled_shafts} shaft(s) × {tail:.3f} Kg = {total_available:.3f} Kg recycled",
 		}
 		values = _spr_write_recycled_child_row(logical)

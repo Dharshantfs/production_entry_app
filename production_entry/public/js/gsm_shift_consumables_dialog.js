@@ -145,7 +145,7 @@ export async function openGsmShiftConsumablesDialog(opts = {}) {
 					placeholder: __("Item Code"),
 					only_select: 1,
 					get_query: () => ({
-						query: "production_entry.production_planning.shift_consumables_api.raw_material_item_query",
+						query: "production_entry.production_planning.shift_consumables_api.consumable_item_query",
 					}),
 				},
 				parent: $tr.find(".sc-link").get(0),
@@ -153,7 +153,7 @@ export async function openGsmShiftConsumablesDialog(opts = {}) {
 				only_input: true,
 			});
 			ctrl.get_query = () => ({
-				query: "production_entry.production_planning.shift_consumables_api.raw_material_item_query",
+				query: "production_entry.production_planning.shift_consumables_api.consumable_item_query",
 			});
 			ctrl.set_value(rows[idx]?.item_code || "");
 			ctrl.$input.on("awesomplete-selectcomplete change", async () => {

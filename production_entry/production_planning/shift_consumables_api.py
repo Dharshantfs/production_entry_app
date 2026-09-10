@@ -51,14 +51,14 @@ def _item_details(item_code: str) -> dict:
 	}
 
 
-def _raw_material_item_groups() -> list:
-	"""Raw Material group and all descendant groups (inclusive)."""
+def _excluded_product_item_groups() -> list:
+	"""Products / Finished Goods groups and their descendants — hidden from consumable pickers."""
 	roots = []
-	for name in ("Raw Material", "Raw Materials"):
+	for name in ("Products", "Product", "Finished Goods", "Finished Good"):
 		if frappe.db.exists("Item Group", name):
 			roots.append(name)
 	if not roots:
-		return ["Raw Material", "Raw Materials"]
+		return ["Products", "Finished Goods"]
 	groups = set(roots)
 	try:
 		from frappe.utils.nestedset import get_descendants_of
@@ -72,28 +72,28 @@ def _raw_material_item_groups() -> list:
 	return sorted(groups)
 
 
-def _is_raw_material_item(item_code: str) -> bool:
+def _is_allowed_consumable_item(item_code: str) -> bool:
 	item_code = _cstr(item_code)
 	if not item_code:
 		return False
 	group = _cstr(frappe.db.get_value("Item", item_code, "item_group"))
-	return group in set(_raw_material_item_groups())
+	if not group:
+		return True
+	return group not in set(_excluded_product_item_groups())
 
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def raw_material_item_query(doctype, txt, searchfield, start, page_len, filters):
-	"""Link search: only Raw Material item group (and child groups)."""
-	groups = _raw_material_item_groups()
-	if not groups:
-		return []
+def consumable_item_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Link search: all item groups except Products / Finished Goods (and children)."""
+	excluded = _excluded_product_item_groups()
 	txt = _cstr(txt)
 	return frappe.db.sql(
 		"""
 		SELECT name, item_name, item_group
 		FROM `tabItem`
 		WHERE disabled = 0
-		  AND item_group IN %(groups)s
+		  AND IFNULL(item_group, '') NOT IN %(excluded)s
 		  AND (
 			name LIKE %(txt)s
 			OR item_name LIKE %(txt)s
@@ -104,13 +104,20 @@ def raw_material_item_query(doctype, txt, searchfield, start, page_len, filters)
 		LIMIT %(start)s, %(page_len)s
 		""",
 		{
-			"groups": groups,
+			"excluded": excluded or [""],
 			"txt": f"%{txt}%",
 			"exact": f"{txt}%",
 			"start": start,
 			"page_len": page_len,
 		},
 	)
+
+
+# Back-compat alias used by older client bundles
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def raw_material_item_query(doctype, txt, searchfield, start, page_len, filters):
+	return consumable_item_query(doctype, txt, searchfield, start, page_len, filters)
 
 
 def _row_payload(row) -> dict:
@@ -256,11 +263,9 @@ def save_shift_consumables(
 		item_code = _cstr(raw.get("item_code"))
 		if not item_code:
 			continue
-		if not _is_raw_material_item(item_code):
+		if not _is_allowed_consumable_item(item_code):
 			frappe.throw(
-				_("Item {0} is not in Raw Material item group. Only raw materials are allowed.").format(
-					item_code
-				)
+				_("Item {0} is in Products / Finished Goods. Choose another item group.").format(item_code)
 			)
 		details = _item_details(item_code)
 		doc.append(

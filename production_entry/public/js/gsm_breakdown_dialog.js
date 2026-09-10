@@ -6,6 +6,13 @@ function _esc(s) {
 	return frappe.utils.escape_html(String(s ?? ""));
 }
 
+function _nowClock() {
+	const clock = new Date();
+	const hh = String(clock.getHours()).padStart(2, "0");
+	const mm = String(clock.getMinutes()).padStart(2, "0");
+	return `${hh}:${mm}`;
+}
+
 function _args(ctx) {
 	return {
 		run_date: ctx.run_date || "",
@@ -50,8 +57,10 @@ function _dialogHtml(payload, mode) {
 	let action = "";
 	if (mode === "stop-form") {
 		action = `<div class="gbd-action">
-			<div class="gbd-clock">${__("Machine Stop Time")}: <strong id="gbd-stop-clock"></strong></div>
-			<p class="text-muted">${__("Select the reason and enter remarks, then save.")}</p>
+			<div class="gbd-clock">${__("Machine Stop Time")}
+				<input type="time" id="gbd-stop-time" class="form-control input-sm gbd-time-input" value="${_esc(_nowClock())}">
+			</div>
+			<p class="text-muted">${__("Defaults to now. Change the time if the stop happened earlier, then select reason and save.")}</p>
 		</div>`;
 	} else if (openRow) {
 		const carryNote = carried
@@ -64,6 +73,10 @@ function _dialogHtml(payload, mode) {
 			${carryNote}
 			<p>${__("Machine is stopped since")} <strong>${_esc(openRow.stop_clock || openRow.stop_time)}</strong>
 			— ${_esc(openRow.reason || "")}</p>
+			<div class="gbd-clock">${__("Machine On Time")}
+				<input type="time" id="gbd-on-time" class="form-control input-sm gbd-time-input" value="${_esc(_nowClock())}">
+			</div>
+			<p class="text-muted">${__("Defaults to now. Change if the machine came on earlier.")}</p>
 			<button type="button" class="btn btn-primary" id="gbd-machine-on">${__("Machine On")}</button>
 		</div>`;
 	} else {
@@ -74,7 +87,8 @@ function _dialogHtml(payload, mode) {
 	return `<style>
 		.gbd-wrap { display:flex; flex-direction:column; gap:14px; }
 		.gbd-action { padding:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; }
-		.gbd-clock { font-size:15px; margin-bottom:8px; }
+		.gbd-clock { font-size:14px; margin-bottom:8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+		.gbd-time-input { width:140px; display:inline-block; }
 		.gbd-section { font-weight:700; font-size:13px; color:#334155; }
 		.gbd-table { margin:0; font-size:12px; }
 		.gbd-table .gbd-open { background:#fff7ed; }
@@ -150,10 +164,6 @@ export async function openGsmBreakdownDialog(opts = {}) {
 		d.set_df_property("remarks", "hidden", showForm ? 0 : 1);
 		if (showForm) {
 			d.get_primary_btn().show().text(__("Save Stop"));
-			const clock = new Date();
-			const hh = String(clock.getHours()).padStart(2, "0");
-			const mm = String(clock.getMinutes()).padStart(2, "0");
-			d.fields_dict.body_html.$wrapper.find("#gbd-stop-clock").text(`${hh}:${mm}`);
 		} else {
 			d.get_primary_btn().hide();
 		}
@@ -162,11 +172,16 @@ export async function openGsmBreakdownDialog(opts = {}) {
 			render();
 		});
 		d.fields_dict.body_html.$wrapper.find("#gbd-machine-on").on("click", async () => {
+			const event_time =
+				d.fields_dict.body_html.$wrapper.find("#gbd-on-time").val() || _nowClock();
 			d.get_primary_btn().prop("disabled", true);
 			try {
 				const res = await frappe.call({
 					method: `${BREAKDOWN_API}.record_machine_on`,
-					args: _args(ctx),
+					args: {
+						..._args(ctx),
+						event_time,
+					},
 				});
 				payload = res.message || payload;
 				ctx.breakdown_name = payload.name || ctx.breakdown_name;
@@ -188,6 +203,8 @@ export async function openGsmBreakdownDialog(opts = {}) {
 			frappe.msgprint(__("Select a breakdown reason."));
 			return;
 		}
+		const event_time =
+			d.fields_dict.body_html.$wrapper.find("#gbd-stop-time").val() || _nowClock();
 		d.get_primary_btn().prop("disabled", true);
 		try {
 			const res = await frappe.call({
@@ -196,6 +213,7 @@ export async function openGsmBreakdownDialog(opts = {}) {
 					..._args(ctx),
 					reason,
 					remarks: d.get_value("remarks") || "",
+					event_time,
 				},
 			});
 			payload = res.message || payload;

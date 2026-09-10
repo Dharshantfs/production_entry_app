@@ -25,6 +25,28 @@ def _cstr(val) -> str:
 	return (val or "").strip() if val is not None else ""
 
 
+def _parse_event_datetime(run_date=None, event_time=None):
+	"""Build datetime from optional HH:MM / HH:MM:SS (defaults to now)."""
+	from datetime import datetime, time as dtime
+
+	now = now_datetime()
+	raw = _cstr(event_time)
+	if not raw:
+		return now
+	try:
+		base = getdate(run_date) if run_date else now.date()
+	except Exception:
+		base = now.date()
+	parts = raw.replace(".", ":").split(":")
+	try:
+		hh = int(parts[0])
+		mm = int(parts[1]) if len(parts) > 1 else 0
+		ss = int(parts[2]) if len(parts) > 2 else 0
+		return datetime.combine(base, dtime(hh, mm, ss))
+	except Exception:
+		frappe.throw(_("Invalid time. Use HH:MM (e.g. 12:45)."))
+
+
 def _normalize_shift(shift: str) -> str:
 	s = _cstr(shift)
 	if "night" in s.lower():
@@ -244,6 +266,7 @@ def record_machine_stop(
 	reason=None,
 	remarks=None,
 	breakdown_name=None,
+	event_time=None,
 ):
 	reason = _cstr(reason)
 	if reason not in BREAKDOWN_REASONS:
@@ -267,15 +290,15 @@ def record_machine_stop(
 	open_row = next((r for r in reversed(doc.breakdowns or []) if not r.on_time), None)
 	if open_row:
 		frappe.throw(_("Machine is already stopped. Record Machine On before starting another breakdown."))
-	now = now_datetime()
+	when = _parse_event_datetime(run_date=run_date or doc.run_date, event_time=event_time)
 	doc.append(
 		"breakdowns",
-		{"stop_time": now, "on_time": None, "reason": reason, "remarks": _cstr(remarks)},
+		{"stop_time": when, "on_time": None, "reason": reason, "remarks": _cstr(remarks)},
 	)
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
 	payload = _doc_payload(doc)
-	payload["recorded_stop"] = now.strftime("%H:%M")
+	payload["recorded_stop"] = when.strftime("%H:%M")
 	return payload
 
 
@@ -286,6 +309,7 @@ def record_machine_on(
 	custom_unit=None,
 	gsm_shift_session=None,
 	breakdown_name=None,
+	event_time=None,
 ):
 	unit = _cstr(custom_unit)
 	open_info = _find_open_breakdown_for_unit(unit)
@@ -306,8 +330,11 @@ def record_machine_on(
 	open_row = next((r for r in reversed(doc.breakdowns or []) if not r.on_time), None)
 	if not open_row:
 		frappe.throw(_("No open breakdown found. Record Machine Stop first."))
-	now = now_datetime()
-	open_row.on_time = now
+	when = _parse_event_datetime(run_date=run_date or doc.run_date, event_time=event_time)
+	stop = getattr(open_row, "stop_time", None)
+	if stop and when < stop:
+		frappe.throw(_("Machine On time cannot be before Machine Stop time ({0}).").format(_fmt_dt(stop)))
+	open_row.on_time = when
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
 	payload = _apply_open_carry(
@@ -316,5 +343,5 @@ def record_machine_on(
 		run_date=run_date,
 		shift=shift,
 	)
-	payload["recorded_on"] = now.strftime("%H:%M")
+	payload["recorded_on"] = when.strftime("%H:%M")
 	return payload
