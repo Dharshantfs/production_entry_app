@@ -30,13 +30,14 @@ function resolve_patty_wastage_fields(wast_fields) {
     return {
         qty: pick(
             [
+                { exact: "wastage_qty_kgs" },
                 { exact: "wastage_qty" },
                 { exact: "wastage_qt" },
                 { exact: "wastage" },
-                { includes: "wastage_qty", fallback: "wastage_qty" },
+                { includes: "wastage_qty", fallback: "wastage_qty_kgs" },
             ],
             ["net", "one_shaft", "recycle", "process"]
-        ) || "wastage_qty",
+        ) || "wastage_qty_kgs",
         recycled: pick(
             [
                 { exact: "recycled_qty" },
@@ -68,10 +69,10 @@ function resolve_patty_wastage_fields(wast_fields) {
                 { exact: "one_shaft_wastage" },
                 { exact: "one_shaft" },
                 { includes: "one_shaft_gross", fallback: "one_shaft_gross" },
-                { includes: "one_shaft", fallback: "one_shaft_wastage" },
+                { includes: "one_shaft", fallback: "one_shaft_gross" },
             ],
             ["no_of"]
-        ) || "one_shaft_wastage",
+        ) || "one_shaft_gross",
         recycle: pick(
             [
                 { exact: "recycle_to_next" },
@@ -82,22 +83,24 @@ function resolve_patty_wastage_fields(wast_fields) {
         ) || "recycle_to_next",
         width: pick(
             [
+                { exact: "width_inches" },
                 { exact: "width_inch" },
                 { exact: "width" },
-                { includes: "width", fallback: "width_inch" },
+                { includes: "width", fallback: "width_inches" },
             ],
             ["core", "machine"]
-        ) || "width_inch",
+        ) || "width_inches",
         meter: pick(
             [
+                { exact: "meter_roll_mtrs" },
                 { exact: "meter_per_roll" },
                 { exact: "meter__roll" },
                 { exact: "meter_roll" },
                 { exact: "meter" },
-                { includes: "meter", fallback: "meter_per_roll" },
+                { includes: "meter", fallback: "meter_roll_mtrs" },
             ],
             ["wastage", "shaft", "recycle"]
-        ) || "meter_per_roll",
+        ) || "meter_roll_mtrs",
         gsm: pick([{ exact: "gsm" }, { includes: "gsm", fallback: "gsm" }], []) || "gsm",
         job: pick(
             [{ exact: "job_id" }, { exact: "job" }, { includes: "job_id", fallback: "job_id" }],
@@ -116,7 +119,7 @@ function read_patty_tail_weight(row, fmap) {
             0
     );
     if (tail > 0) return tail;
-    var qty = flt(row[fmap.qty] || row.wastage_qty || row.wastage || 0);
+    var qty = flt(row[fmap.qty] || row.wastage_qty_kgs || row.wastage_qty || row.wastage || 0);
     if (qty > 0) return shafts > 1 ? qty / shafts : qty;
     var net = flt(row[fmap.net] || row.net_wastage || 0);
     if (net > 0) return net;
@@ -248,15 +251,8 @@ frappe.ui.form.on('Shaft Production Run', {
             if (wastage_field && frm.doc.items && frm.doc.items.length > 0 && is_valid_unit) {
                 var rows = frm.doc[wastage_field] || [];
                 if (!rows.length) {
-                    // Prefer server compute (same as GSM) so Width/Meter/Qty match the dialog
-                    if (frm.doc.name && !frm.is_new()) {
-                        repair_spr_wastage_from_server(frm);
-                    } else {
-                        calculate_wastage_automation(frm, true);
-                    }
-                } else if (patty_wastage_rows_are_zero(rows)) {
-                    // Recycle / GSM left shafts populated but qty/width/meter at 0 — restore
-                    repair_spr_wastage_from_server(frm);
+                    // Desk Client Script owns calculation — fill from jobs/rolls on this form
+                    calculate_wastage_automation(frm, true);
                 }
             }
         }, 1500);
@@ -696,7 +692,7 @@ function add_incremental_wastage_legacy(frm, item_row) {
         var prev_color = (prev_w_row.color || prev_w_row.colour || prev_w_row.custom_color || "").toString().trim().toUpperCase();
 
         if (prev_recycle && prev_quality === current_quality && prev_color === current_color) {
-            recycled_from_prev = flt(prev_w_row[w_qty_f] || prev_w_row.wastage_qty || 0);
+                recycled_from_prev = flt(prev_w_row[w_qty_f] || prev_w_row.wastage_qty_kgs || prev_w_row.wastage_qty || 0);
         }
     }
 
@@ -767,9 +763,9 @@ function add_incremental_wastage_legacy(frm, item_row) {
 function patty_wastage_rows_are_zero(rows) {
     if (!rows || !rows.length) return true;
     return rows.every(function (row) {
-        var qty = flt(row.wastage_qty || row.wastage || row.wastage_qt || 0);
-        var width = flt(row.width_inch || row.width || 0);
-        var meter = flt(row.meter_per_roll || row.meter__roll || row.meter_roll || row.meter || 0);
+        var qty = flt(row.wastage_qty_kgs || row.wastage_qty || row.wastage || row.wastage_qt || 0);
+        var width = flt(row.width_inches || row.width_inch || row.width || 0);
+        var meter = flt(row.meter_roll_mtrs || row.meter_per_roll || row.meter__roll || row.meter_roll || row.meter || 0);
         var one = flt(row.one_shaft_gross || row.one_shaft_wastage || row.one_shaft || 0);
         return qty <= 0 && width <= 0 && meter <= 0 && one <= 0;
     });
@@ -841,12 +837,7 @@ function recalculate_all_wastage(frm) {
     if (!wastage_field) return;
 
     var rows = frm.doc[wastage_field] || [];
-    // If qty/width/meter already wiped to 0, local math cannot restore — use server (GSM formula)
-    if (patty_wastage_rows_are_zero(rows) && frm.doc.name && !frm.is_new()) {
-        repair_spr_wastage_from_server(frm);
-        return;
-    }
-
+    // Local desk scripts own calc — do not call separate server force-recalculate
     var wast_fields = frm.fields_dict[wastage_field].grid.docfields.map(df => df.fieldname);
     var fmap = resolve_patty_wastage_fields(wast_fields);
     var w_qty_f = fmap.qty;
@@ -890,7 +881,8 @@ function recalculate_all_wastage(frm) {
         var is_rec_next = row[w_chk_f] || row.recycle_to_next || row.custom_recycle_to_next;
 
         row[w_qty_f] = flt(shafts * tail_weight, 3);
-        // Also write synonym qty fields so grid columns stay in sync
+        // Also write synonym qty fields so grid columns stay in sync (live: wastage_qty_kgs)
+        if (wast_fields.includes('wastage_qty_kgs') && w_qty_f !== 'wastage_qty_kgs') row.wastage_qty_kgs = row[w_qty_f];
         if (wast_fields.includes('wastage_qty') && w_qty_f !== 'wastage_qty') row.wastage_qty = row[w_qty_f];
         if (wast_fields.includes('wastage') && w_qty_f !== 'wastage') row.wastage = row[w_qty_f];
         // Recycled qty only when Recycle to Next is ticked
@@ -906,8 +898,8 @@ function recalculate_all_wastage(frm) {
         prev_row = row;
     });
 
-    if (!any_tail && frm.doc.name && !frm.is_new()) {
-        repair_spr_wastage_from_server(frm);
+    if (!any_tail) {
+        // Nothing to recalc locally
         return;
     }
 
@@ -991,15 +983,16 @@ function update_recycled_table_legacy(frm) {
             r_row.quality = w_row.quality || w_row.custom_quality || '';
             r_row.color = w_row.color || w_row.colour || w_row.custom_color || '';
             r_row.gsm = w_row[fmap.gsm] || w_row.gsm || 0;
-            r_row.width = flt(w_row[fmap.width] || w_row.width_inch || w_row.width || 0);
-            r_row.width_inch = r_row.width;
             if (rec_fields.includes('meter__roll')) {
-                r_row.meter__roll = flt(w_row[fmap.meter] || w_row.meter_per_roll || w_row.meter__roll || 0);
+                r_row.meter__roll = flt(w_row[fmap.meter] || w_row.meter_roll_mtrs || w_row.meter_per_roll || w_row.meter__roll || 0);
+            } else if (rec_fields.includes('meter_roll_mtrs')) {
+                r_row.meter_roll_mtrs = flt(w_row[fmap.meter] || w_row.meter_roll_mtrs || 0);
             } else if (rec_fields.includes('meter_per_roll')) {
                 r_row.meter_per_roll = flt(w_row[fmap.meter] || w_row.meter_per_roll || 0);
             } else if (rec_fields.includes('meter_roll')) {
                 r_row.meter_roll = flt(w_row[fmap.meter] || w_row.meter_roll || 0);
             }
+            r_row.width = flt(w_row[fmap.width] || w_row.width_inches || w_row.width_inch || w_row.width || 0);
             r_row.no_of_shafts = shafts;
 
             r_row[r_avail_f] = total_available_qty;
@@ -1488,9 +1481,12 @@ function calculate_wastage_automation(frm, force_all) {
         return;
     }
 
-    // Valid unit: the server rebuilds patty + recycled rows with the real
-    // job meter, so ask it instead of clearing the table in the browser.
-    repair_spr_wastage_from_server(frm, true);
+    // Valid unit: desk Client Script owns calculation on the live fields
+    // (width_inches, meter_roll_mtrs, wastage_qty_kgs).
+    frm.clear_table(wastage_field);
+    (frm.doc.items || []).forEach(function (item) {
+        add_incremental_wastage(frm, item);
+    });
 }
 
 // --- POLYBAG AUTOMATION ---

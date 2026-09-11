@@ -341,15 +341,24 @@ function _apiColsToDesk(apiCols, fallbackCols) {
 function _cellValue(row, field) {
 	const aliases = {
 		batch_no: ["batch_no", "batch", "source_roll"],
-		width_inch: ["width_inch", "width", "w", "custom_width_inch", "custom_width"],
-		width: ["width", "width_inch", "w", "custom_width_inch", "custom_width"],
-		meter_per_roll: ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"],
-		wastage: ["wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg", "net_wastage"],
-		net_wastage: ["net_wastage", "net_wastage_kg", "wastage_qty", "wastage", "available", "available_qty"],
-		recycled: ["recycled_qty", "recycled", "recycled_kg", "available_qty", "available"],
-		recycled_qty: ["recycled_qty", "recycled", "recycled_kg", "available_qty", "available"],
-		available_qty: ["available_qty", "available", "available_kg", "wastage_qty", "wastage", "net_wastage"],
-		available_kg: ["available_kg", "available", "available_qty", "wastage", "net_wastage"],
+		width_inch: ["width_inches", "width_inch", "width", "w", "custom_width_inch", "custom_width"],
+		width: ["width", "width_inches", "width_inch", "w", "custom_width_inch", "custom_width"],
+		meter_per_roll: [
+			"meter_roll_mtrs",
+			"meter__roll",
+			"meter_per_roll",
+			"meter_roll",
+			"meter",
+			"produced_length_mtrs",
+			"produced_length_mtr",
+		],
+		wastage: ["wastage_qty_kgs", "wastage", "wastage_qty", "wastage_qt", "net_wastage"],
+		wastage_qty: ["wastage_qty_kgs", "wastage_qty", "wastage_qt", "wastage"],
+		net_wastage: ["net_wastage", "net_wastage_kg", "wastage_qty_kgs", "wastage_qty", "wastage"],
+		recycled: ["recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"],
+		recycled_qty: ["recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"],
+		available_qty: ["available_qty_kgs", "available_qty", "available", "available_kg"],
+		available_kg: ["available_qty_kgs", "available_kg", "available", "available_qty"],
 		roll_number: ["roll_number", "roll_no"],
 	};
 	return _val(row, ...(aliases[field] || [field]));
@@ -784,15 +793,11 @@ async function _renderPattyWastageView(sprName, opts = {}) {
 		table.source === "gsm_preview_from_spr" || table.source === "gsm_preview_from_roll_lines";
 	const fromJobsOnly = !!table.from_jobs_only;
 	let hint = isPreview
-		? __("Same formula as desk Shaft Production Run (unit trim width × GSM × meters). Not saved on SPR yet.")
-		: __("Saved on Shaft Production Run — one wastage row per job that has produced rolls.");
+		? __("Preview only — values are not the saved SPR table.")
+		: __("Fetched from Shaft Production Run tables (Running Patty Wastage / Recycled Wastage Details).");
 	if (fromJobsOnly || (isPreview && realRollCount <= 0)) {
 		hint = __(
-			"Preview from Available Jobs (no produced rolls on this SPR yet). Save Row on GSM so rolls and wastage stay in sync — then only jobs with rolls appear."
-		);
-	} else if (isPreview && realRollCount > 0) {
-		hint = __(
-			"Preview for jobs that already have produced rolls on this SPR. Save Row keeps SPR wastage in sync."
+			"No saved Running Patty rows yet. Open the Shaft Production Run so wastage scripts can fill the table, then Refresh."
 		);
 	}
 	const warnHtml = warnings.length

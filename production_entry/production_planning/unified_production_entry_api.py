@@ -4810,8 +4810,11 @@ def gsm_apply_bundle_packaging(
 # ---------------------------------------------------------------------------
 
 _GSM_WASTAGE_CHILD_SPECS = (
+	# Live site child DocTypes (Customize Form) — preferred first
+	("custom_running_patty_wastage", "Shaft Production Run Wastage"),
 	("custom_running_patty_wastage", "Running Patty Wastage Row"),
 	("custom_roll_waste", "Roll Waste Row"),
+	("custom_recycled_wastage_details", "Recycled Wastage Details"),
 	("custom_recycled_wastage_details", "Recycled Wastage Detail Row"),
 	("custom_gsm_manual_recycle_details", "GSM Manual Recycle Row"),
 )
@@ -4895,12 +4898,14 @@ _PATTY_STOCK_METHOD_CANDIDATES = (
 )
 
 # Logical child-row keys → possible DocField names on live sites (repo scaffolds differ).
+# Live Customize Form (SPR): Shaft Production Run Wastage + Recycled Wastage Details.
 _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 	"job_id": ("job_id", "job"),
 	"quality": ("quality", "custom_quality"),
 	"color": ("color", "fabric_colour", "custom_color"),
 	"gsm": ("gsm",),
 	"width_inch": (
+		"width_inches",
 		"width_inch",
 		"width",
 		"w",
@@ -4911,6 +4916,7 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 	),
 	"width": (
 		"width",
+		"width_inches",
 		"width_inch",
 		"w",
 		"custom_width_inch",
@@ -4919,35 +4925,46 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 		"patty_width",
 	),
 	"meter_per_roll": (
+		"meter_roll_mtrs",
+		"meter__roll",
 		"meter_per_roll",
 		"meter_roll",
 		"meter",
 		"produced_length_mtrs",
 		"produced_length_mtr",
-		"meter__roll",
 	),
 	"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
 	# NEVER cross-map wastage ↔ net_wastage: Recycle to Next sets net=0 and must not wipe qty.
-	"wastage": ("wastage", "wastage_qty", "wastage_qt"),
-	"wastage_qty": ("wastage_qty", "wastage_qt", "wastage"),
+	"wastage": ("wastage_qty_kgs", "wastage_qty", "wastage_qt", "wastage"),
+	"wastage_qty": ("wastage_qty_kgs", "wastage_qty", "wastage_qt", "wastage"),
 	"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs"),
-	"recycled": ("recycled", "recycled_qty", "recycled_kg"),
-	"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
-	"available": ("available", "available_qty", "available_kg"),
-	"available_qty": ("available_qty", "available", "available_kg"),
-	"available_kg": ("available_kg", "available", "available_qty"),
+	"one_shaft_gross": ("one_shaft_gross", "one_shaft_wastage", "one_shaft"),
+	"recycled": ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
+	"recycled_qty": ("recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"),
+	"available": ("available_qty_kgs", "available_qty", "available", "available_kg"),
+	"available_qty": ("available_qty_kgs", "available_qty", "available", "available_kg"),
+	"available_kg": ("available_qty_kgs", "available_kg", "available", "available_qty"),
 	"batch_no": ("batch_no", "batch", "source_roll"),
 	"source_roll": ("source_roll", "batch_no", "batch"),
 	"source_roll_waste_row": ("source_roll_waste_row", "roll_waste_row", "spr_item_name"),
 	"spr_item_name": ("spr_item_name", "source_roll_waste_row"),
 	"recycle_to_next": ("recycle_to_next", "custom_recycle_to_next"),
+	"calculation_details": ("calculation_details",),
+	"item": ("item", "item_code"),
+	"item_name": ("item_name",),
 }
 
 
 def _gsm_recycled_child_doctype() -> str:
 	meta = frappe.get_meta("Shaft Production Run")
 	df = meta.get_field("custom_recycled_wastage_details") if meta else None
-	return _cstr(getattr(df, "options", None) or "Recycled Wastage Detail Row") or "Recycled Wastage Detail Row"
+	opts = _cstr(getattr(df, "options", None) or "")
+	if opts and frappe.db.exists("DocType", opts):
+		return opts
+	for cand in ("Recycled Wastage Details", "Recycled Wastage Detail Row"):
+		if frappe.db.exists("DocType", cand):
+			return cand
+	return "Recycled Wastage Details"
 
 
 def _gsm_manual_recycle_field_and_doctype() -> tuple[str, str]:
@@ -5321,6 +5338,33 @@ def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
 		if found_w > 0:
 			out["width_inch"] = found_w
 			out["width"] = found_w
+		# Normalize live Customize Form fieldnames → logical keys for GSM dialog cards
+		w_qty = flt(_pick_value(out, ["wastage_qty_kgs", "wastage_qty", "wastage", "wastage_qt"], 0))
+		if w_qty > 0:
+			out["wastage"] = w_qty
+			out["wastage_qty"] = w_qty
+		mtr = flt(
+			_pick_value(
+				out,
+				["meter_roll_mtrs", "meter__roll", "meter_per_roll", "meter_roll", "meter"],
+				0,
+			)
+		)
+		if mtr > 0:
+			out["meter_per_roll"] = mtr
+		avail = flt(
+			_pick_value(out, ["available_qty_kgs", "available_qty", "available", "available_kg"], 0)
+		)
+		if avail > 0:
+			out["available"] = avail
+			out["available_qty"] = avail
+			out["available_kg"] = avail
+		recy = flt(
+			_pick_value(out, ["recycled_qty_kgs", "recycled_qty", "recycled", "recycled_kg"], 0)
+		)
+		if recy > 0:
+			out["recycled"] = recy
+			out["recycled_qty"] = recy
 	return out
 
 
@@ -5346,22 +5390,34 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 	items = list(getattr(spr_doc, "items", None) or [])
 	job_items = [it for it in items if _cstr(getattr(it, "job", "")) == job_id] if job_id else items
 
-	is_patty_wastage = "patty" in child_doctype.lower() or "patty" in _cstr(
-		out.get("parentfield") or ""
-	).lower()
-	is_recycled = "recycl" in child_doctype.lower() or "recycl" in _cstr(
-		out.get("parentfield") or ""
-	).lower()
+	is_patty_wastage = (
+		"patty" in child_doctype.lower()
+		or (
+			"wastage" in child_doctype.lower()
+			and "recycl" not in child_doctype.lower()
+			and "roll waste" not in child_doctype.lower()
+		)
+		or "patty" in _cstr(out.get("parentfield") or "").lower()
+		or _cstr(out.get("parentfield") or "") == "custom_running_patty_wastage"
+	)
+	is_recycled = (
+		"recycl" in child_doctype.lower()
+		or "recycl" in _cstr(out.get("parentfield") or "").lower()
+		or _cstr(out.get("parentfield") or "") == "custom_recycled_wastage_details"
+	)
 	# Patty-stock recycle rows have no job_id — do not copy production-roll width/meter/batch.
 	skip_spr_roll_fill = is_patty_wastage or (is_recycled and not job_id)
 	if is_recycled:
 		kg = _gsm_pick_positive_qty(
 			out,
 			(
+				"wastage_qty_kgs",
 				"wastage",
 				"wastage_qty",
+				"recycled_qty_kgs",
 				"recycled",
 				"recycled_qty",
+				"available_qty_kgs",
 				"available_kg",
 				"available",
 				"net_wastage",
@@ -5820,22 +5876,17 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 
 @frappe.whitelist(methods=["GET", "POST"])
 def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_to_next=0):
-	"""Toggle Running Patty Wastage Row.recycle_to_next from the GSM wastage popup.
+	"""Toggle recycle_to_next on a *saved* Running Patty row only — no separate wastage calculate.
 
-	Updates flag + net_wastage (and refreshes qty from compute) without blanking width /
-	meter / wastage qty. Syncs Recycled Wastage Details afterward.
+	Uses existing row one_shaft_gross / wastage_qty_kgs for net_wastage. SPR Client Scripts
+	own full Running Patty / Recycle table fills.
 	"""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_gsm_publish_session_update,
-		_spr_apply_patty_recycle_net,
-		_spr_compute_patty_wastage_by_job,
 		_spr_operation_lock,
-		_spr_patch_patty_row_preserve,
+		_spr_patty_child_doctype,
 		_spr_patty_live_field_map,
 		_spr_patty_wastage_fieldname,
-		_spr_sync_recycled_wastage_from_patty,
-		_spr_write_patty_child_row,
-		persist_spr_patty_and_core,
 	)
 
 	spr_name = _cstr(spr_name).strip()
@@ -5846,7 +5897,12 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
 
-	child_dt = "Running Patty Wastage Row"
+	if row_name.startswith("preview::"):
+		frappe.throw(
+			_("Cannot toggle Recycle on a preview row. Open Shaft Production Run so wastage scripts fill the table first.")
+		)
+
+	child_dt = _spr_patty_child_doctype()
 	child_meta = frappe.get_meta(child_dt) if frappe.db.exists("DocType", child_dt) else None
 	flag_field = None
 	if child_meta:
@@ -5857,10 +5913,6 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 	if not flag_field:
 		frappe.throw(_("Recycle to Next is not on Running Patty Wastage. Please migrate."))
 
-	if row_name.startswith("preview::"):
-		job_id = job_id or row_name.split("::", 1)[-1]
-		row_name = ""
-
 	with _spr_operation_lock(spr_name, "write", ttl_sec=60):
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		if cint(spr.docstatus) != 0:
@@ -5869,8 +5921,6 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 		field = _spr_patty_wastage_fieldname()
 		if not field:
 			frappe.throw(_("Running Patty Wastage is not configured on Shaft Production Run"))
-
-		computed = _spr_compute_patty_wastage_by_job(spr) or {}
 
 		target = None
 		for row in spr.get(field) or []:
@@ -5882,68 +5932,30 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 				target = row
 				break
 
-		logical = None
-		if job_id and computed.get(job_id):
-			logical = computed.get(job_id)
-		elif target is not None:
-			tj = _cstr(getattr(target, "job_id", None) or getattr(target, "job", None) or "")
-			logical = computed.get(tj) if tj else None
-		elif len(computed) == 1:
-			logical = next(iter(computed.values()))
-
-		if not logical:
-			frappe.throw(_("Patty wastage row not found to recycle — save rolls / jobs first."))
-
-		payload = _spr_apply_patty_recycle_net(dict(logical), flag)
-		values = _spr_write_patty_child_row(payload)
-		values[flag_field] = flag
-		live = _spr_patty_live_field_map()
-
-		if not target:
-			# New row — write full mapped values (already positive from compute)
-			target = spr.append(field, values)
-		else:
-			_spr_patch_patty_row_preserve(target, values, flag, flag_field, live=live)
-
-		# Ensure every computed job has a saved patty row (not only the toggled one)
-		existing_jobs = {
-			_cstr(getattr(r, "job_id", None) or getattr(r, "job", None) or "")
-			for r in (spr.get(field) or [])
-		}
-		for jid, log in computed.items():
-			if jid in existing_jobs:
-				# Repair any sibling rows that were previously zeroed (width/meter/qty)
-				for row in spr.get(field) or []:
-					row_job = _cstr(getattr(row, "job_id", None) or getattr(row, "job", None) or "")
-					if row_job != jid:
-						continue
-					row_flag = cint(
-						getattr(row, flag_field, None)
-						or getattr(row, "recycle_to_next", None)
-						or getattr(row, "custom_recycle_to_next", None)
-						or 0
-					)
-					if row is target:
-						row_flag = flag
-					other = _spr_apply_patty_recycle_net(dict(log), row_flag)
-					other_vals = _spr_write_patty_child_row(other)
-					_spr_patch_patty_row_preserve(row, other_vals, row_flag, flag_field, live=live)
-				continue
-			other_flag = 0
-			other = _spr_apply_patty_recycle_net(dict(log), other_flag)
-			other_vals = _spr_write_patty_child_row(other)
-			if other_vals:
-				spr.append(field, other_vals)
-
-		_spr_sync_recycled_wastage_from_patty(spr)
-
-		# Full rewrite so SPR tables match GSM compute (repairs prior zeroed width/meter/qty)
-		try:
-			persist_spr_patty_and_core(
-				spr, only_if_empty=False, save_if_draft=False, refresh_zero_rows=True
+		if target is None:
+			frappe.throw(
+				_("No saved Running Patty row found. Let Shaft Production Run wastage scripts fill the table first.")
 			)
+
+		live = _spr_patty_live_field_map()
+		net_fn = live.get("net_wastage") or ("net_wastage" if child_meta and child_meta.has_field("net_wastage") else None)
+		one_fn = live.get("one_shaft") or "one_shaft_gross"
+		tail = flt(getattr(target, one_fn, None) or getattr(target, "one_shaft_gross", None) or 0)
+		if tail <= 0:
+			w_fn = live.get("wastage_qty") or "wastage_qty_kgs"
+			shafts = max(cint(getattr(target, "no_of_shafts", None) or 1), 1)
+			qty = flt(getattr(target, w_fn, None) or getattr(target, "wastage_qty_kgs", None) or 0)
+			tail = flt(qty / shafts, 3) if qty > 0 else 0.0
+
+		try:
+			target.set(flag_field, flag)
 		except Exception:
-			frappe.log_error(frappe.get_traceback(), f"GSM recycle persist patty:{spr_name}")
+			setattr(target, flag_field, flag)
+		if net_fn:
+			try:
+				target.set(net_fn, 0.0 if flag else flt(tail or 0))
+			except Exception:
+				setattr(target, net_fn, 0.0 if flag else flt(tail or 0))
 
 		spr.flags._spr_incremental_roll_save = True
 		spr.save(ignore_permissions=True)
@@ -5959,7 +5971,7 @@ def set_gsm_patty_recycle_to_next(spr_name, row_name=None, job_id=None, recycle_
 
 @frappe.whitelist(methods=["GET", "POST"])
 def get_gsm_spr_wastage_context(spr_name):
-	"""Read running patty, roll waste, and recycled child tables for GSM dialogs."""
+	"""Fetch-only: return saved Running Patty / Recycle / Roll Waste tables from SPR."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
@@ -5983,28 +5995,41 @@ def get_gsm_spr_wastage_context(spr_name):
 					spr.save(ignore_permissions=True)
 
 	tables = {}
+	seen_fields: set[str] = set()
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
+		if fieldname in seen_fields:
+			continue
 		resolved_field, rows = _gsm_load_spr_child_rows(spr, fieldname, child_doctype)
 		if not resolved_field and not rows:
-			tables[fieldname] = {
-				"fieldname": fieldname,
-				"child_doctype": child_doctype,
-				"columns": _gsm_child_table_columns(child_doctype),
-				"rows": [],
-				"configured": False,
-			}
 			continue
-		payload = _gsm_spr_child_table_payload(spr, fieldname, child_doctype)
+		seen_fields.add(fieldname)
+		live_child = child_doctype
+		try:
+			df = frappe.get_meta("Shaft Production Run").get_field(resolved_field or fieldname)
+			if df and _cstr(df.options):
+				live_child = _cstr(df.options)
+		except Exception:
+			pass
+		payload = _gsm_spr_child_table_payload(spr, fieldname, live_child)
 		payload["fieldname"] = fieldname
 		payload["resolved_fieldname"] = resolved_field
 		payload["configured"] = True
+		payload["source"] = "spr_saved_table"
 		tables[fieldname] = payload
 
-	patty_payload = tables.get("custom_running_patty_wastage") or {}
-	if not _gsm_patty_rows_have_saved_wastage(patty_payload.get("rows") or []):
-		preview = _gsm_patty_preview_payload(spr, patty_payload)
-		if preview:
-			tables["custom_running_patty_wastage"] = preview
+	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
+		if fieldname in tables:
+			continue
+		tables[fieldname] = {
+			"fieldname": fieldname,
+			"child_doctype": child_doctype,
+			"columns": _gsm_child_table_columns(child_doctype),
+			"rows": [],
+			"configured": False,
+			"source": "spr_saved_table",
+		}
+
+	# FETCH ONLY — never substitute a server-side wastage preview.
 
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_spr_is_real_roll_item_row,
@@ -6030,6 +6055,14 @@ def get_gsm_spr_wastage_context(spr_name):
 		warnings.append(
 			_(
 				"No produced rolls on this SPR yet. Enter rolls on GSM and click Save Row before relying on wastage."
+			)
+		)
+	elif patty_rows_now and patty_kg <= 0:
+		warnings.append(
+			_(
+				"Running Patty rows are saved but wastage qty is 0. "
+				"Open the Shaft Production Run so existing wastage Client Scripts can fill "
+				"width_inches / meter_roll_mtrs / wastage_qty_kgs, then Refresh here."
 			)
 		)
 
@@ -6144,32 +6177,7 @@ def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
 	if out:
 		return out
 
-	preview = _gsm_patty_preview_payload(spr)
-	for row in (preview or {}).get("rows") or []:
-		waste_qty = flt(_pick_value(row, ["wastage", "wastage_qty", "net_wastage"], 0))
-		if waste_qty <= 0:
-			continue
-		out.append(
-			{
-				"name": "",
-				"batch_no": _cstr(_pick_value(row, ["batch_no", "source_roll"], "")),
-				"quality": _cstr(_pick_value(row, ["quality"], "")),
-				"color": _cstr(_pick_value(row, ["color"], "")),
-				"gsm": cint(_pick_value(row, ["gsm"], 0)),
-				"width_inch": flt(_pick_value(row, ["width_inch", "width"], 0)),
-				"meter_per_roll": flt(
-					_pick_value(row, ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs"], 0)
-				),
-				"no_of_shafts": cint(_pick_value(row, ["no_of_shafts", "shafts", "no_of_shaft"], 0)),
-				"job_id": _cstr(_pick_value(row, ["job_id", "job"], "")),
-				"wastage": waste_qty,
-				"wastage_qty": waste_qty,
-				"net_wastage": waste_qty,
-				"available_kg": waste_qty,
-				"preview_only": True,
-			}
-		)
-
+	# No preview fallback — only saved SPR Running Patty / Recycle tables.
 	return out
 
 
