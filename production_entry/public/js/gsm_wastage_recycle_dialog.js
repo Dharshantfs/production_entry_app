@@ -826,11 +826,11 @@ async function _renderPattyWastageView(sprName, opts = {}) {
 				<div class="gwm-card">
 					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${hint}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
-					${_dataCardsHtml(rows, { kind: "patty", showPrint: false })}
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
 				</div>
 				<div class="gwm-card" style="margin-top:12px;">
 					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(pattyCols, rows, { showPrint: false })}
+					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
 				</div>
 			</div>`
 			: `<div class="gwm-shell">${warnHtml}<div class="gwm-empty">${emptyMsg}</div></div>`;
