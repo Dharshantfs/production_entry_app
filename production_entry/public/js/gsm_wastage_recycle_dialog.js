@@ -47,16 +47,17 @@ const DESK_ROLL_WASTE_COLS = [
 	{ field: "source_roll", label: __("Source Roll") },
 ];
 
+/** Fixed GSM Running Patty columns — do not mirror full SPR child DocType. */
 const DESK_PATTY_COLS = [
+	{ field: "batch_no", label: __("Batch No") },
 	{ field: "job_id", label: __("Job ID") },
 	{ field: "quality", label: __("Quality") },
 	{ field: "color", label: __("Color") },
 	{ field: "gsm", label: __("GSM"), num: true },
-	{ field: "width_inch", label: __("Width (Inch)"), num: true },
+	{ field: "width_inch", label: __("Width"), num: true },
 	{ field: "meter_per_roll", label: __("Meter / Roll"), num: true },
-	{ field: "no_of_shafts", label: __("No of Shafts"), num: true },
 	{ field: "wastage", label: __("Wastage Qty"), num: true },
-	{ field: "net_wastage", label: __("Net Wastage (Kgs)"), num: true },
+	{ field: "net_wastage", label: __("Net Wastage"), num: true },
 	{ field: "recycle_to_next", label: __("Recycle to Next"), check: true },
 ];
 
@@ -528,17 +529,27 @@ function _dataCardsHtml(rows, opts = {}) {
 					<span class="gwm-badge">${_esc(badge)}</span>
 				</div>
 				<div class="gwm-kv-grid">
+					${
+						kind === "patty"
+							? `<div class="gwm-kv"><span>${__("Batch No")}</span><strong>${_esc(row.batch_no)}</strong></div>
+					<div class="gwm-kv"><span>${__("Job ID")}</span><strong>${_esc(row.job_id)}</strong></div>`
+							: ""
+					}
 					<div class="gwm-kv"><span>${__("Quality")}</span><strong>${_esc(row.quality)}</strong></div>
 					<div class="gwm-kv"><span>${__("Color")}</span><strong>${_esc(row.color)}</strong></div>
 					<div class="gwm-kv"><span>${__("GSM")}</span><strong>${_esc(row.gsm)}</strong></div>
 					<div class="gwm-kv"><span>${__("Width")}</span><strong>${_esc(row.width_inch)}</strong></div>
 					<div class="gwm-kv"><span>${__("Meter / Roll")}</span><strong>${_esc(row.meter_per_roll)}</strong></div>
-					<div class="gwm-kv"><span>${__("Shafts")}</span><strong>${_esc(row.no_of_shafts)}</strong></div>
+					${
+						kind === "patty"
+							? ""
+							: `<div class="gwm-kv"><span>${__("Shafts")}</span><strong>${_esc(row.no_of_shafts)}</strong></div>`
+					}
 					<div class="gwm-kv"><span>${__("Wastage Qty")}</span><strong>${_esc(_fmtNum(row.wastage))}</strong></div>
 					<div class="gwm-kv"><span>${__("Net Wastage")}</span><strong>${_esc(_fmtNum(row.net_wastage || row.wastage))} Kg</strong></div>
 					<div class="gwm-kv gwm-kv-wide">${_recycleNextCheckboxHtml(row)}</div>
 					${
-						_cint(row.recycle_to_next) && Number(row.recycled) > 0
+						kind !== "patty" && _cint(row.recycle_to_next) && Number(row.recycled) > 0
 							? `<div class="gwm-kv"><span>${__("Recycled")}</span><strong>${_esc(_fmtNum(row.recycled))} Kg</strong></div>`
 							: ""
 					}
@@ -785,10 +796,7 @@ async function _renderPattyWastageView(sprName, opts = {}) {
 		}
 		return row;
 	});
-	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
-	if (!pattyCols.some((c) => c.field === "recycle_to_next" || c.field === "custom_recycle_to_next")) {
-		pattyCols.push({ field: "recycle_to_next", label: __("Recycle to Next"), check: true });
-	}
+	const pattyCols = DESK_PATTY_COLS.slice();
 	const isPreview =
 		table.source === "gsm_preview_from_spr" || table.source === "gsm_preview_from_roll_lines";
 	const fromJobsOnly = !!table.from_jobs_only;
@@ -818,11 +826,11 @@ async function _renderPattyWastageView(sprName, opts = {}) {
 				<div class="gwm-card">
 					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${hint}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
-					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: false })}
 				</div>
 				<div class="gwm-card" style="margin-top:12px;">
 					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
+					${_deskTableHtml(pattyCols, rows, { showPrint: false })}
 				</div>
 			</div>`
 			: `<div class="gwm-shell">${warnHtml}<div class="gwm-empty">${emptyMsg}</div></div>`;
