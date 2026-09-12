@@ -18505,9 +18505,8 @@ def get_unit_load(date, unit, plan_name=None, pb_only=0):
 # EQUIPMENT MAINTENANCE HELPERS
 # ===========================
 
-# Mesh/Die Change used to be non-blocking (banner only). They now reduce
-# partial-day capacity and cascade overflow like other maintenance types.
-NON_BLOCKING_MAINTENANCE_TYPES = set()
+# Mesh/Die Change: banner + times only (approx). Do not cascade or cut daily kg.
+NON_BLOCKING_MAINTENANCE_TYPES = {"MESH CHANGE", "DIE CHANGE"}
 MAINTENANCE_UNIT_OPTIONS = (
     "Unit 1",
     "Unit 2",
@@ -18787,6 +18786,7 @@ def get_maintenance_blocked_hours(unit, date_string):
 		  AND start_date <= %s
 		  AND end_date >= %s
 		  AND docstatus < 2
+		  AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
 		""",
 		unit_params + (check_date, check_date),
 		as_dict=True,
@@ -18815,13 +18815,13 @@ def get_unit_available_hours(unit, date_string):
 
 
 def get_unit_effective_limit_tons(unit, date_string):
-	"""Daily hard limit scaled by production hours left after maintenance."""
+	"""Daily hard limit for queuing.
+
+	Maintenance start/end times are informational only (approximate). Do not
+	scale/lock kg by available hours — queue uses the full unit day limit.
+	"""
 	unit_key = normalize_planning_unit_for_select(unit) or unit
-	base = flt(HARD_LIMITS.get(unit_key, HARD_LIMITS.get(unit, 999.0)))
-	hours = get_unit_available_hours(unit_key, date_string)
-	if hours >= 23.99:
-		return base
-	return flt(base) * (hours / 24.0)
+	return flt(HARD_LIMITS.get(unit_key, HARD_LIMITS.get(unit, 999.0)))
 
 
 def is_date_under_maintenance(unit, date_string):
@@ -18856,6 +18856,7 @@ def get_maintenance_info_on_date(unit, date_string):
 		  AND start_date <= %s
 		  AND end_date >= %s
 		  AND docstatus < 2
+		  AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
 		LIMIT 1
 		""",
 		unit_params + (check_date, check_date),
@@ -18968,21 +18969,17 @@ def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, note
 	if start_time or end_time:
 		time_msg = f" ({start_time or '00:00'} – {end_time or '23:59'})"
 
-	avail = get_unit_available_hours(unit, str(start_date))
-	eff = get_unit_effective_limit_tons(unit, str(start_date))
-	cap_note = f" Available on {start_date}: {avail:.1f}h / {eff:.3f}T."
-
 	if _is_non_blocking_maintenance_type(maintenance_type):
 		return {
 			"status": "success",
-			"message": f"{maintenance_type} scheduled for {unit} from {start_date} to {end_date}{time_msg}.{cap_note} Orders remain on the same day.",
+			"message": f"{maintenance_type} noted for {unit} from {start_date} to {end_date}{time_msg}. Times are approximate — daily kg capacity is not locked. Queue orders as usual.",
 			"cascaded_count": 0,
 			"name": doc.name,
 		}
 
 	return {
 		"status": "success",
-		"message": f"Maintenance scheduled for {unit} from {start_date} to {end_date}{time_msg}.{cap_note} Moved {cascade_result.get('cascaded_count', 0)} items forward.",
+		"message": f"Maintenance scheduled for {unit} from {start_date} to {end_date}{time_msg}. Moved {cascade_result.get('cascaded_count', 0)} items forward.",
 		"cascaded_count": cascade_result.get("cascaded_count", 0),
 		"name": doc.name,
 	}
