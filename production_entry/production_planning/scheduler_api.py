@@ -18692,13 +18692,16 @@ def _maintenance_has_time_columns():
 
 
 def _ensure_equipment_maintenance_time_fields():
-	"""Ensure start_time / end_time exist on Equipment Maintenance (DocField or Custom Field)."""
+	"""Ensure start/end time + after-order anchor fields exist on Equipment Maintenance."""
 	if not frappe.db.exists("DocType", "Equipment Maintenance"):
 		return
 	meta = frappe.get_meta("Equipment Maintenance")
-	for fieldname, label, insert_after in (
-		("start_time", "Start Time", "start_date"),
-		("end_time", "End Time", "end_date"),
+	for fieldname, label, fieldtype, insert_after in (
+		("start_time", "Start Time", "Time", "start_date"),
+		("end_time", "End Time", "Time", "end_date"),
+		("after_order_code", "After Order Code", "Data", "end_time"),
+		("after_quality", "After Quality", "Data", "after_order_code"),
+		("after_color", "After Colour", "Data", "after_quality"),
 	):
 		if meta.has_field(fieldname):
 			continue
@@ -18710,7 +18713,7 @@ def _ensure_equipment_maintenance_time_fields():
 				"dt": "Equipment Maintenance",
 				"fieldname": fieldname,
 				"label": label,
-				"fieldtype": "Time",
+				"fieldtype": fieldtype,
 				"insert_after": insert_after,
 			}
 		)
@@ -18922,8 +18925,19 @@ def get_next_available_date_skipping_maintenance(unit, start_date, required_tons
 
 
 @frappe.whitelist()
-def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, notes=None, start_time=None, end_time=None):
-	"""Create new Equipment Maintenance record (optional start/end times for partial-day capacity)."""
+def add_equipment_maintenance(
+	unit,
+	maintenance_type,
+	start_date,
+	end_date,
+	notes=None,
+	start_time=None,
+	end_time=None,
+	after_order_code=None,
+	after_quality=None,
+	after_color=None,
+):
+	"""Create new Equipment Maintenance record (optional times + after-order banner anchor)."""
 	import json
 
 	if not frappe.db.exists("DocType", "Equipment Maintenance"):
@@ -18947,6 +18961,14 @@ def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, note
 	if has_et and end_time not in (None, ""):
 		payload["end_time"] = end_time
 
+	cols = set(frappe.db.get_table_columns("Equipment Maintenance") or [])
+	if "after_order_code" in cols and after_order_code not in (None, ""):
+		payload["after_order_code"] = _cstr(after_order_code).strip()
+	if "after_quality" in cols and after_quality not in (None, ""):
+		payload["after_quality"] = _cstr(after_quality).strip()
+	if "after_color" in cols and after_color not in (None, ""):
+		payload["after_color"] = _cstr(after_color).strip()
+
 	doc = frappe.get_doc(payload)
 	doc.insert(ignore_permissions=False)
 
@@ -18969,17 +18991,26 @@ def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, note
 	if start_time or end_time:
 		time_msg = f" ({start_time or '00:00'} – {end_time or '23:59'})"
 
+	after_msg = ""
+	if after_order_code:
+		parts = [after_order_code]
+		if after_quality:
+			parts.append(after_quality)
+		if after_color:
+			parts.append(after_color)
+		after_msg = f" After order: {' · '.join(parts)}."
+
 	if _is_non_blocking_maintenance_type(maintenance_type):
 		return {
 			"status": "success",
-			"message": f"{maintenance_type} noted for {unit} from {start_date} to {end_date}{time_msg}. Times are approximate — daily kg capacity is not locked. Queue orders as usual.",
+			"message": f"{maintenance_type} noted for {unit} from {start_date} to {end_date}{time_msg}.{after_msg} Times are approximate — daily kg capacity is not locked. Queue orders as usual.",
 			"cascaded_count": 0,
 			"name": doc.name,
 		}
 
 	return {
 		"status": "success",
-		"message": f"Maintenance scheduled for {unit} from {start_date} to {end_date}{time_msg}. Moved {cascade_result.get('cascaded_count', 0)} items forward.",
+		"message": f"Maintenance scheduled for {unit} from {start_date} to {end_date}{time_msg}.{after_msg} Moved {cascade_result.get('cascaded_count', 0)} items forward.",
 		"cascaded_count": cascade_result.get("cascaded_count", 0),
 		"name": doc.name,
 	}
@@ -19499,7 +19530,7 @@ def get_all_equipment_maintenance(start_date=None, end_date=None):
         _ensure_equipment_maintenance_time_fields()
         cols = set(frappe.db.get_table_columns("Equipment Maintenance") or [])
         fields = ["name", "unit", "maintenance_type", "start_date", "end_date"]
-        for opt in ("status", "notes", "start_time", "end_time"):
+        for opt in ("status", "notes", "start_time", "end_time", "after_order_code", "after_quality", "after_color"):
             if opt in cols:
                 fields.append(opt)
 

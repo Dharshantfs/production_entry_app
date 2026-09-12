@@ -119,6 +119,9 @@ export function buildMaintenanceData(records) {
         endDate: rec.end_date,
         startTime: rec.start_time || "",
         endTime: rec.end_time || "",
+        afterOrderCode: rec.after_order_code || "",
+        afterQuality: rec.after_quality || "",
+        afterColor: rec.after_color || "",
         status: rec.status,
         unit: rec.unit,
       });

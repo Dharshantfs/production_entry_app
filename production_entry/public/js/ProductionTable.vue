@@ -217,19 +217,31 @@
                   :data-unit="unitGroup.unit"
                   :data-date="dateGroup.date"
                 >
-                      <!-- Maintenance Row (show once at maintenance start date, centered) -->
-                      <tr v-if="getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-                        <td :colspan="tableColCount(unitGroup.unit, unitGroup.dates)" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
-                          <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                            <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ formatMaintenanceWindow(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)) }})</span>
-                            <button @click="deleteMaintenanceRecord(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
-                          </div>
-                        </td>
-                      </tr>
-
                       <template v-if="dateGroup.rows.length">
                         <template v-for="(row, idx) in dateGroup.rows" :key="row.rowKey">
-                          <tr v-if="row.type === 'item'" class="pt-draggable-row" :data-item-name="row.item.itemName">
+                          <tr
+                            v-if="row.type === 'maintenance'"
+                            class="pt-non-draggable"
+                            style="background-color: #fee2e2; border: 2px solid #dc2626;"
+                          >
+                            <td class="cell-center" style="color:#991b1b;">🔧</td>
+                            <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-center font-bold">
+                              {{ formatDate(dateGroup.date) }}
+                            </td>
+                            <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-center">
+                              {{ getDayName(dateGroup.date) }}
+                            </td>
+                            <td :colspan="tableColCount(unitGroup.unit, unitGroup.dates) - 3" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+                              <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
+                                <span>MAINTENANCE: {{ row.maint.type }} ({{ formatMaintenanceWindow(row.maint) }})</span>
+                                <span v-if="row.maint.afterOrderCode" style="font-weight:600;color:#7f1d1d;">
+                                  after {{ row.maint.afterOrderCode }} · {{ row.maint.afterQuality }} · {{ row.maint.afterColor }}
+                                </span>
+                                <button @click="deleteMaintenanceRecord(row.maint.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
+                              </div>
+                            </td>
+                          </tr>
+                          <tr v-else-if="row.type === 'item'" class="pt-draggable-row" :data-item-name="row.item.itemName">
                             <td class="cell-center" style="cursor: grab; color: #94a3b8; font-size: 15px;" :title="tableReorderLocked ? 'Unlock reorder to drag' : 'Drag to reorder'">
                               <span class="pt-drag-handle">⠿</span>
                             </td>
@@ -536,6 +548,7 @@ import {
   getMaintenanceRecordsForDate,
   getPrimaryMaintenanceRecord,
   normalizeMaintenanceUnit,
+  maintenanceUnitsEqual,
   unitAllowedByBoardAccess,
 } from "./maintenance_utils.js";
 import {
@@ -901,6 +914,78 @@ function formatMaintenanceWindow(rec) {
   return `${start} - ${end}`;
 }
 
+function _normMaintKey(v) {
+  return String(v || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+function encodeAfterOrderKey(code, quality, color) {
+  return [code || "", quality || "", color || ""].map((x) => String(x).trim()).join("|||");
+}
+
+function decodeAfterOrderKey(key) {
+  const parts = String(key || "").split("|||");
+  return {
+    code: (parts[0] || "").trim(),
+    quality: (parts[1] || "").trim(),
+    color: (parts[2] || "").trim(),
+  };
+}
+
+function rowMatchesAfterOrder(row, maint) {
+  if (!maint?.afterOrderCode) return false;
+  const code = row.type === "merge" ? row.partyCode : row.item?.partyCode;
+  const quality = row.type === "merge" ? row.quality : row.item?.quality;
+  const color = row.type === "merge" ? row.color : row.item?.color;
+  return (
+    _normMaintKey(code) === _normMaintKey(maint.afterOrderCode) &&
+    _normMaintKey(quality) === _normMaintKey(maint.afterQuality) &&
+    _normMaintKey(color) === _normMaintKey(maint.afterColor)
+  );
+}
+
+function insertMaintenanceRowsIntoGroup(unit, group) {
+  const maintList = getMaintenanceForDate(group.date, unit) || [];
+  if (!maintList.length) return;
+  for (const maint of maintList) {
+    const maintRow = {
+      type: "maintenance",
+      rowKey: `maint-${maint.name}`,
+      maint,
+    };
+    if (maint.afterOrderCode) {
+      const idx = group.rows.findIndex((r) => r.type !== "maintenance" && rowMatchesAfterOrder(r, maint));
+      if (idx >= 0) {
+        group.rows.splice(idx + 1, 0, maintRow);
+        continue;
+      }
+    }
+    // No after-order (or order not found): show at top of the day.
+    group.rows.unshift(maintRow);
+  }
+}
+
+function buildAfterOrderOptionsForDialog(unit, dateStr) {
+  const dateKey = normalizeDateString(dateStr);
+  const options = [{ value: "", label: "(Top of day — before all orders)" }];
+  const seen = new Set();
+  (filteredData.value || []).forEach((d) => {
+    if (!maintenanceUnitsEqual(d.unit, unit)) return;
+    if (normalizeDateString(d.plannedDate) !== dateKey) return;
+    const code = d.partyCode || "";
+    const quality = d.quality || "";
+    const color = d.color || "";
+    if (!code) return;
+    const key = encodeAfterOrderKey(code, quality, color);
+    if (seen.has(_normMaintKey(key))) return;
+    seen.add(_normMaintKey(key));
+    options.push({
+      value: key,
+      label: `${code} · ${quality} · ${color}`,
+    });
+  });
+  return options;
+}
+
 function getCurrentScopeDateRange() {
   if (viewScope.value === 'monthly') {
     if (!filterMonth.value) return null;
@@ -952,6 +1037,32 @@ function toLocalDateKeyFromDate(d) {
 async function openMaintenanceDialog() {
   if (freezeMaintenance.value) return;
   const prefill = pendingMaintenancePrefill.value;
+  const defaultUnit = prefill && prefill.unit ? prefill.unit : "Unit 4";
+  const defaultDate = filterOrderDate.value || frappe.datetime.get_today();
+  let afterOrderOptions = buildAfterOrderOptionsForDialog(defaultUnit, defaultDate);
+
+  const refreshAfterOrderField = () => {
+    const unit = d.get_value("new_unit") || defaultUnit;
+    const dateStr = d.get_value("start_date") || defaultDate;
+    afterOrderOptions = buildAfterOrderOptionsForDialog(unit, dateStr);
+    const opts = afterOrderOptions.map((o) => o.value).join("\n");
+    const labels = {};
+    afterOrderOptions.forEach((o) => {
+      labels[o.value] = o.label;
+    });
+    const df = d.get_field("after_order");
+    if (df) {
+      df.df.options = afterOrderOptions.map((o) => o.label).join("\n");
+      // Frappe Select uses options as values; keep parallel map via df._after_order_map
+      df._after_order_map = {};
+      afterOrderOptions.forEach((o) => {
+        df._after_order_map[o.label] = o.value;
+      });
+      df.refresh();
+      d.set_value("after_order", afterOrderOptions[0]?.label || "");
+    }
+  };
+
 	const d = new frappe.ui.Dialog({
 		title: "⚙️ Equipment Maintenance Management",
 		fields: [
@@ -965,7 +1076,8 @@ async function openMaintenanceDialog() {
 				label: "Unit",
 				options: "Unit 1\nUnit 2\nUnit 3\nUnit 4",
 				reqd: 1,
-        default: prefill && prefill.unit ? prefill.unit : undefined,
+        default: defaultUnit,
+        onchange: () => refreshAfterOrderField(),
 			},
 			{
 				fieldtype: "Select",
@@ -979,7 +1091,9 @@ async function openMaintenanceDialog() {
 				fieldtype: "Date",
 				fieldname: "start_date",
 				label: "Start Date",
-				reqd: 1
+				reqd: 1,
+        default: defaultDate,
+        onchange: () => refreshAfterOrderField(),
 			},
 			{
 				fieldtype: "Time",
@@ -991,13 +1105,22 @@ async function openMaintenanceDialog() {
 				fieldtype: "Date",
 				fieldname: "end_date",
 				label: "End Date",
-				reqd: 1
+				reqd: 1,
+        default: defaultDate,
 			},
 			{
 				fieldtype: "Time",
 				fieldname: "end_time",
 				label: "End Time",
 				description: "Optional. Blank = end of day (23:59)",
+			},
+			{
+				fieldtype: "Select",
+				fieldname: "after_order",
+				label: "After Order (Order Code · Quality · Colour)",
+				options: afterOrderOptions.map((o) => o.label).join("\n"),
+				description: "Maintenance banner will show after this order on the production table",
+				default: afterOrderOptions[0]?.label || "",
 			},
 			{
 				fieldtype: "Small Text",
@@ -1020,6 +1143,12 @@ async function openMaintenanceDialog() {
 				frappe.msgprint("Please fill all required fields");
 				return;
 			}
+      const df = d.get_field("after_order");
+      const label = vals.after_order || "";
+      const key =
+        (df && df._after_order_map && df._after_order_map[label]) ||
+        (afterOrderOptions.find((o) => o.label === label)?.value ?? "");
+      const decoded = decodeAfterOrderKey(key);
 			try {
 				const res = await frappe.call({
 					method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
@@ -1030,6 +1159,9 @@ async function openMaintenanceDialog() {
 						end_date: vals.end_date,
 						start_time: vals.start_time || "",
 						end_time: vals.end_time || "",
+						after_order_code: decoded.code || "",
+						after_quality: decoded.quality || "",
+						after_color: decoded.color || "",
 						notes: vals.notes || ""
 					}
 				});
@@ -1046,9 +1178,17 @@ async function openMaintenanceDialog() {
 			}
 		}
 	});
+  const dfInit = d.get_field("after_order");
+  if (dfInit) {
+    dfInit._after_order_map = {};
+    afterOrderOptions.forEach((o) => {
+      dfInit._after_order_map[o.label] = o.value;
+    });
+  }
 	d.show();
   pendingMaintenancePrefill.value = null;
 	await fetchMaintenanceRecords();
+  refreshAfterOrderField();
 }
 
 function getMaintenanceRecordsHTML() {
@@ -1061,17 +1201,22 @@ function getMaintenanceRecordsHTML() {
 	html += '<th style="border: 1px solid #ddd; padding: 6px;">Type</th>';
 	html += '<th style="border: 1px solid #ddd; padding: 6px;">Start</th>';
 	html += '<th style="border: 1px solid #ddd; padding: 6px;">End</th>';
+	html += '<th style="border: 1px solid #ddd; padding: 6px;">After Order</th>';
 	html += '<th style="border: 1px solid #ddd; padding: 6px;">Status</th>';
 	html += '</tr>';
 	
 	maintenanceRecords.value.forEach(rec => {
 		const startLabel = rec.start_time ? `${rec.start_date} ${String(rec.start_time).slice(0, 5)}` : rec.start_date;
 		const endLabel = rec.end_time ? `${rec.end_date} ${String(rec.end_time).slice(0, 5)}` : rec.end_date;
+		const afterLabel = rec.after_order_code
+			? `${rec.after_order_code} · ${rec.after_quality || ""} · ${rec.after_color || ""}`
+			: "—";
 		html += `<tr style="border: 1px solid #ddd;">`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center; font-weight: 600;">${rec.unit}</td>`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${rec.maintenance_type}</td>`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${startLabel}</td>`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${endLabel}</td>`;
+		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${afterLabel}</td>`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">`;
 		const statusColor = rec.status === 'Completed' ? '#10b981' : rec.status === 'In Progress' ? '#f59e0b' : '#999';
 		html += `<span style="background: ${statusColor}20; color: ${statusColor}; padding: 2px 6px; border-radius: 4px; font-weight: 600;">${rec.status || ""}</span>`;
@@ -2082,6 +2227,7 @@ const tableData = computed(() => {
             });
 
             group.rows = rows;
+            insertMaintenanceRowsIntoGroup(unit, group);
         });
 
         const totalWeight = items.reduce((s, i) => s + (i.qty || 0), 0) / 1000;

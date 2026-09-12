@@ -11,6 +11,9 @@
     "start_time",
     "end_date",
     "end_time",
+    "after_order_code",
+    "after_quality",
+    "after_color",
     "column_break_maintenance",
     "status",
     "notes"
@@ -59,6 +62,22 @@
       "in_list_view": 1,
       "label": "End Time",
       "description": "Leave blank for full-day block through end of end date"
+    },
+    {
+      "fieldname": "after_order_code",
+      "fieldtype": "Data",
+      "label": "After Order Code",
+      "description": "Show maintenance banner after this order code on the production table"
+    },
+    {
+      "fieldname": "after_quality",
+      "fieldtype": "Data",
+      "label": "After Quality"
+    },
+    {
+      "fieldname": "after_color",
+      "fieldtype": "Data",
+      "label": "After Colour"
     },
     {
       "fieldname": "column_break_maintenance",
