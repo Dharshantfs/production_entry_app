@@ -221,7 +221,7 @@
                       <tr v-if="getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
                         <td :colspan="tableColCount(unitGroup.unit, unitGroup.dates)" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                           <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                            <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).startDate }} - {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).endDate }})</span>
+                            <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ formatMaintenanceWindow(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)) }})</span>
                             <button @click="deleteMaintenanceRecord(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
                           </div>
                         </td>
@@ -892,6 +892,15 @@ function getMaintenanceBannerForDate(date, unit) {
   return getPrimaryMaintenanceRecord(maintenanceData.value, date, unit);
 }
 
+function formatMaintenanceWindow(rec) {
+  if (!rec) return "";
+  const st = rec.startTime ? String(rec.startTime).slice(0, 5) : "";
+  const et = rec.endTime ? String(rec.endTime).slice(0, 5) : "";
+  const start = st ? `${rec.startDate} ${st}` : rec.startDate;
+  const end = et ? `${rec.endDate} ${et}` : rec.endDate;
+  return `${start} - ${end}`;
+}
+
 function getCurrentScopeDateRange() {
   if (viewScope.value === 'monthly') {
     if (!filterMonth.value) return null;
@@ -973,10 +982,22 @@ async function openMaintenanceDialog() {
 				reqd: 1
 			},
 			{
+				fieldtype: "Time",
+				fieldname: "start_time",
+				label: "Start Time",
+				description: "Optional. Blank = start of day (00:00)",
+			},
+			{
 				fieldtype: "Date",
 				fieldname: "end_date",
 				label: "End Date",
 				reqd: 1
+			},
+			{
+				fieldtype: "Time",
+				fieldname: "end_time",
+				label: "End Time",
+				description: "Optional. Blank = end of day (23:59)",
 			},
 			{
 				fieldtype: "Small Text",
@@ -1007,6 +1028,8 @@ async function openMaintenanceDialog() {
 						maintenance_type: vals.maint_type,
 						start_date: vals.start_date,
 						end_date: vals.end_date,
+						start_time: vals.start_time || "",
+						end_time: vals.end_time || "",
 						notes: vals.notes || ""
 					}
 				});
@@ -1042,14 +1065,16 @@ function getMaintenanceRecordsHTML() {
 	html += '</tr>';
 	
 	maintenanceRecords.value.forEach(rec => {
+		const startLabel = rec.start_time ? `${rec.start_date} ${String(rec.start_time).slice(0, 5)}` : rec.start_date;
+		const endLabel = rec.end_time ? `${rec.end_date} ${String(rec.end_time).slice(0, 5)}` : rec.end_date;
 		html += `<tr style="border: 1px solid #ddd;">`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center; font-weight: 600;">${rec.unit}</td>`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${rec.maintenance_type}</td>`;
-		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${rec.start_date}</td>`;
-		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${rec.end_date}</td>`;
+		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${startLabel}</td>`;
+		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${endLabel}</td>`;
 		html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">`;
 		const statusColor = rec.status === 'Completed' ? '#10b981' : rec.status === 'In Progress' ? '#f59e0b' : '#999';
-		html += `<span style="background: ${statusColor}20; color: ${statusColor}; padding: 2px 6px; border-radius: 4px; font-weight: 600;">${rec.status}</span>`;
+		html += `<span style="background: ${statusColor}20; color: ${statusColor}; padding: 2px 6px; border-radius: 4px; font-weight: 600;">${rec.status || ""}</span>`;
 		html += `</td>`;
 		html += `</tr>`;
 	});

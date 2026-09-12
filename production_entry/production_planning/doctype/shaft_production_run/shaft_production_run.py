@@ -12578,7 +12578,9 @@ def _spr_patty_live_field_map() -> dict:
 		"color": _spr_meta_find_field(meta, ["color", "colour"]),
 		"gsm": _spr_meta_find_field(meta, ["gsm"]),
 		"width": _spr_meta_find_field(meta, ["width_inches", "width_inch", "width"], ["core", "machine"]),
-		"meter": _spr_meta_find_field(meta, ["meter_roll_mtrs", "meter__roll", "meter_per_roll", "meter"], ["wastage", "shaft", "recycle"])
+		"meter": _spr_meta_find_field(
+			meta, ["meter__roll_mtrs", "meter_roll_mtrs", "meter__roll", "meter_per_roll", "meter"], ["wastage", "shaft", "recycle"]
+		)
 		or _spr_meta_find_field(meta, ["roll"], ["shaft", "wastage", "no_of", "recycle"]),
 		"shafts": _spr_meta_find_field(meta, ["shaft"], ["one_shaft", "wastage"]),
 		"wastage_qty": _spr_meta_find_field(meta, ["wastage_qty_kgs", "wastage_qty", "wastage_qt"])
@@ -12616,6 +12618,7 @@ def _spr_write_patty_child_row(logical: dict) -> dict:
 		"width_inch": ("width_inches", "width_inch", "width", "w"),
 		"width": ("width_inches", "width", "width_inch", "w"),
 		"meter_per_roll": (
+			"meter__roll_mtrs",
 			"meter_roll_mtrs",
 			"meter__roll",
 			"meter_per_roll",

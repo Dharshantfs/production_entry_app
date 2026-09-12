@@ -117,6 +117,8 @@ export function buildMaintenanceData(records) {
         type: rec.maintenance_type,
         startDate: rec.start_date,
         endDate: rec.end_date,
+        startTime: rec.start_time || "",
+        endTime: rec.end_time || "",
         status: rec.status,
         unit: rec.unit,
       });

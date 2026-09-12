@@ -73,6 +73,7 @@ def _pick_value(row, keys, default=None):
 
 def _meter_keys():
 	return [
+		"meter__roll_mtrs",
 		"meter__roll",
 		"meter_roll_mtrs",
 		"meter_per_roll",
@@ -4925,6 +4926,7 @@ _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 		"patty_width",
 	),
 	"meter_per_roll": (
+		"meter__roll_mtrs",
 		"meter_roll_mtrs",
 		"meter__roll",
 		"meter_per_roll",
@@ -5346,7 +5348,7 @@ def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
 		mtr = flt(
 			_pick_value(
 				out,
-				["meter_roll_mtrs", "meter__roll", "meter_per_roll", "meter_roll", "meter"],
+				["meter__roll_mtrs", "meter_roll_mtrs", "meter__roll", "meter_per_roll", "meter_roll", "meter"],
 				0,
 			)
 		)

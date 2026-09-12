@@ -18620,8 +18620,15 @@ def get_maintenance_windows(unit, start_date, end_date):
     if not unit_params:
         return {}
 
+    has_st, has_et = _maintenance_has_time_columns()
+    time_cols = ""
+    if has_st:
+        time_cols += ", start_time"
+    if has_et:
+        time_cols += ", end_time"
+
     records = frappe.db.sql(f"""
-        SELECT name, unit, maintenance_type, start_date, end_date, status
+        SELECT name, unit, maintenance_type, start_date, end_date, status{time_cols}
         FROM `tabEquipment Maintenance`
         WHERE {unit_sql}
           AND start_date <= %s
@@ -18638,260 +18645,481 @@ def get_maintenance_windows(unit, start_date, end_date):
             date_str = str(current)
             if date_str not in result:
                 result[date_str] = []
-            result[date_str].append({
+            entry = {
                 "type": rec.maintenance_type,
                 "start_date": str(rec.start_date),
                 "end_date": str(rec.end_date),
-                "status": rec.status
-            })
+                "status": rec.status,
+                "blocked_hours": round(get_maintenance_blocked_hours(unit, date_str), 2),
+                "available_hours": round(get_unit_available_hours(unit, date_str), 2),
+                "effective_limit_tons": round(get_unit_effective_limit_tons(unit, date_str), 4),
+            }
+            if has_st:
+                entry["start_time"] = str(rec.get("start_time") or "")
+            if has_et:
+                entry["end_time"] = str(rec.get("end_time") or "")
+            result[date_str].append(entry)
             current = add_days(current, 1)
     
     return result
 
-def is_date_under_maintenance(unit, date_string):
-    """Check if date has BLOCKING maintenance scheduled for unit."""
-    from frappe.utils import getdate
-    
-    if not frappe.db.exists("DocType", "Equipment Maintenance"):
-        return False
-    
-    check_date = getdate(date_string)
-    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
-    if not unit_params:
-        return False
 
-    count = frappe.db.sql(f"""
-        SELECT COUNT(*) as cnt
-        FROM `tabEquipment Maintenance`
-        WHERE {unit_sql}
-          AND start_date <= %s
-          AND end_date >= %s
-          AND docstatus < 2
-          AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
-        """, unit_params + (check_date, check_date))
-    
-    return count[0][0] > 0 if count else False
+def _parse_maintenance_time(value, *, end_of_day=False):
+	"""Return (h, m, s). Missing/blank → start-of-day or end-of-day."""
+	from datetime import time as dtime
+
+	if value in (None, "", "None"):
+		return (23, 59, 59) if end_of_day else (0, 0, 0)
+	try:
+		from frappe.utils import get_time
+
+		t = get_time(value)
+		if isinstance(t, dtime):
+			return (t.hour, t.minute, t.second or 0)
+		parts = str(t).split(":")
+		h = int(parts[0]) if parts else 0
+		m = int(parts[1]) if len(parts) > 1 else 0
+		s = int(float(parts[2])) if len(parts) > 2 else 0
+		return (h, m, s)
+	except Exception:
+		return (23, 59, 59) if end_of_day else (0, 0, 0)
+
+
+def _maintenance_has_time_columns():
+	cols = set(frappe.db.get_table_columns("Equipment Maintenance") or [])
+	return "start_time" in cols, "end_time" in cols
+
+
+def _ensure_equipment_maintenance_time_fields():
+	"""Ensure start_time / end_time exist on Equipment Maintenance (DocField or Custom Field)."""
+	if not frappe.db.exists("DocType", "Equipment Maintenance"):
+		return
+	meta = frappe.get_meta("Equipment Maintenance")
+	for fieldname, label, insert_after in (
+		("start_time", "Start Time", "start_date"),
+		("end_time", "End Time", "end_date"),
+	):
+		if meta.has_field(fieldname):
+			continue
+		if frappe.db.exists("Custom Field", {"dt": "Equipment Maintenance", "fieldname": fieldname}):
+			continue
+		cf = frappe.get_doc(
+			{
+				"doctype": "Custom Field",
+				"dt": "Equipment Maintenance",
+				"fieldname": fieldname,
+				"label": label,
+				"fieldtype": "Time",
+				"insert_after": insert_after,
+			}
+		)
+		cf.insert(ignore_permissions=True)
+	frappe.clear_cache(doctype="Equipment Maintenance")
+
+
+def _maintenance_window_bounds(rec):
+	"""Inclusive maintenance window as datetimes. Blank times = full calendar days."""
+	from datetime import datetime, timedelta
+
+	from frappe.utils import getdate
+
+	sd = getdate(rec.get("start_date"))
+	ed = getdate(rec.get("end_date") or rec.get("start_date"))
+	has_start_t = bool(str(rec.get("start_time") or "").strip())
+	has_end_t = bool(str(rec.get("end_time") or "").strip())
+	sh, sm, ss = _parse_maintenance_time(rec.get("start_time"), end_of_day=False)
+	eh, em, es = _parse_maintenance_time(rec.get("end_time"), end_of_day=True)
+	# Legacy date-only rows: block entire days.
+	if not has_start_t and not has_end_t:
+		start_dt = datetime(sd.year, sd.month, sd.day, 0, 0, 0)
+		end_dt = datetime(ed.year, ed.month, ed.day, 23, 59, 59)
+		return start_dt, end_dt
+	start_dt = datetime(sd.year, sd.month, sd.day, sh, sm, ss)
+	end_dt = datetime(ed.year, ed.month, ed.day, eh, em, es)
+	if end_dt < start_dt:
+		end_dt = start_dt + timedelta(seconds=1)
+	return start_dt, end_dt
+
+
+def _merge_hour_intervals(intervals):
+	"""Merge overlapping (start_hour, end_hour) floats on a 0–24 day."""
+	if not intervals:
+		return []
+	sorted_iv = sorted((max(0.0, float(a)), min(24.0, float(b))) for a, b in intervals if b > a)
+	if not sorted_iv:
+		return []
+	merged = [list(sorted_iv[0])]
+	for a, b in sorted_iv[1:]:
+		if a <= merged[-1][1]:
+			merged[-1][1] = max(merged[-1][1], b)
+		else:
+			merged.append([a, b])
+	return merged
+
+
+def get_maintenance_blocked_hours(unit, date_string):
+	"""Blocking maintenance hours overlapping the calendar day (0–24)."""
+	from datetime import datetime
+
+	from frappe.utils import getdate
+
+	if not frappe.db.exists("DocType", "Equipment Maintenance"):
+		return 0.0
+	check_date = getdate(date_string)
+	unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+	if not unit_params:
+		return 0.0
+
+	has_st, has_et = _maintenance_has_time_columns()
+	time_cols = ""
+	if has_st:
+		time_cols += ", start_time"
+	if has_et:
+		time_cols += ", end_time"
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT name, maintenance_type, start_date, end_date{time_cols}
+		FROM `tabEquipment Maintenance`
+		WHERE {unit_sql}
+		  AND start_date <= %s
+		  AND end_date >= %s
+		  AND docstatus < 2
+		  AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
+		""",
+		unit_params + (check_date, check_date),
+		as_dict=True,
+	)
+	day_start = datetime(check_date.year, check_date.month, check_date.day, 0, 0, 0)
+	day_end = datetime(check_date.year, check_date.month, check_date.day, 23, 59, 59)
+	intervals = []
+	for rec in rows or []:
+		w_start, w_end = _maintenance_window_bounds(rec)
+		ov_start = max(w_start, day_start)
+		ov_end = min(w_end, day_end)
+		if ov_end <= ov_start:
+			continue
+		start_h = (ov_start - day_start).total_seconds() / 3600.0
+		end_h = (ov_end - day_start).total_seconds() / 3600.0
+		# Treat end-of-day 23:59:59 as 24.0 for capacity math.
+		if ov_end.hour == 23 and ov_end.minute >= 59:
+			end_h = 24.0
+		intervals.append((start_h, end_h))
+	merged = _merge_hour_intervals(intervals)
+	return flt(sum(b - a for a, b in merged))
+
+
+def get_unit_available_hours(unit, date_string):
+	return max(0.0, 24.0 - flt(get_maintenance_blocked_hours(unit, date_string)))
+
+
+def get_unit_effective_limit_tons(unit, date_string):
+	"""Daily hard limit scaled by production hours left after maintenance."""
+	unit_key = normalize_planning_unit_for_select(unit) or unit
+	base = flt(HARD_LIMITS.get(unit_key, HARD_LIMITS.get(unit, 999.0)))
+	hours = get_unit_available_hours(unit_key, date_string)
+	if hours >= 23.99:
+		return base
+	return flt(base) * (hours / 24.0)
+
+
+def is_date_under_maintenance(unit, date_string):
+	"""True when the calendar day has essentially no production capacity left."""
+	return get_unit_available_hours(unit, date_string) < 0.01
+
 
 def get_maintenance_info_on_date(unit, date_string):
-    """Get BLOCKING maintenance details if date is under maintenance."""
-    from frappe.utils import getdate
-    
-    if not frappe.db.exists("DocType", "Equipment Maintenance"):
-        return None
-    
-    check_date = getdate(date_string)
-    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
-    if not unit_params:
-        return None
-    
-    rec = frappe.db.sql(f"""
-        SELECT name, maintenance_type, start_date, end_date, status
-        FROM `tabEquipment Maintenance`
-        WHERE {unit_sql}
-          AND start_date <= %s
-          AND end_date >= %s
-          AND docstatus < 2
-          AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
-        LIMIT 1
-    """, unit_params + (check_date, check_date), as_dict=True)
-    
-    if rec:
-        return {
-            "type": rec[0].maintenance_type,
-            "start_date": str(rec[0].start_date),
-            "end_date": str(rec[0].end_date),
-            "status": rec[0].status
-        }
-    return None
+	"""Get BLOCKING maintenance details if date is under maintenance (full or partial)."""
+	from frappe.utils import getdate
+
+	if not frappe.db.exists("DocType", "Equipment Maintenance"):
+		return None
+
+	check_date = getdate(date_string)
+	unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+	if not unit_params:
+		return None
+
+	has_st, has_et = _maintenance_has_time_columns()
+	time_cols = ""
+	if has_st:
+		time_cols += ", start_time"
+	if has_et:
+		time_cols += ", end_time"
+
+	rec = frappe.db.sql(
+		f"""
+		SELECT name, maintenance_type, start_date, end_date, status{time_cols}
+		FROM `tabEquipment Maintenance`
+		WHERE {unit_sql}
+		  AND start_date <= %s
+		  AND end_date >= %s
+		  AND docstatus < 2
+		  AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
+		LIMIT 1
+		""",
+		unit_params + (check_date, check_date),
+		as_dict=True,
+	)
+
+	if not rec:
+		return None
+	r0 = rec[0]
+	blocked = get_maintenance_blocked_hours(unit, date_string)
+	available = max(0.0, 24.0 - blocked)
+	out = {
+		"type": r0.maintenance_type,
+		"start_date": str(r0.start_date),
+		"end_date": str(r0.end_date),
+		"status": r0.status,
+		"blocked_hours": round(blocked, 2),
+		"available_hours": round(available, 2),
+		"effective_limit_tons": round(get_unit_effective_limit_tons(unit, date_string), 4),
+	}
+	if has_st:
+		out["start_time"] = str(r0.get("start_time") or "")
+	if has_et:
+		out["end_time"] = str(r0.get("end_time") or "")
+	return out
+
 
 def get_next_available_date_skipping_maintenance(unit, start_date, required_tons=0, days_ahead=30):
-    """Find next date where unit has capacity and is NOT under maintenance."""
-    from frappe.utils import getdate, add_days
-    
-    if not unit or not start_date:
-        return {"date": None}
-    
-    start_dt = getdate(start_date)
-    required = flt(required_tons)
-    days_ahead = cint(days_ahead) or 30
-    limit = HARD_LIMITS.get(unit, 999.0)
-    
-    for i in range(days_ahead + 1):
-        candidate = add_days(start_dt, i)
-        candidate_str = str(candidate)
-        
-        # Skip if under maintenance
-        if is_date_under_maintenance(unit, candidate_str):
-            continue
-        
-        load = get_unit_load(candidate_str, unit, "__all__", pb_only=0)
-        if load + required <= (limit * 1.05):
-            return {
-                "date": candidate_str,
-                "current_load": load,
-                "limit": limit,
-                "reason": "available"
-            }
-    
-    # Fallback suggestion
-    fallback = add_days(start_dt, 1)
-    return {
-        "date": str(fallback),
-        "current_load": get_unit_load(str(fallback), unit, "__all__", pb_only=0),
-        "limit": limit,
-        "reason": "no_clean_slot_found"
-    }
+	"""Find next date where unit has capacity and is NOT fully under maintenance."""
+	from frappe.utils import add_days, getdate
+
+	if not unit or not start_date:
+		return {"date": None}
+
+	start_dt = getdate(start_date)
+	required = flt(required_tons)
+	days_ahead = cint(days_ahead) or 30
+
+	for i in range(days_ahead + 1):
+		candidate = add_days(start_dt, i)
+		candidate_str = str(candidate)
+
+		if is_date_under_maintenance(unit, candidate_str):
+			continue
+
+		limit = get_unit_effective_limit_tons(unit, candidate_str)
+		load = get_unit_load(candidate_str, unit, "__all__", pb_only=0)
+		if load + required <= (limit * 1.05):
+			return {
+				"date": candidate_str,
+				"current_load": load,
+				"limit": limit,
+				"reason": "available",
+			}
+
+	fallback = add_days(start_dt, 1)
+	return {
+		"date": str(fallback),
+		"current_load": get_unit_load(str(fallback), unit, "__all__", pb_only=0),
+		"limit": get_unit_effective_limit_tons(unit, str(fallback)),
+		"reason": "no_clean_slot_found",
+	}
+
 
 @frappe.whitelist()
-def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, notes=None):
-    """Create new Equipment Maintenance record."""
-    import json
+def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, notes=None, start_time=None, end_time=None):
+	"""Create new Equipment Maintenance record (optional start/end times for partial-day capacity)."""
+	import json
 
-    if not frappe.db.exists("DocType", "Equipment Maintenance"):
-        return {"status": "error", "message": "Equipment Maintenance module not found"}
-    _ensure_equipment_maintenance_unit_options()
-    unit = _normalize_maintenance_unit(unit)
-    
-    doc = frappe.get_doc({
-        "doctype": "Equipment Maintenance",
-        "unit": unit,
-        "maintenance_type": maintenance_type,
-        "start_date": start_date,
-        "end_date": end_date,
-        "notes": notes or "",
-        "status": "Planned"
-    })
-    doc.insert(ignore_permissions=False)
+	if not frappe.db.exists("DocType", "Equipment Maintenance"):
+		return {"status": "error", "message": "Equipment Maintenance module not found"}
+	_ensure_equipment_maintenance_unit_options()
+	_ensure_equipment_maintenance_time_fields()
+	unit = _normalize_maintenance_unit(unit)
 
-    cascade_result = {"cascaded_count": 0}
-    if not _is_non_blocking_maintenance_type(maintenance_type):
-        # Blocking maintenance types move affected orders forward.
-        cascade_result = cascade_orders_after_maintenance_removal(unit, start_date, end_date)
-        movement_log = cascade_result.get("movement_log") or []
+	payload = {
+		"doctype": "Equipment Maintenance",
+		"unit": unit,
+		"maintenance_type": maintenance_type,
+		"start_date": start_date,
+		"end_date": end_date,
+		"notes": notes or "",
+		"status": "Planned",
+	}
+	has_st, has_et = _maintenance_has_time_columns()
+	if has_st and start_time not in (None, ""):
+		payload["start_time"] = start_time
+	if has_et and end_time not in (None, ""):
+		payload["end_time"] = end_time
 
-        # Persist original->new date movements on the maintenance record so delete can restore backward.
-        if movement_log:
-            marker = "MAINTENANCE_CASCADE_LOG::"
-            user_notes = (notes or "").strip()
-            log_line = marker + json.dumps(movement_log, separators=(",", ":"))
-            stored_notes = f"{user_notes}\n\n{log_line}" if user_notes else log_line
-            frappe.db.set_value("Equipment Maintenance", doc.name, "notes", stored_notes, update_modified=False)
-            frappe.cache().set_value(f"maintenance_cascade_log::{doc.name}", movement_log)
+	doc = frappe.get_doc(payload)
+	doc.insert(ignore_permissions=False)
 
-    frappe.db.commit()
+	cascade_result = {"cascaded_count": 0}
+	if not _is_non_blocking_maintenance_type(maintenance_type):
+		cascade_result = cascade_orders_after_maintenance_removal(unit, start_date, end_date)
+		movement_log = cascade_result.get("movement_log") or []
 
-    if _is_non_blocking_maintenance_type(maintenance_type):
-        return {
-            "status": "success",
-            "message": f"{maintenance_type} scheduled for {unit} from {start_date} to {end_date}. Orders remain on the same day.",
-            "cascaded_count": 0,
-            "name": doc.name
-        }
-    
-    return {
-        "status": "success",
-        "message": f"Maintenance scheduled for {unit} from {start_date} to {end_date}. Moved {cascade_result.get('cascaded_count', 0)} items forward.",
-        "cascaded_count": cascade_result.get("cascaded_count", 0),
-        "name": doc.name
-    }
+		if movement_log:
+			marker = "MAINTENANCE_CASCADE_LOG::"
+			user_notes = (notes or "").strip()
+			log_line = marker + json.dumps(movement_log, separators=(",", ":"))
+			stored_notes = f"{user_notes}\n\n{log_line}" if user_notes else log_line
+			frappe.db.set_value("Equipment Maintenance", doc.name, "notes", stored_notes, update_modified=False)
+			frappe.cache().set_value(f"maintenance_cascade_log::{doc.name}", movement_log)
+
+	frappe.db.commit()
+
+	time_msg = ""
+	if start_time or end_time:
+		time_msg = f" ({start_time or '00:00'} – {end_time or '23:59'})"
+
+	if _is_non_blocking_maintenance_type(maintenance_type):
+		return {
+			"status": "success",
+			"message": f"{maintenance_type} scheduled for {unit} from {start_date} to {end_date}{time_msg}. Orders remain on the same day.",
+			"cascaded_count": 0,
+			"name": doc.name,
+		}
+
+	return {
+		"status": "success",
+		"message": f"Maintenance scheduled for {unit} from {start_date} to {end_date}{time_msg}. Moved {cascade_result.get('cascaded_count', 0)} items forward.",
+		"cascaded_count": cascade_result.get("cascaded_count", 0),
+		"name": doc.name,
+	}
 
 @frappe.whitelist()
 def cascade_orders_after_maintenance_removal(unit, maint_start_date, maint_end_date):
-    """
-    Move items planned inside a maintenance window forward to next available dates.
-    (Used at maintenance creation time.)
-    """
-    from frappe.utils import getdate, add_days
-    
-    if not unit or not maint_start_date or not maint_end_date:
-        return {"status": "error", "message": "Missing parameters"}
-    
-    start_dt = getdate(maint_start_date)
-    end_dt = getdate(maint_end_date)
-    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
-    if not unit_params:
-        return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
-    
-    # Find all items planned between maintenance start and end dates
-    items = frappe.db.sql(f"""
-        SELECT i.name, i.qty, i.unit, COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date) as effective_planned_date
-        FROM `tabPlanning Table` i
-        JOIN `tabPlanning sheet` p ON i.parent = p.name
-        WHERE i.unit IN ({", ".join(["%s"] * len(unit_params))})
-          AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) >= %s
-          AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) <= %s
-          AND p.docstatus < 2
-          AND i.docstatus < 2
-    """, unit_params + (start_dt, end_dt), as_dict=True)
-    
-    if not items:
-        return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
-    
-    has_item_planned_col = frappe.db.has_column("Planning Table", "planned_date")
-    cascaded_count = 0
-    local_loads = {}
-    movement_log = []
-    
-    for item in items:
-        item_name = item.get("name")
-        item_unit = normalize_planning_unit_for_select(item.get("unit") or unit) or unit
-        qty_tons = flt(item.get("qty")) / 1000.0
-        unit_limit = HARD_LIMITS.get(item_unit, HARD_LIMITS.get(unit, 999.0))
-        current_date = getdate(item.get("effective_planned_date"))
-        original_date_str = current_date.strftime("%Y-%m-%d")
-        
-        # Find next available date (skipping maintenance)
-        candidate = add_days(current_date, 1)
-        found_slot = False
-        
-        for i in range(30):  # Look ahead 30 days
-            candidate_str = candidate if isinstance(candidate, str) else candidate.strftime("%Y-%m-%d")
-            
-            # Skip if under maintenance
-            if is_date_under_maintenance(item_unit, candidate_str):
-                candidate = add_days(candidate, 1)
-                continue
-            
-            load_key = (candidate_str, item_unit)
-            if load_key not in local_loads:
-                local_loads[load_key] = get_unit_load(candidate_str, item_unit, "__all__", pb_only=1)
-            
-            current_load = local_loads[load_key]
-            
-            if (current_load + qty_tons <= unit_limit * 1.05) or (current_load == 0 and qty_tons >= unit_limit):
-                local_loads[load_key] = current_load + qty_tons
-                if has_item_planned_col:
-                    frappe.db.sql("""
-                        UPDATE `tabPlanning Table`
-                        SET planned_date = %s
-                        WHERE name = %s
-                    """, (candidate_str, item_name))
-                elif frappe.db.has_column("Planning sheet", "custom_planned_date"):
-                    frappe.db.sql("""
-                        UPDATE `tabPlanning sheet` p
-                        INNER JOIN `tabPlanning Table` i ON i.parent = p.name
-                        SET p.custom_planned_date = %s
-                        WHERE i.name = %s
-                    """, (candidate_str, item_name))
-                movement_log.append({
-                    "item_name": item_name,
-                    "from_date": original_date_str,
-                    "to_date": candidate_str
-                })
-                cascaded_count += 1
-                found_slot = True
-                break
-            
-            candidate = add_days(candidate, 1)
-    
-    frappe.db.commit()
-    
-    return {
-        "status": "success",
-        "message": f"Cascaded {cascaded_count} items to next available dates",
-        "cascaded_count": cascaded_count,
-        "movement_log": movement_log
-    }
+	"""
+	Re-pack items planned inside a maintenance window against partial-day capacity.
+	Orders that no longer fit move forward to the next date with remaining capacity.
+	"""
+	from frappe.utils import add_days, getdate
+
+	if not unit or not maint_start_date or not maint_end_date:
+		return {"status": "error", "message": "Missing parameters"}
+
+	start_dt = getdate(maint_start_date)
+	end_dt = getdate(maint_end_date)
+	unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+	if not unit_params:
+		return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
+
+	items = frappe.db.sql(
+		f"""
+		SELECT i.name, i.qty, i.unit, COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date) as effective_planned_date
+		FROM `tabPlanning Table` i
+		JOIN `tabPlanning sheet` p ON i.parent = p.name
+		WHERE i.unit IN ({", ".join(["%s"] * len(unit_params))})
+		  AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) >= %s
+		  AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) <= %s
+		  AND p.docstatus < 2
+		  AND i.docstatus < 2
+		ORDER BY DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) ASC, i.idx ASC
+		""",
+		unit_params + (start_dt, end_dt),
+		as_dict=True,
+	)
+
+	if not items:
+		return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
+
+	has_item_planned_col = frappe.db.has_column("Planning Table", "planned_date")
+	cascaded_count = 0
+	local_loads = {}
+	movement_log = []
+
+	# Group by planned date, then keep what fits under effective limit; cascade overflow.
+	by_date = {}
+	for item in items:
+		d = str(getdate(item.get("effective_planned_date")))
+		by_date.setdefault(d, []).append(item)
+
+	overflow = []
+	for date_str, day_items in sorted(by_date.items()):
+		item_unit = normalize_planning_unit_for_select((day_items[0].get("unit") or unit)) or unit
+		limit = get_unit_effective_limit_tons(item_unit, date_str)
+		load_key = (date_str, item_unit)
+		# Rebuild day from empty for packing against new maintenance capacity.
+		running = 0.0
+		for item in day_items:
+			qty_tons = flt(item.get("qty")) / 1000.0
+			if limit < 0.01:
+				overflow.append(item)
+				continue
+			if (running + qty_tons <= limit * 1.05) or (running == 0 and qty_tons >= limit):
+				running += qty_tons
+			else:
+				overflow.append(item)
+		local_loads[load_key] = running
+
+	for item in overflow:
+		item_name = item.get("name")
+		item_unit = normalize_planning_unit_for_select(item.get("unit") or unit) or unit
+		qty_tons = flt(item.get("qty")) / 1000.0
+		current_date = getdate(item.get("effective_planned_date"))
+		original_date_str = current_date.strftime("%Y-%m-%d")
+
+		candidate = add_days(current_date, 1)
+		found_slot = False
+
+		for _i in range(60):
+			candidate_str = candidate if isinstance(candidate, str) else candidate.strftime("%Y-%m-%d")
+
+			if is_date_under_maintenance(item_unit, candidate_str):
+				candidate = add_days(candidate, 1)
+				continue
+
+			unit_limit = get_unit_effective_limit_tons(item_unit, candidate_str)
+			load_key = (candidate_str, item_unit)
+			if load_key not in local_loads:
+				local_loads[load_key] = get_unit_load(candidate_str, item_unit, "__all__", pb_only=1)
+
+			current_load = local_loads[load_key]
+
+			if (current_load + qty_tons <= unit_limit * 1.05) or (current_load == 0 and qty_tons >= unit_limit):
+				local_loads[load_key] = current_load + qty_tons
+				if has_item_planned_col:
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning Table`
+						SET planned_date = %s
+						WHERE name = %s
+						""",
+						(candidate_str, item_name),
+					)
+				elif frappe.db.has_column("Planning sheet", "custom_planned_date"):
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning sheet` p
+						INNER JOIN `tabPlanning Table` i ON i.parent = p.name
+						SET p.custom_planned_date = %s
+						WHERE i.name = %s
+						""",
+						(candidate_str, item_name),
+					)
+				movement_log.append(
+					{
+						"item_name": item_name,
+						"from_date": original_date_str,
+						"to_date": candidate_str,
+					}
+				)
+				cascaded_count += 1
+				found_slot = True
+				break
+
+			candidate = add_days(candidate, 1)
+
+		if not found_slot:
+			frappe.log_error(
+				f"Could not cascade item {item_name} from {original_date_str}",
+				"Maintenance Cascade",
+			)
+
+	frappe.db.commit()
+
+	return {
+		"status": "success",
+		"message": f"Cascaded {cascaded_count} items to next available dates",
+		"cascaded_count": cascaded_count,
+		"movement_log": movement_log,
+	}
 
 @frappe.whitelist()
 def forward_orders_from_date_range(cascade_start_date, cascade_end_date, plan_name=None):
@@ -18977,10 +19205,7 @@ def forward_orders_from_date_range(cascade_start_date, cascade_end_date, plan_na
         dates_cleared.append(str(current))
         current = add_days(current, 1)
     
-    # Process each unit independently
     for unit, unit_items in items_by_unit.items():
-        unit_limit = HARD_LIMITS.get(unit, 999.0)
-        
         for item in unit_items:
             item_name = item.get("name")
             qty_tons = flt(item.get("qty")) / 1000.0
@@ -18996,11 +19221,13 @@ def forward_orders_from_date_range(cascade_start_date, cascade_end_date, plan_na
             for search_days in range(60):
                 candidate_str = str(candidate) if isinstance(candidate, str) else candidate.strftime("%Y-%m-%d")
                 
-                # Skip if under maintenance
+                # Skip if fully under maintenance
                 if is_date_under_maintenance(unit, candidate_str):
                     candidate = add_days(candidate, 1)
                     continue
                 
+                unit_limit = get_unit_effective_limit_tons(unit, candidate_str)
+
                 # Check current load for this date/unit
                 load_key = (candidate_str, unit)
                 if load_key not in local_loads:
@@ -19160,7 +19387,6 @@ def _fallback_restore_by_range(unit, maint_start_date, maint_end_date):
     local_loads = {}
     restored = 0
     skipped = 0
-    unit_limit = HARD_LIMITS.get(unit, 999.0)
 
     for r in rows:
         item_name = r.get("name")
@@ -19174,6 +19400,7 @@ def _fallback_restore_by_range(unit, maint_start_date, maint_end_date):
             if is_date_under_maintenance(unit, candidate_str):
                 continue
 
+            unit_limit = get_unit_effective_limit_tons(unit, candidate_str)
             load_key = (candidate_str, unit)
             if load_key not in local_loads:
                 local_loads[load_key] = get_unit_load(candidate_str, unit, "__all__", pb_only=1)
@@ -19268,9 +19495,10 @@ def get_all_equipment_maintenance(start_date=None, end_date=None):
         if not frappe.db.exists("DocType", "Equipment Maintenance"):
             return []
 
+        _ensure_equipment_maintenance_time_fields()
         cols = set(frappe.db.get_table_columns("Equipment Maintenance") or [])
         fields = ["name", "unit", "maintenance_type", "start_date", "end_date"]
-        for opt in ("status", "notes"):
+        for opt in ("status", "notes", "start_time", "end_time"):
             if opt in cols:
                 fields.append(opt)
 
@@ -19561,17 +19789,21 @@ def find_best_slot(item_qty_tons, quality, preferred_unit, start_date, recursion
     1. Preferred Unit (on Date)
     2. Neighbor Units (on Date) - Must support Quality
     3. Next Day (Recurse)
+    Uses maintenance-adjusted effective daily limits.
     """
     if recursion_depth > 30: # Look ahead max 30 days
         return None # No slot found
 
     check_date = getdate(start_date)
+    check_date_str = str(check_date)
     
     # 1. Check Preferred Unit
     if preferred_unit and preferred_unit in HARD_LIMITS:
-        current_load = get_unit_load(check_date, preferred_unit)
-        if current_load + item_qty_tons <= HARD_LIMITS[preferred_unit]:
-            return {"date": check_date, "unit": preferred_unit}
+        if not is_date_under_maintenance(preferred_unit, check_date_str):
+            current_load = get_unit_load(check_date, preferred_unit)
+            limit = get_unit_effective_limit_tons(preferred_unit, check_date_str)
+            if current_load + item_qty_tons <= limit:
+                return {"date": check_date, "unit": preferred_unit}
 
     # 2. Check Neighbor Units (on same date)
     compatible_units = []
@@ -19583,8 +19815,11 @@ def find_best_slot(item_qty_tons, quality, preferred_unit, start_date, recursion
     # Check Neighbors
     for unit in ["Unit 1", "Unit 2", "Unit 3", "Unit 4"]:
         if unit in compatible_units and unit in HARD_LIMITS:
+            if is_date_under_maintenance(unit, check_date_str):
+                continue
             load = get_unit_load(check_date, unit)
-            if load + item_qty_tons <= HARD_LIMITS[unit]:
+            limit = get_unit_effective_limit_tons(unit, check_date_str)
+            if load + item_qty_tons <= limit:
                 return {"date": check_date, "unit": unit}
 
     # 3. Next Day (Recurse)
@@ -19822,9 +20057,9 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     if not is_quality_allowed(unit, quality):
         frappe.throw(_("Quality <b>{}</b> is not allowed in <b>{}</b>.").format(quality, unit))
 
-    # 3. Check Capacity of Target Slot (scoped to this item's plan)
+    # 3. Check Capacity of Target Slot (scoped to this item's plan; maintenance-scaled)
     current_load = get_unit_load(target_date, unit, plan_name=plan_name or parent_sheet.get("custom_plan_name") or "Default")
-    limit = HARD_LIMITS.get(unit, 999.0)
+    limit = get_unit_effective_limit_tons(unit, str(target_date))
     
     # Moving within same date (even to different unit): subtract item's own weight
     # to avoid double-counting it and causing false overflow / duplicate creation
@@ -19857,7 +20092,7 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
         elif strict_next_day:
             next_day = frappe.utils.add_days(target_date, 1)
             next_load = get_unit_load(next_day, unit)
-            next_limit = HARD_LIMITS.get(unit, 999.0)
+            next_limit = get_unit_effective_limit_tons(unit, str(next_day))
             
             if next_load + item_wt_tons > next_limit:
                 # Next day also full ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ ask user again
@@ -24272,11 +24507,11 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
         for unit, added_weight in weights_to_add.items():
             if unit in HARD_LIMITS:
                 current_load = get_unit_load(target_date, unit)
-                limit = HARD_LIMITS[unit]
+                limit = get_unit_effective_limit_tons(unit, str(target_date))
                 
                 if current_load + added_weight > limit:
                     frappe.throw(
-                        f"Capacity Exceeded! Unit {unit} allows max {limit}T. Current: {current_load:.2f}T. Adding: {added_weight:.2f}T. New Total: {current_load + added_weight:.2f}T"
+                        f"Capacity Exceeded! Unit {unit} allows max {limit:.3f}T on {target_date} (maintenance-adjusted). Current: {current_load:.2f}T. Adding: {added_weight:.2f}T. New Total: {current_load + added_weight:.2f}T"
                     )
 
     count = 0
@@ -25414,7 +25649,7 @@ def get_multiple_dates_capacity(dates, plan_name=None, pb_only=0):
 
 @frappe.whitelist()
 def find_next_available_date(unit, start_date, required_tons=0, pb_only=1, days_ahead=30):
-    """Find next date where unit has enough available capacity."""
+    """Find next date where unit has enough available capacity (maintenance-adjusted)."""
     if not unit or not start_date:
         return {"date": None}
 
@@ -25422,17 +25657,25 @@ def find_next_available_date(unit, start_date, required_tons=0, pb_only=1, days_
     required = flt(required_tons)
     pb_only = cint(pb_only)
     days_ahead = cint(days_ahead) or 30
-    limit = HARD_LIMITS.get(unit, 999.0)
 
     for i in range(1, days_ahead + 1):
         candidate = frappe.utils.add_days(start_dt, i)
+        candidate_str = str(candidate)
+        if is_date_under_maintenance(unit, candidate_str):
+            continue
+        limit = get_unit_effective_limit_tons(unit, candidate_str)
         load = get_unit_load(candidate, unit, "__all__", pb_only=pb_only)
         if load + required <= (limit * 1.05):
-            return {"date": str(candidate), "current_load": load, "limit": limit}
+            return {"date": candidate_str, "current_load": load, "limit": limit}
 
     # Fallback suggestion if no clean slot found in lookahead window
     fallback = frappe.utils.add_days(start_dt, 1)
-    return {"date": str(fallback), "current_load": get_unit_load(fallback, unit, "__all__", pb_only=pb_only), "limit": limit}
+    fallback_str = str(fallback)
+    return {
+        "date": fallback_str,
+        "current_load": get_unit_load(fallback, unit, "__all__", pb_only=pb_only),
+        "limit": get_unit_effective_limit_tons(unit, fallback_str),
+    }
 
 @frappe.whitelist()
 def push_to_pb(item_names, pb_plan_name, target_dates=None, target_date=None, fetch_dates=None):
@@ -25483,8 +25726,10 @@ def push_to_pb(item_names, pb_plan_name, target_dates=None, target_date=None, fe
             # --- FIND CAPACITY SLOT ACROSS MULTIPLE DATES ---
             if len(dates) > 0:
                 unit = item.unit or get_preferred_unit(item.custom_quality)
-                limit = HARD_LIMITS.get(unit, 999.0)
                 for check_date in dates:
+                    if is_date_under_maintenance(unit, check_date):
+                        continue
+                    limit = get_unit_effective_limit_tons(unit, check_date)
                     load_key = (check_date, unit)
                     if load_key not in local_loads:
                         local_loads[load_key] = get_unit_load(check_date, unit, "__all__", pb_only=1)
@@ -25495,6 +25740,9 @@ def push_to_pb(item_names, pb_plan_name, target_dates=None, target_date=None, fe
                         effective_date = check_date
                         local_loads[load_key] = load + item_wt
                         break
+                else:
+                    # all dates maintenance-blocked — use last date anyway
+                    effective_date = dates[-1]
             # ------------------------------------------------
 
             party_code = parent.party_code or ""
@@ -25636,7 +25884,6 @@ def push_items_to_pb(
         from frappe.utils import getdate, add_days
 
         target_dt = getdate(target_date_val)
-        unit_limit = HARD_LIMITS.get(unit_val, 999.0)
         shared_loads = shared_loads if isinstance(shared_loads, dict) else {}
 
         white_sql = ", ".join([f"'{c.upper().replace(' ', '')}'" for c in WHITE_COLORS])
@@ -25683,14 +25930,14 @@ def push_items_to_pb(
                 shared_loads[src_key] = get_unit_load(source_date, unit_val, "__all__", pb_only=1)
             shared_loads[src_key] = max(0.0, shared_loads[src_key] - qty_tons)
 
-            # Queue shift rule: each white item moves to at least the next day, skipping maintenance dates.
+            # Queue shift rule: each white item moves to at least the next day, skipping full maintenance dates.
             candidate = add_days(getdate(source_date), 1)
             maintenance_encountered = None
             
             while True:
                 candidate_str = candidate if isinstance(candidate, str) else candidate.strftime("%Y-%m-%d")
                 
-                # CHECK MAINTENANCE: Skip if date is under maintenance
+                # CHECK MAINTENANCE: Skip if date is fully under maintenance
                 if is_date_under_maintenance(unit_val, candidate_str):
                     maint_info = get_maintenance_info_on_date(unit_val, candidate_str)
                     if not maintenance_encountered:
@@ -25698,6 +25945,7 @@ def push_items_to_pb(
                     candidate = add_days(candidate, 1)
                     continue  # Skip this date, try next day
                 
+                unit_limit = get_unit_effective_limit_tons(unit_val, candidate_str)
                 load_key = (candidate_str, unit_val)
                 if load_key not in shared_loads:
                     shared_loads[load_key] = get_unit_load(candidate_str, unit_val, "__all__", pb_only=1)
@@ -25779,7 +26027,6 @@ def push_items_to_pb(
             # --- FIND CAPACITY SLOT ACROSS MULTIPLE DATES (LIMITED CASCADE) ---
             unit = target_unit or item_doc.unit or get_preferred_unit(item_doc.custom_quality)
             unit = normalize_planning_unit_for_select(unit)
-            limit = HARD_LIMITS.get(unit, 999.0)
             
             current_check_date = target_dates[0] if target_dates else str(parent_doc.get("custom_planned_date") or parent_doc.ordered_date)
 
@@ -25788,7 +26035,7 @@ def push_items_to_pb(
             if strict_keep_date:
                 # STRICT MODE:
                 # - capacity overflow: do not auto-cascade (user must change date)
-                # - maintenance block: auto-propose next available day, but require user approval
+                # - full-day maintenance block: auto-propose next available day, but require user approval
                 if is_date_under_maintenance(unit, current_check_date):
                     proposed = current_check_date
                     for _ in range(31):
@@ -25796,15 +26043,16 @@ def push_items_to_pb(
                         proposed = next_d if isinstance(next_d, str) else next_d.strftime("%Y-%m-%d")
                         if is_date_under_maintenance(unit, proposed):
                             continue
+                        limit_next = get_unit_effective_limit_tons(unit, proposed)
                         load_key_next = (proposed, unit)
                         if load_key_next not in local_loads:
                             local_loads[load_key_next] = get_unit_load(proposed, unit, "__all__", pb_only=1)
                         next_load = local_loads[load_key_next]
-                        if ((next_load + item_wt <= limit * 1.05) or (next_load == 0 and item_wt >= limit)):
+                        if ((next_load + item_wt <= limit_next * 1.05) or (next_load == 0 and item_wt >= limit_next)):
                             break
                     if proposed == current_check_date:
                         frappe.msgprint(
-                            f"ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Item {item_doc.item_code}: no available date found after maintenance. Please change date.",
+                            f"Item {item_doc.item_code}: no available date found after maintenance. Please change date.",
                             indicator='orange'
                         )
                         continue
@@ -25822,13 +26070,14 @@ def push_items_to_pb(
                         continue
                     current_check_date = proposed
 
+                limit = get_unit_effective_limit_tons(unit, current_check_date)
                 load_key = (current_check_date, unit)
                 if load_key not in local_loads:
                     local_loads[load_key] = get_unit_load(current_check_date, unit, "__all__", pb_only=1)
                 load = local_loads[load_key]
                 if not ((load + item_wt <= limit * 1.05) or (load == 0 and item_wt >= limit)):
                     frappe.msgprint(
-                        f"ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Item {item_doc.item_code}: target date {current_check_date} is at capacity for {unit}. Please change date.",
+                        f"Item {item_doc.item_code}: target date {current_check_date} is at capacity for {unit} (limit {limit:.3f}T after maintenance). Please change date.",
                         indicator='orange'
                     )
                     continue
@@ -25842,7 +26091,7 @@ def push_items_to_pb(
                 cascade_days = 0
                 
                 while cascade_days < max_cascade_days:
-                    # CHECK MAINTENANCE: Skip if under maintenance
+                    # CHECK MAINTENANCE: Skip if fully under maintenance
                     if is_date_under_maintenance(unit, current_check_date):
                         maint_info = get_maintenance_info_on_date(unit, current_check_date)
                         if not maintenance_block:
@@ -25857,6 +26106,7 @@ def push_items_to_pb(
                         cascade_days += 1
                         continue
                     
+                    limit = get_unit_effective_limit_tons(unit, current_check_date)
                     load_key = (current_check_date, unit)
                     if load_key not in local_loads:
                         local_loads[load_key] = get_unit_load(current_check_date, unit, "__all__", pb_only=1)

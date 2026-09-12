@@ -8,7 +8,9 @@
     "unit",
     "maintenance_type",
     "start_date",
+    "start_time",
     "end_date",
+    "end_time",
     "column_break_maintenance",
     "status",
     "notes"
@@ -38,11 +40,25 @@
       "reqd": 1
     },
     {
+      "fieldname": "start_time",
+      "fieldtype": "Time",
+      "in_list_view": 1,
+      "label": "Start Time",
+      "description": "Leave blank for full-day block from start of start date"
+    },
+    {
       "fieldname": "end_date",
       "fieldtype": "Date",
       "in_list_view": 1,
       "label": "End Date",
       "reqd": 1
+    },
+    {
+      "fieldname": "end_time",
+      "fieldtype": "Time",
+      "in_list_view": 1,
+      "label": "End Time",
+      "description": "Leave blank for full-day block through end of end date"
     },
     {
       "fieldname": "column_break_maintenance",

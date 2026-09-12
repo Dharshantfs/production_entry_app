@@ -345,6 +345,7 @@ function _cellValue(row, field) {
 		width_inch: ["width_inches", "width_inch", "width", "w", "custom_width_inch", "custom_width"],
 		width: ["width", "width_inches", "width_inch", "w", "custom_width_inch", "custom_width"],
 		meter_per_roll: [
+			"meter__roll_mtrs",
 			"meter_roll_mtrs",
 			"meter__roll",
 			"meter_per_roll",
@@ -414,7 +415,17 @@ function _normalizePattyRow(row) {
 		gsm: _val(row, "gsm"),
 		width_inch: _val(row, "width_inch", "width", "w", "custom_width_inch", "custom_width"),
 		width: _val(row, "width", "width_inch", "w", "custom_width_inch", "custom_width"),
-		meter_per_roll: _val(row, "meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"),
+		meter_per_roll: _val(
+			row,
+			"meter__roll_mtrs",
+			"meter_roll_mtrs",
+			"meter__roll",
+			"meter_per_roll",
+			"meter_roll",
+			"meter",
+			"produced_length_mtrs",
+			"produced_length_mtr"
+		),
 		no_of_shafts: _val(row, "no_of_shafts", "shafts", "no_of_shaft"),
 		wastage: _valQty(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg", "net_weight", "gross_weight"),
 		wastage_qty: _valQty(row, "wastage_qty", "wastage_qt", "wastage", "net_wastage", "net_weight"),

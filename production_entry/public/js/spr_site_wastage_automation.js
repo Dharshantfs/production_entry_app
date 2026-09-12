@@ -92,15 +92,16 @@ function resolve_patty_wastage_fields(wast_fields) {
         ) || "width_inches",
         meter: pick(
             [
+                { exact: "meter__roll_mtrs" },
                 { exact: "meter_roll_mtrs" },
                 { exact: "meter_per_roll" },
                 { exact: "meter__roll" },
                 { exact: "meter_roll" },
                 { exact: "meter" },
-                { includes: "meter", fallback: "meter_roll_mtrs" },
+                { includes: "meter", fallback: "meter__roll_mtrs" },
             ],
             ["wastage", "shaft", "recycle"]
-        ) || "meter_roll_mtrs",
+        ) || "meter__roll_mtrs",
         gsm: pick([{ exact: "gsm" }, { includes: "gsm", fallback: "gsm" }], []) || "gsm",
         job: pick(
             [{ exact: "job_id" }, { exact: "job" }, { includes: "job_id", fallback: "job_id" }],
